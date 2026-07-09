@@ -4,10 +4,17 @@ import logging
 
 import structlog
 
+from deepset_cloud_sdk._service.deployment_service import (
+    CreateOptions,
+    DeploymentFailedError,
+    DeployResult,
+    ServiceNotFoundError,
+)
 from deepset_cloud_sdk._service.pipeline_service import (
     DeepsetValidationError,
     ErrorDetail,
 )
+from deepset_cloud_sdk._service.pipeline_transform import PipelineTransformError
 from deepset_cloud_sdk.models import (
     BaseConfig,
     IndexConfig,
@@ -21,6 +28,10 @@ from deepset_cloud_sdk.models import (
 from deepset_cloud_sdk.workflows.async_client.async_pipeline_client import (
     AsyncPipelineClient,
 )
+from deepset_cloud_sdk.workflows.async_client.deployment_client import (
+    AsyncDeploymentClient,
+)
+from deepset_cloud_sdk.workflows.sync_client.deployment_client import DeploymentClient
 from deepset_cloud_sdk.workflows.sync_client.pipeline_client import PipelineClient
 
 structlog.configure(
@@ -42,4 +53,11 @@ __all__ = [
     "IndexOutputs",
     "DeepsetValidationError",
     "PipelineOutputType",
+    "DeploymentClient",
+    "AsyncDeploymentClient",
+    "CreateOptions",
+    "DeployResult",
+    "DeploymentFailedError",
+    "ServiceNotFoundError",
+    "PipelineTransformError",
 ]

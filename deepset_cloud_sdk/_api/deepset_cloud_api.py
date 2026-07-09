@@ -130,6 +130,7 @@ class DeepsetCloudAPI:
         json: Optional[Dict[str, Any]] = None,
         files: Optional[Dict[str, Any]] = None,
         data: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
         timeout_s: int = 20,
     ) -> Response:
         """Make a POST request to the deepset AI Platform API.
@@ -140,6 +141,7 @@ class DeepsetCloudAPI:
         :param json: JSON data to pass.
         :param data: Data to pass.
         :param files: Files to pass.
+        :param headers: Extra headers to merge over the default auth headers for this request.
         :param timeout_s: Timeout in seconds.
         :return: Response object.
         """
@@ -149,7 +151,7 @@ class DeepsetCloudAPI:
             json=json,
             data=data,
             files=files,
-            headers=self.headers,
+            headers={**self.headers, **(headers or {})},
             timeout=timeout_s,
         )
         logger.debug(

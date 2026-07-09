@@ -9,10 +9,19 @@ from uuid import UUID
 import click
 import typer
 from tabulate import tabulate
+from yaspin import yaspin
 
 __version__ = version("deepset-cloud-sdk")
 from deepset_cloud_sdk._api.config import DEFAULT_WORKSPACE_NAME, ENV_FILE_PATH
+from deepset_cloud_sdk._api.deployments import DeploymentServiceLevel
 from deepset_cloud_sdk._api.upload_sessions import WriteMode
+from deepset_cloud_sdk._service.deployment_service import (
+    CreateOptions,
+    DeploymentFailedError,
+    ServiceNotFoundError,
+)
+from deepset_cloud_sdk._service.pipeline_transform import PipelineTransformError
+from deepset_cloud_sdk.workflows.sync_client.deployment_client import DeploymentClient
 from deepset_cloud_sdk.workflows.sync_client.files import download as sync_download
 from deepset_cloud_sdk.workflows.sync_client.files import (
     get_upload_session as sync_get_upload_session,
@@ -326,6 +335,159 @@ def get_upload_session(
                     "failed_files": session.ingestion_status.failed_files,
                     "finished_files": session.ingestion_status.finished_files,
                 },
+            },
+            indent=4,
+        )
+    )
+
+
+@cli_app.command()
+def deploy(  # pylint: disable=too-many-arguments,too-many-locals
+    target: Path,
+    service_name: str,
+    activate: bool = False,
+    create: bool = False,
+    entrypoint: Optional[str] = None,
+    requirements: Optional[Path] = None,
+    service_level: Optional[DeploymentServiceLevel] = None,
+    min_replicas: Optional[int] = None,
+    max_replicas: Optional[int] = None,
+    cpu: Optional[str] = None,
+    memory: Optional[str] = None,
+    gpu: Optional[int] = None,
+    idle_timeout: Optional[int] = None,
+    api_key: Optional[str] = None,
+    api_url: Optional[str] = None,
+    workspace_name: str = DEFAULT_WORKSPACE_NAME,
+) -> None:
+    """Deploy a Haystack pipeline defined in a local Python file to a service deployment.
+
+    Transforms the pipeline (rewriting local custom components into the platform Code component and
+    extracting dependencies), then pushes it as a new revision of the given service.
+
+    :param target: Path to the Python file that defines the pipeline.
+    :param service_name: Name of the target service deployment.
+    :param activate: Activate the new revision and wait for the rollout to finish.
+    :param create: Create the service if it does not exist (Development sizing unless overridden).
+    :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
+    :param requirements: Requirements file to use instead of autodetecting dependencies.
+    :param service_level: Service sizing tier when creating the service.
+    :param min_replicas: Minimum query replicas (with --create).
+    :param max_replicas: Maximum query replicas (with --create).
+    :param cpu: CPU limit, e.g. '1' (with --create).
+    :param memory: Memory limit, e.g. '2Gi' (with --create).
+    :param gpu: GPU memory limit in gigabytes (with --create).
+    :param idle_timeout: Idle timeout in seconds before scale-down (with --create).
+    :param api_key: deepset API key to use for authentication.
+    :param api_url: API URL to use for authentication.
+    :param workspace_name: Workspace to deploy into. Uses the workspace from the .ENV file by default.
+
+    Example:
+    `deepset-cloud deploy pipeline.py my-service --activate --create`
+    """
+    client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
+    create_options = (
+        CreateOptions(
+            service_level=service_level,
+            idle_timeout_in_seconds=idle_timeout,
+            min_query_replica_count=min_replicas,
+            max_query_replica_count=max_replicas,
+            cpu_limit=cpu,
+            memory_limit=memory,
+            gpu_limit_gigabyte=gpu,
+        )
+        if create
+        else None
+    )
+
+    try:
+        if activate:
+            with yaspin().arc as spinner:
+                spinner.text = f"Deploying '{service_name}'."
+
+                def _on_status(status: object) -> None:
+                    spinner.text = f"Rolling out '{service_name}' ({getattr(status, 'value', status)})."
+
+                result = client.deploy(
+                    target,
+                    service_name,
+                    activate=True,
+                    create=create,
+                    create_options=create_options,
+                    entrypoint=entrypoint,
+                    requirements=requirements,
+                    on_status=_on_status,
+                )
+        else:
+            result = client.deploy(
+                target,
+                service_name,
+                create=create,
+                create_options=create_options,
+                entrypoint=entrypoint,
+                requirements=requirements,
+            )
+    except KeyboardInterrupt:
+        typer.echo(
+            f"\nDetached. The rollout continues on the platform. "
+            f"Check with `deepset-cloud service-status {service_name}`."
+        )
+        raise typer.Exit(0)  # noqa: B904
+    except DeploymentFailedError as err:
+        typer.echo(str(err))
+        raise typer.Exit(1)  # noqa: B904
+    except (ServiceNotFoundError, PipelineTransformError) as err:
+        typer.echo(str(err))
+        raise typer.Exit(1)  # noqa: B904
+
+    if not activate:
+        typer.echo(
+            f"Pushed revision {result.revision.revision_id} to '{service_name}' (status: PENDING). "
+            f"Re-run with --activate or activate it in the platform to roll it out."
+        )
+    elif result.timed_out:
+        typer.echo(
+            f"Activation of '{service_name}' is still in progress. Detached; the rollout continues. "
+            f"Check with `deepset-cloud service-status {service_name}`."
+        )
+    else:
+        typer.echo(f"Service '{service_name}' is now {result.deployment.status.value}.")
+
+
+@cli_app.command()
+def service_status(
+    service_name: str,
+    api_key: Optional[str] = None,
+    api_url: Optional[str] = None,
+    workspace_name: str = DEFAULT_WORKSPACE_NAME,
+) -> None:
+    """Show the current status of a service deployment.
+
+    :param service_name: Name of the service deployment.
+    :param api_key: deepset API key to use for authentication.
+    :param api_url: API URL to use for authentication.
+    :param workspace_name: Workspace of the service. Uses the workspace from the .ENV file by default.
+
+    Example:
+    `deepset-cloud service-status my-service`
+    """
+    client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
+    try:
+        deployment = client.get_service_status(service_name)
+    except ServiceNotFoundError as err:
+        typer.echo(str(err))
+        raise typer.Exit(1)  # noqa: B904
+    typer.echo(
+        json.dumps(
+            {
+                "name": deployment.name,
+                "deployment_id": str(deployment.deployment_id),
+                "status": deployment.status.value,
+                "service_level": deployment.service_level.value,
+                "active_revision_id": str(deployment.active_revision_id) if deployment.active_revision_id else None,
+                "pending_revision_id": (
+                    str(deployment.pending_revision_id) if deployment.pending_revision_id else None
+                ),
             },
             indent=4,
         )
