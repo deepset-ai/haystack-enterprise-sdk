@@ -356,6 +356,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     memory: Optional[str] = None,
     gpu: Optional[int] = None,
     idle_timeout: Optional[int] = None,
+    python: Optional[str] = None,
+    dry_run: bool = False,
+    output: Optional[Path] = None,
     api_key: Optional[str] = None,
     api_url: Optional[str] = None,
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
@@ -364,6 +367,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
 
     Transforms the pipeline (rewriting local custom components into the platform Code component and
     extracting dependencies), then pushes it as a new revision of the given service.
+
+    The pipeline is loaded in your project's Python environment (auto-detected virtualenv, or the
+    interpreter given by --python), so this CLI's own environment does not need your pipeline's
+    dependencies installed.
 
     :param target: Path to the Python file that defines the pipeline.
     :param service_name: Name of the target service deployment.
@@ -378,13 +385,25 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param memory: Memory limit, e.g. '2Gi' (with --create).
     :param gpu: GPU memory limit in gigabytes (with --create).
     :param idle_timeout: Idle timeout in seconds before scale-down (with --create).
+    :param python: Path to the Python interpreter used to load your pipeline (defaults to an
+        auto-detected virtualenv near the target file, else the current interpreter).
+    :param dry_run: Transform the pipeline and print/write the resulting YAML without deploying. No
+        API credentials are needed.
+    :param output: With --dry-run, write the transformed YAML to this file instead of stdout.
     :param api_key: deepset API key to use for authentication.
     :param api_url: API URL to use for authentication.
     :param workspace_name: Workspace to deploy into. Uses the workspace from the .ENV file by default.
 
     Example:
     `deepset-cloud deploy pipeline.py my-service --activate --create`
+
+    Preview the transformed YAML without deploying:
+    `deepset-cloud deploy pipeline.py my-service --dry-run --output out.yaml`
     """
+    if dry_run:
+        _deploy_dry_run(target, entrypoint, requirements, python, output)
+        return
+
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
     create_options = (
         CreateOptions(
@@ -416,6 +435,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     create_options=create_options,
                     entrypoint=entrypoint,
                     requirements=requirements,
+                    python_executable=python,
                     on_status=_on_status,
                 )
         else:
@@ -426,6 +446,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 create_options=create_options,
                 entrypoint=entrypoint,
                 requirements=requirements,
+                python_executable=python,
             )
     except KeyboardInterrupt:
         typer.echo(
@@ -452,6 +473,30 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         )
     else:
         typer.echo(f"Service '{service_name}' is now {result.deployment.status.value}.")
+
+
+def _deploy_dry_run(
+    target: Path,
+    entrypoint: Optional[str],
+    requirements: Optional[Path],
+    python: Optional[str],
+    output: Optional[Path],
+) -> None:
+    """Transform the pipeline and print/write the YAML without contacting the API."""
+    from deepset_cloud_sdk._service import pipeline_transform
+
+    try:
+        extraction = pipeline_transform.extract_via_subprocess(target, entrypoint, python)
+        config_yaml = pipeline_transform.render_config_yaml(extraction, requirements=requirements)
+    except PipelineTransformError as err:
+        typer.echo(str(err))
+        raise typer.Exit(1)  # noqa: B904
+
+    if output is not None:
+        output.write_text(config_yaml, encoding="utf-8")
+        typer.echo(f"Wrote transformed pipeline YAML to {output}.")
+    else:
+        typer.echo(config_yaml)
 
 
 @cli_app.command()

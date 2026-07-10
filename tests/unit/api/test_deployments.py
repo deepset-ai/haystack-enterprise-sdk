@@ -152,6 +152,16 @@ class TestRevisions:
             json={"config_yaml": "components: {}"},
         )
 
+    async def test_push_revision_tolerates_missing_status(
+        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+    ) -> None:
+        deployment_id = uuid4()
+        body = {"revision_id": str(uuid4()), "deployment_id": str(deployment_id)}  # no "status"/"config_hash"
+        mocked_deepset_cloud_api.post.return_value = _resp(codes.CREATED, json=body)
+        revision = await deployments_api.push_revision("ws", deployment_id, config_yaml="components: {}")
+        assert revision.status == DeploymentRevisionStatus.PENDING
+        assert revision.config_hash == ""
+
     async def test_push_revision_failure_raises(
         self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
     ) -> None:

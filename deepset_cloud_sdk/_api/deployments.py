@@ -62,12 +62,18 @@ class Deployment:
 
     @classmethod
     def from_response(cls, body: Dict[str, Any]) -> "Deployment":
-        """Build a :class:`Deployment` from a ``DeploymentResponse`` body."""
+        """Build a :class:`Deployment` from a ``DeploymentResponse`` body.
+
+        Tolerant of missing/unknown enum values so a minor server-side schema drift degrades
+        gracefully (e.g. an unknown status just keeps polling) instead of crashing.
+        """
         return cls(
             deployment_id=UUID(body["deployment_id"]),
             name=body["name"],
-            status=DeploymentStatus(body["status"]),
-            service_level=DeploymentServiceLevel(body["service_level"]),
+            status=_enum_or_default(DeploymentStatus, body.get("status"), DeploymentStatus.UNDEPLOYED),
+            service_level=_enum_or_default(
+                DeploymentServiceLevel, body.get("service_level"), DeploymentServiceLevel.DEVELOPMENT
+            ),
             active_revision_id=_optional_uuid(body.get("active_revision_id")),
             pending_revision_id=_optional_uuid(body.get("pending_revision_id")),
         )
@@ -84,11 +90,15 @@ class DeploymentRevision:
 
     @classmethod
     def from_response(cls, body: Dict[str, Any]) -> "DeploymentRevision":
-        """Build a :class:`DeploymentRevision` from a ``DeploymentRevisionResponse`` body."""
+        """Build a :class:`DeploymentRevision` from a ``DeploymentRevisionResponse`` body.
+
+        ``status`` is informational here (the deploy flow tracks the deployment's status, not the
+        revision's), so a missing/unknown value defaults to ``PENDING`` rather than raising.
+        """
         return cls(
             revision_id=UUID(body["revision_id"]),
             deployment_id=UUID(body["deployment_id"]),
-            status=DeploymentRevisionStatus(body["status"]),
+            status=_enum_or_default(DeploymentRevisionStatus, body.get("status"), DeploymentRevisionStatus.PENDING),
             config_hash=body.get("config_hash", ""),
         )
 
@@ -315,3 +325,14 @@ class PaginatedDeployments:
 
 def _optional_uuid(value: Optional[str]) -> Optional[UUID]:
     return UUID(value) if value else None
+
+
+def _enum_or_default(enum_cls: type, value: Any, default: Any) -> Any:
+    """Return ``enum_cls(value)`` or ``default`` if ``value`` is missing/unknown (logs on unknown)."""
+    if value is None:
+        return default
+    try:
+        return enum_cls(value)
+    except ValueError:
+        logger.warning("Unknown %s value '%s'; defaulting to '%s'.", enum_cls.__name__, value, default.value)
+        return default

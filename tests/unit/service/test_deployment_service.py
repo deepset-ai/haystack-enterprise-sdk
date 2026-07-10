@@ -49,7 +49,7 @@ def service(monkeypatch: pytest.MonkeyPatch) -> DeploymentService:
     svc = DeploymentService(api=Mock(), workspace_name="ws")
     svc._deployments = AsyncMock()  # type: ignore[assignment]
     # short-circuit the transform so tests don't need Haystack/import machinery
-    monkeypatch.setattr(svc, "_build_config_yaml", lambda *a, **k: "components: {}\n")
+    monkeypatch.setattr(svc, "build_config_yaml", lambda *a, **k: "components: {}\n")
     return svc
 
 

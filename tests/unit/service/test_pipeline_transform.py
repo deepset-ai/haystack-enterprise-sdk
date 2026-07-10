@@ -9,11 +9,15 @@ import pytest
 from haystack import Pipeline
 from ruamel.yaml import YAML
 
+from deepset_cloud_sdk._service.pipeline_extract import _classify_origin
 from deepset_cloud_sdk._service.pipeline_transform import (
     CODE_COMPONENT_TYPE,
     PipelineTransformError,
     classify_module,
+    detect_project_python,
+    extract_via_subprocess,
     load_pipeline_from_file,
+    render_config_yaml,
     transform_to_config_yaml,
 )
 
@@ -332,6 +336,57 @@ class TestInputsOutputsAndDeps:
 # --------------------------------------------------------------------------- #
 # classify_module
 # --------------------------------------------------------------------------- #
+class TestSubprocessExtraction:
+    def test_extract_via_subprocess_roundtrips(self) -> None:
+        # Uses the current interpreter, which has haystack installed.
+        extraction = extract_via_subprocess(FIXTURE_DIR / "pipeline.py", python_executable=sys.executable)
+        assert any(dep.startswith("requests==") for dep in extraction["dependencies"])
+        config_yaml = render_config_yaml(extraction)
+        assert CODE_COMPONENT_TYPE in config_yaml
+        assert "class Greeter" in config_yaml
+        assert "# dependencies:" in config_yaml
+
+    def test_extract_via_subprocess_missing_dep_errors(self, tmp_path: Path) -> None:
+        path = _write_project(tmp_path, {"pipeline.py": "import a_missing_module_xyz\n"})
+        with pytest.raises(PipelineTransformError, match="a_missing_module_xyz"):
+            extract_via_subprocess(path, python_executable=sys.executable)
+
+    def test_detect_project_python_finds_venv(self, tmp_path: Path) -> None:
+        venv_python = tmp_path / "proj" / ".venv" / "bin" / "python"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.write_text("")
+        target = tmp_path / "proj" / "pkg" / "pipeline.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("")
+        assert detect_project_python(target) == str(venv_python)
+
+    def test_detect_project_python_falls_back_to_current(self, tmp_path: Path) -> None:
+        target = tmp_path / "pipeline.py"
+        target.write_text("")
+        assert detect_project_python(target) == sys.executable
+
+
+class TestClassifyOrigin:
+    """Regression tests for the path-classification, especially venv-inside-project."""
+
+    def test_site_packages_inside_project_is_external(self, tmp_path: Path) -> None:
+        # A project's .venv often lives inside the project dir; installed packages must be external.
+        origin = tmp_path / ".venv" / "lib" / "python3.13" / "site-packages" / "tiktoken" / "__init__.py"
+        assert _classify_origin(origin, tmp_path) == "external"
+
+    def test_dist_packages_inside_project_is_external(self, tmp_path: Path) -> None:
+        origin = tmp_path / "venv" / "lib" / "dist-packages" / "numpy" / "__init__.py"
+        assert _classify_origin(origin, tmp_path) == "external"
+
+    def test_local_source_is_local(self, tmp_path: Path) -> None:
+        origin = tmp_path / "custom_nodes" / "greeter.py"
+        assert _classify_origin(origin, tmp_path) == "local"
+
+    def test_outside_project_is_stdlib(self, tmp_path: Path) -> None:
+        origin = Path("/usr/lib/python3.13/json/__init__.py")
+        assert _classify_origin(origin, tmp_path) == "stdlib"
+
+
 class TestClassifyModule:
     def test_stdlib(self, tmp_path: Path) -> None:
         assert classify_module("json", tmp_path) == "stdlib"

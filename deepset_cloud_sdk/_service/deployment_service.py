@@ -100,6 +100,7 @@ class DeploymentService:
         requirements: Optional[Path] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
+        python_executable: Optional[str] = None,
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         on_status: Optional[Callable[[DeploymentStatus], None]] = None,
@@ -115,6 +116,7 @@ class DeploymentService:
         :param requirements: Optional requirements file overriding dependency autodetection.
         :param inputs: Optional explicit pipeline inputs (overrides inference).
         :param outputs: Optional explicit pipeline outputs (overrides inference).
+        :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
         :param timeout_s: Max seconds to poll for activation before detaching.
         :param poll_interval_s: Seconds between activation polls.
         :param on_status: Optional callback invoked with the deployment status on each poll.
@@ -122,7 +124,14 @@ class DeploymentService:
         :raises DeploymentFailedError: If ``activate`` is set and the rollout fails.
         :return: A :class:`DeployResult`.
         """
-        config_yaml = self._build_config_yaml(target, entrypoint, requirements, inputs, outputs)
+        config_yaml = self.build_config_yaml(
+            target,
+            entrypoint=entrypoint,
+            requirements=requirements,
+            inputs=inputs,
+            outputs=outputs,
+            python_executable=python_executable,
+        )
 
         deployment = await self._resolve_or_create(service_name, create, create_options)
 
@@ -157,18 +166,24 @@ class DeploymentService:
         return await self._deployments.get_deployment(self._workspace_name, deployment.deployment_id)
 
     # ------------------------------------------------------------------ #
-    def _build_config_yaml(
+    def build_config_yaml(
         self,
         target: Path,
-        entrypoint: Optional[str],
-        requirements: Optional[Path],
-        inputs: Optional[dict],
-        outputs: Optional[dict],
+        *,
+        entrypoint: Optional[str] = None,
+        requirements: Optional[Path] = None,
+        inputs: Optional[dict] = None,
+        outputs: Optional[dict] = None,
+        python_executable: Optional[str] = None,
     ) -> str:
-        pipeline = pipeline_transform.load_pipeline_from_file(target, entrypoint)
-        return pipeline_transform.transform_to_config_yaml(
-            pipeline,
-            project_root=target.resolve().parent,
+        """Transform ``target`` into deployable YAML without any API calls (used for --dry-run too).
+
+        The pipeline is loaded in a subprocess using ``python_executable`` (or an auto-detected venv),
+        so this environment does not need the pipeline's dependencies installed.
+        """
+        extraction = pipeline_transform.extract_via_subprocess(target, entrypoint, python_executable)
+        return pipeline_transform.render_config_yaml(
+            extraction,
             requirements=requirements,
             inputs=inputs,
             outputs=outputs,

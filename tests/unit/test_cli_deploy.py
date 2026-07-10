@@ -1,5 +1,6 @@
 """CLI tests for the `deploy` and `service-status` commands."""
 
+from pathlib import Path
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ from deepset_cloud_sdk._service.deployment_service import (
     DeployResult,
     ServiceNotFoundError,
 )
+from deepset_cloud_sdk._service.pipeline_transform import PipelineTransformError
 from deepset_cloud_sdk.cli import cli_app
 
 runner = CliRunner()
@@ -108,6 +110,46 @@ class TestDeployCommand:
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--activate"])
         assert result.exit_code == 0
         assert "Detached" in result.stdout
+
+
+class TestDryRun:
+    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    def test_dry_run_prints_yaml_and_skips_api(self, extract_mock: Mock) -> None:
+        extract_mock.return_value = {
+            "pipeline": {"components": {"c": {"type": "haystack.X", "init_parameters": {}}}},
+            "async_enabled": False,
+            "inferred_inputs": {},
+            "inferred_outputs": {},
+            "dependencies": ["requests==2.32.5"],
+        }
+        with patch("deepset_cloud_sdk.cli.DeploymentClient") as client_cls:
+            result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"])
+        assert result.exit_code == 0
+        assert "haystack.X" in result.stdout
+        assert "# dependencies:" in result.stdout
+        client_cls.assert_not_called()  # dry-run never touches the API
+
+    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    def test_dry_run_writes_output_file(self, extract_mock: Mock, tmp_path: Path) -> None:
+        extract_mock.return_value = {
+            "pipeline": {"components": {}},
+            "async_enabled": False,
+            "inferred_inputs": {},
+            "inferred_outputs": {},
+            "dependencies": [],
+        }
+        out = tmp_path / "out.yaml"
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run", "--output", str(out)])
+        assert result.exit_code == 0
+        assert out.is_file()
+        assert "components" in out.read_text()
+
+    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    def test_dry_run_transform_error_exits_1(self, extract_mock: Mock) -> None:
+        extract_mock.side_effect = PipelineTransformError("missing dependency 'tiktoken'")
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"])
+        assert result.exit_code == 1
+        assert "tiktoken" in result.stdout
 
 
 class TestServiceStatusCommand:
