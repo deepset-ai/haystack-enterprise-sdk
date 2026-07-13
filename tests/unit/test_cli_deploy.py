@@ -105,6 +105,16 @@ class TestDeployCommand:
         assert options.max_query_replica_count == 3
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_deploy_forwards_io_resolver(self, client_cls: Mock) -> None:
+        from deepset_cloud_sdk.cli import _resolve_missing_io
+
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.deploy.call_args
+        assert kwargs["io_resolver"] is _resolve_missing_io
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
     def test_deploy_interrupt_detaches(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.side_effect = KeyboardInterrupt()
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--activate"])
@@ -150,6 +160,59 @@ class TestDryRun:
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"])
         assert result.exit_code == 1
         assert "tiktoken" in result.stdout
+
+    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=False)
+    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    def test_dry_run_non_interactive_skips_prompt(self, extract_mock: Mock, _isatty: Mock) -> None:
+        extract_mock.return_value = {
+            "pipeline": {"components": {}},
+            "async_enabled": False,
+            "inferred_inputs": {},
+            "inferred_outputs": {},
+            "available_inputs": {"retriever": ["query"]},
+            "available_outputs": {"reader": ["answers"]},
+            "dependencies": [],
+        }
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"])
+        assert result.exit_code == 0
+        assert "Set them now?" not in result.stdout
+        assert "inputs:" not in result.stdout
+
+    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    def test_dry_run_prompt_sets_io(self, extract_mock: Mock, _isatty: Mock) -> None:
+        extract_mock.return_value = {
+            "pipeline": {"components": {}},
+            "async_enabled": False,
+            "inferred_inputs": {},
+            "inferred_outputs": {},
+            "available_inputs": {"retriever": ["query"]},
+            "available_outputs": {"reader": ["answers", "documents"]},
+            "dependencies": [],
+        }
+        # confirm=y, query=1, filters=skip(0), answers=1, documents=skip(0)
+        result = runner.invoke(
+            cli_app, ["deploy", FIXTURE, "svc", "--dry-run"], input="y\n1\n0\n1\n0\n"
+        )
+        assert result.exit_code == 0
+        assert "retriever.query" in result.stdout
+        assert "reader.answers" in result.stdout
+
+    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    def test_dry_run_prompt_declined_omits_io(self, extract_mock: Mock, _isatty: Mock) -> None:
+        extract_mock.return_value = {
+            "pipeline": {"components": {}},
+            "async_enabled": False,
+            "inferred_inputs": {},
+            "inferred_outputs": {},
+            "available_inputs": {"retriever": ["query"]},
+            "available_outputs": {"reader": ["answers"]},
+            "dependencies": [],
+        }
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"], input="n\n")
+        assert result.exit_code == 0
+        assert "inputs:" not in result.stdout
 
 
 class TestServiceStatusCommand:

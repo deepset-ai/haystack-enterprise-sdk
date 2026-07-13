@@ -149,6 +149,59 @@ class TestActivateAndPoll:
         assert result.activated is True
 
 
+class TestBuildConfigYaml:
+    """The ``io_resolver`` is consulted only when inputs or outputs could not be inferred."""
+
+    def _service(self) -> DeploymentService:
+        return DeploymentService(api=Mock(), workspace_name="ws")
+
+    def _bundle(self, inferred_inputs: dict, inferred_outputs: dict) -> dict:
+        return {
+            "pipeline": {"components": {}},
+            "async_enabled": False,
+            "inferred_inputs": inferred_inputs,
+            "inferred_outputs": inferred_outputs,
+            "available_inputs": {"retriever": ["query"]},
+            "available_outputs": {"reader": ["answers"]},
+            "dependencies": [],
+        }
+
+    def test_resolver_invoked_when_io_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deepset_cloud_sdk._service import pipeline_transform
+
+        monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: self._bundle({}, {}))
+        resolver = Mock(return_value=({"query": ["retriever.query"]}, {"answers": "reader.answers"}))
+
+        yaml = self._service().build_config_yaml(FIXTURE, io_resolver=resolver)
+
+        resolver.assert_called_once()
+        assert "retriever.query" in yaml
+        assert "reader.answers" in yaml
+
+    def test_resolver_not_invoked_when_io_inferred(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deepset_cloud_sdk._service import pipeline_transform
+
+        bundle = self._bundle({"query": ["retriever.query"]}, {"answers": "reader.answers"})
+        monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: bundle)
+        resolver = Mock(return_value=({}, {}))
+
+        self._service().build_config_yaml(FIXTURE, io_resolver=resolver)
+
+        resolver.assert_not_called()
+
+    def test_resolver_invoked_when_only_outputs_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deepset_cloud_sdk._service import pipeline_transform
+
+        bundle = self._bundle({"query": ["retriever.query"]}, {})
+        monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: bundle)
+        resolver = Mock(return_value=({}, {"answers": "reader.answers"}))
+
+        yaml = self._service().build_config_yaml(FIXTURE, io_resolver=resolver)
+
+        resolver.assert_called_once()
+        assert "reader.answers" in yaml
+
+
 @pytest.mark.asyncio
 class TestGetServiceStatus:
     async def test_get_service_status(self, service: DeploymentService) -> None:

@@ -1,5 +1,6 @@
 """Tests for the pipeline transform (local .py -> deployable platform YAML)."""
 
+import os
 import sys
 import textwrap
 from pathlib import Path
@@ -9,7 +10,10 @@ import pytest
 from haystack import Pipeline
 from ruamel.yaml import YAML
 
-from deepset_cloud_sdk._service.pipeline_extract import _classify_origin
+from deepset_cloud_sdk._service.pipeline_extract import (
+    _classify_origin,
+    extract_from_pipeline,
+)
 from deepset_cloud_sdk._service.pipeline_transform import (
     CODE_COMPONENT_TYPE,
     PipelineTransformError,
@@ -323,6 +327,12 @@ class TestInputsOutputsAndDeps:
         assert "inputs" not in doc
         assert "outputs" not in doc
 
+    def test_bundle_reports_available_sockets(self, tmp_path: Path) -> None:
+        pipeline = load_pipeline_from_file(self._query_project(tmp_path))
+        bundle = extract_from_pipeline(pipeline, project_root=tmp_path)
+        assert set(bundle["available_inputs"]["searcher"]) == {"query", "filters"}
+        assert set(bundle["available_outputs"]["searcher"]) == {"answers", "documents"}
+
     def test_requirements_file_overrides_autodetect(self, tmp_path: Path) -> None:
         pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
         req = tmp_path / "requirements.txt"
@@ -336,6 +346,39 @@ class TestInputsOutputsAndDeps:
 # --------------------------------------------------------------------------- #
 # classify_module
 # --------------------------------------------------------------------------- #
+class TestDotenvLoading:
+    """Importing a pipeline auto-loads a project ``.env`` so ``Secret.from_env_var`` pipelines work."""
+
+    _PIPELINE = """
+    import os
+    from haystack import Pipeline
+
+    # Fails to import unless the variable is present — mirrors a client that needs a key at construction.
+    if not os.environ.get("PIPELINE_TEST_SECRET"):
+        raise RuntimeError("PIPELINE_TEST_SECRET is not set")
+
+    pipeline = Pipeline()
+    """
+
+    def test_loads_env_from_project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PIPELINE_TEST_SECRET", raising=False)
+        path = _write_project(tmp_path, {"pipeline.py": self._PIPELINE})
+        (tmp_path / ".env").write_text('PIPELINE_TEST_SECRET="from-dotenv"\n', encoding="utf-8")
+
+        load_pipeline_from_file(path)  # would raise if the .env was not loaded
+
+        assert os.environ["PIPELINE_TEST_SECRET"] == "from-dotenv"
+
+    def test_existing_env_var_wins_over_dotenv(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PIPELINE_TEST_SECRET", "from-shell")
+        path = _write_project(tmp_path, {"pipeline.py": self._PIPELINE})
+        (tmp_path / ".env").write_text("PIPELINE_TEST_SECRET=from-dotenv\n", encoding="utf-8")
+
+        load_pipeline_from_file(path)
+
+        assert os.environ["PIPELINE_TEST_SECRET"] == "from-shell"
+
+
 class TestSubprocessExtraction:
     def test_extract_via_subprocess_roundtrips(self) -> None:
         # Uses the current interpreter, which has haystack installed.

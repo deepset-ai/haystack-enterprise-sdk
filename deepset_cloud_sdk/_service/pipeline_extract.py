@@ -28,6 +28,7 @@ import importlib.util
 import inspect
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -76,6 +77,12 @@ def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any
     project_root = path.parent
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
+
+    # Importing the module runs its top-level code, which often constructs components (e.g. an
+    # OpenAIGenerator) that read secrets via ``Secret.from_env_var`` and fail to build without them.
+    # Load a project ``.env`` so those pipelines import cleanly, mirroring the deepset CLI's own .env
+    # loading. Already-set environment variables always win.
+    _load_project_dotenv(project_root)
 
     module_name = path.stem
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -161,6 +168,44 @@ def _coerce_to_pipeline(obj: Any, name: str, pipeline_types: tuple) -> Any:
         if isinstance(result, pipeline_types):
             return result
     raise PipelineTransformError(f"Entrypoint '{name}' is not a pipeline instance or a factory returning one.")
+
+
+def _load_project_dotenv(start: Path) -> None:
+    """Load the nearest ``.env`` (``start`` or a parent) into ``os.environ`` without overriding set vars.
+
+    Walks up from ``start`` and applies the first ``.env`` found. Existing environment variables take
+    precedence, so anything the user exported still wins over the file. Best-effort: unreadable files and
+    malformed lines are skipped silently.
+    """
+    start = Path(start).resolve()
+    for directory in [start, *start.parents]:
+        env_file = directory / ".env"
+        if env_file.is_file():
+            _apply_env_file(env_file)
+            return
+
+
+def _apply_env_file(env_file: Path) -> None:
+    """Parse a minimal ``KEY=VALUE`` ``.env`` file and set any unset keys in ``os.environ``."""
+    try:
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def _reject_index_pipeline(pipeline: Any) -> None:
@@ -451,6 +496,28 @@ def infer_outputs(pipeline: Any) -> dict:
     return result
 
 
+def available_inputs(pipeline: Any) -> dict:
+    """Return every open input socket as ``{component_name: [socket_name, ...]}``.
+
+    Unlike :func:`infer_inputs`, this does not filter by socket name — it exposes all open sockets so a
+    caller (e.g. the CLI) can offer them for interactive mapping when inference finds nothing.
+    """
+    try:
+        open_inputs = pipeline.inputs()
+    except Exception:  # noqa: BLE001
+        return {}
+    return {comp_name: list(sockets) for comp_name, sockets in open_inputs.items() if sockets}
+
+
+def available_outputs(pipeline: Any) -> dict:
+    """Return every open output socket as ``{component_name: [socket_name, ...]}`` (see :func:`available_inputs`)."""
+    try:
+        open_outputs = pipeline.outputs()
+    except Exception:  # noqa: BLE001
+        return {}
+    return {comp_name: list(sockets) for comp_name, sockets in open_outputs.items() if sockets}
+
+
 def pin_dependencies(external_modules: set[str]) -> list[str]:
     """Version-pin external dependency import-roots, excluding base-image packages."""
     distributions = sorted({_distribution_name(mod) for mod in external_modules if mod not in BASE_PACKAGES})
@@ -473,7 +540,8 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
     :param pipeline: A Haystack ``Pipeline``/``AsyncPipeline``.
     :param project_root: Directory that roots the user's local modules (used to classify imports).
     :return: A bundle with keys ``pipeline`` (dict, local components rewritten to Code),
-        ``async_enabled``, ``inferred_inputs``, ``inferred_outputs``, and ``dependencies`` (pinned).
+        ``async_enabled``, ``inferred_inputs``, ``inferred_outputs``, ``available_inputs``,
+        ``available_outputs``, and ``dependencies`` (pinned).
     """
     import yaml  # type: ignore[import-untyped]
     from haystack import AsyncPipeline
@@ -504,6 +572,8 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
         "async_enabled": isinstance(pipeline, AsyncPipeline),
         "inferred_inputs": infer_inputs(pipeline),
         "inferred_outputs": infer_outputs(pipeline),
+        "available_inputs": available_inputs(pipeline),
+        "available_outputs": available_outputs(pipeline),
         "dependencies": pin_dependencies(external_modules),
     }
 

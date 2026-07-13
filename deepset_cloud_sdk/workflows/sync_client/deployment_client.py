@@ -2,7 +2,7 @@
 
 import asyncio
 from pathlib import Path
-from typing import Awaitable, Callable, Optional, TypeVar
+from typing import Awaitable, Callable, Optional, Tuple, TypeVar
 
 import structlog
 
@@ -77,6 +77,7 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
         requirements: Optional[Path] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
+        io_resolver: Optional[Callable[[dict], Tuple[dict, dict]]] = None,
         python_executable: Optional[str] = None,
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
@@ -94,6 +95,7 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
                 requirements=requirements,
                 inputs=inputs,
                 outputs=outputs,
+                io_resolver=io_resolver,
                 python_executable=python_executable,
                 timeout_s=timeout_s,
                 poll_interval_s=poll_interval_s,

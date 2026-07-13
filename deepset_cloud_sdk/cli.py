@@ -1,9 +1,10 @@
 """The CLI for the deepset AI Platform SDK."""
 
 import json
+import sys
 from importlib.metadata import version
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 from uuid import UUID
 
 import click
@@ -435,6 +436,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     create_options=create_options,
                     entrypoint=entrypoint,
                     requirements=requirements,
+                    io_resolver=_resolve_missing_io,
                     python_executable=python,
                     on_status=_on_status,
                 )
@@ -446,6 +448,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 create_options=create_options,
                 entrypoint=entrypoint,
                 requirements=requirements,
+                io_resolver=_resolve_missing_io,
                 python_executable=python,
             )
     except KeyboardInterrupt:
@@ -487,7 +490,13 @@ def _deploy_dry_run(
 
     try:
         extraction = pipeline_transform.extract_via_subprocess(target, entrypoint, python)
-        config_yaml = pipeline_transform.render_config_yaml(extraction, requirements=requirements)
+        inputs, outputs = _resolve_missing_io(extraction)
+        config_yaml = pipeline_transform.render_config_yaml(
+            extraction,
+            requirements=requirements,
+            inputs=inputs or None,
+            outputs=outputs or None,
+        )
     except PipelineTransformError as err:
         typer.echo(str(err))
         raise typer.Exit(1)  # noqa: B904
@@ -497,6 +506,93 @@ def _deploy_dry_run(
         typer.echo(f"Wrote transformed pipeline YAML to {output}.")
     else:
         typer.echo(config_yaml)
+
+
+def _stdin_is_tty() -> bool:
+    """Whether stdin is an interactive terminal (indirection kept simple to patch in tests)."""
+    return sys.stdin.isatty()
+
+
+def _resolve_missing_io(extraction: dict) -> Tuple[dict, dict]:
+    """Interactively set the pipeline inputs/outputs the shared prototype (Playground) needs.
+
+    Used as the ``io_resolver`` for the deploy flow (and in --dry-run). It is called with the extraction
+    bundle when inputs or outputs could not be inferred from the pipeline's open sockets. It returns the
+    ``(inputs, outputs)`` dicts to use; empty dicts mean "leave unset" so the deploy proceeds as before.
+
+    It only prompts on an interactive TTY — in CI or with piped input it returns whatever was inferred,
+    keeping the existing warn-and-deploy-without-them behavior.
+    """
+    inferred_inputs = extraction.get("inferred_inputs") or {}
+    inferred_outputs = extraction.get("inferred_outputs") or {}
+    if inferred_inputs and inferred_outputs:
+        return inferred_inputs, inferred_outputs
+    if not _stdin_is_tty():
+        return inferred_inputs, inferred_outputs
+
+    typer.echo(
+        "\nCould not infer the pipeline inputs/outputs required for the shared prototype "
+        "(the Playground query UI)."
+    )
+    if not typer.confirm("Set them now?", default=False):
+        return inferred_inputs, inferred_outputs
+
+    inputs = dict(inferred_inputs)
+    if not inputs:
+        input_sockets = _flatten_sockets(extraction.get("available_inputs") or {})
+        query = _select_socket(input_sockets, "Which socket is the 'query' input?", required=True)
+        if query:
+            inputs["query"] = [query]
+        filters = _select_socket(input_sockets, "Which socket is the 'filters' input?", required=False)
+        if filters:
+            inputs["filters"] = [filters]
+
+    outputs = dict(inferred_outputs)
+    if not outputs:
+        output_sockets = _flatten_sockets(extraction.get("available_outputs") or {})
+        answers = _select_socket(output_sockets, "Which socket is the 'answers' output?", required=False)
+        if answers:
+            outputs["answers"] = answers
+        documents = _select_socket(output_sockets, "Which socket is the 'documents' output?", required=False)
+        if documents:
+            outputs["documents"] = documents
+
+    return inputs, outputs
+
+
+def _flatten_sockets(sockets_by_component: Dict[str, List[str]]) -> List[str]:
+    """Flatten ``{component: [socket, ...]}`` into sorted ``"component.socket"`` paths."""
+    paths = [f"{comp}.{socket}" for comp, sockets in sockets_by_component.items() for socket in sockets]
+    return sorted(paths)
+
+
+def _select_socket(sockets: List[str], prompt: str, *, required: bool) -> Optional[str]:
+    """Prompt the user to pick one socket from a numbered menu.
+
+    :param sockets: The available ``"component.socket"`` paths.
+    :param prompt: The question to show above the menu.
+    :param required: If True the user must pick one; if False a ``0`` skips (returns None).
+    :return: The chosen socket path, or None if skipped or there is nothing to choose from.
+    """
+    if not sockets:
+        return None
+    typer.echo(prompt)
+    for index, socket in enumerate(sockets, start=1):
+        typer.echo(f"  {index}. {socket}")
+    default = "1" if required else "0"
+    hint = "enter a number" if required else "enter a number, or 0 to skip"
+    while True:
+        choice = typer.prompt(f"  Choice ({hint})", default=default)
+        try:
+            number = int(choice)
+        except ValueError:
+            typer.echo("  Please enter a number.")
+            continue
+        if number == 0 and not required:
+            return None
+        if 1 <= number <= len(sockets):
+            return sockets[number - 1]
+        typer.echo("  Out of range.")
 
 
 @cli_app.command()

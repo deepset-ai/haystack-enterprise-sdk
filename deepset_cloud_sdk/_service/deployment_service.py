@@ -100,6 +100,7 @@ class DeploymentService:
         requirements: Optional[Path] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
+        io_resolver: Optional[Callable[[dict], Tuple[dict, dict]]] = None,
         python_executable: Optional[str] = None,
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
@@ -116,6 +117,8 @@ class DeploymentService:
         :param requirements: Optional requirements file overriding dependency autodetection.
         :param inputs: Optional explicit pipeline inputs (overrides inference).
         :param outputs: Optional explicit pipeline outputs (overrides inference).
+        :param io_resolver: Optional callback invoked with the extraction bundle when inputs or outputs
+            could not be inferred; returns ``(inputs, outputs)`` dicts to use (empty means "leave unset").
         :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
         :param timeout_s: Max seconds to poll for activation before detaching.
         :param poll_interval_s: Seconds between activation polls.
@@ -130,6 +133,7 @@ class DeploymentService:
             requirements=requirements,
             inputs=inputs,
             outputs=outputs,
+            io_resolver=io_resolver,
             python_executable=python_executable,
         )
 
@@ -174,19 +178,34 @@ class DeploymentService:
         requirements: Optional[Path] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
+        io_resolver: Optional[Callable[[dict], Tuple[dict, dict]]] = None,
         python_executable: Optional[str] = None,
     ) -> str:
         """Transform ``target`` into deployable YAML without any API calls (used for --dry-run too).
 
         The pipeline is loaded in a subprocess using ``python_executable`` (or an auto-detected venv),
         so this environment does not need the pipeline's dependencies installed.
+
+        Explicit ``inputs``/``outputs`` win; otherwise inferred values are used. When ``io_resolver`` is
+        provided and either side is still empty, it is called with the extraction bundle to obtain them
+        (this is how the CLI prompts the user to set the inputs/outputs the shared prototype needs).
         """
         extraction = pipeline_transform.extract_via_subprocess(target, entrypoint, python_executable)
+
+        resolved_inputs = inputs if inputs is not None else extraction.get("inferred_inputs") or {}
+        resolved_outputs = outputs if outputs is not None else extraction.get("inferred_outputs") or {}
+        if io_resolver is not None and (not resolved_inputs or not resolved_outputs):
+            new_inputs, new_outputs = io_resolver(extraction)
+            if new_inputs:
+                resolved_inputs = new_inputs
+            if new_outputs:
+                resolved_outputs = new_outputs
+
         return pipeline_transform.render_config_yaml(
             extraction,
             requirements=requirements,
-            inputs=inputs,
-            outputs=outputs,
+            inputs=resolved_inputs or None,
+            outputs=resolved_outputs or None,
         )
 
     async def _resolve_or_create(

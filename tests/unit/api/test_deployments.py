@@ -149,7 +149,7 @@ class TestRevisions:
         mocked_deepset_cloud_api.post.assert_called_once_with(
             workspace_name="ws",
             endpoint=f"deployments/{deployment_id}/revisions",
-            json={"config_yaml": "components: {}"},
+            json={"config_yaml": "components: {}", "source_type": "EXTERNAL_PIPELINE"},
         )
 
     async def test_push_revision_tolerates_missing_status(

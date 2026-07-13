@@ -49,6 +49,18 @@ class DeploymentServiceLevel(str, enum.Enum):
     CUSTOM = "CUSTOM"
 
 
+class DeploymentSourceType(str, enum.Enum):
+    """Type of artifact a deployment revision was created from.
+
+    ``PLATFORM_PIPELINE`` revisions are built from a stored query-pipeline version and carry a
+    ``source_version_id``. Revisions pushed by this SDK send inline ``config_yaml`` with no source
+    version, so they are ``EXTERNAL_PIPELINE``.
+    """
+
+    PLATFORM_PIPELINE = "PLATFORM_PIPELINE"
+    EXTERNAL_PIPELINE = "EXTERNAL_PIPELINE"
+
+
 @dataclass
 class Deployment:
     """A service deployment."""
@@ -259,7 +271,9 @@ class DeploymentsAPI:
         response = await self._deepset_cloud_api.post(
             workspace_name=workspace_name,
             endpoint=f"{self._ENDPOINT}/{deployment_id}/revisions",
-            json={"config_yaml": config_yaml},
+            # The SDK pushes self-contained inline YAML with no platform pipeline version behind it,
+            # so the revision's source is EXTERNAL_PIPELINE rather than the default PLATFORM_PIPELINE.
+            json={"config_yaml": config_yaml, "source_type": DeploymentSourceType.EXTERNAL_PIPELINE.value},
         )
         if response.status_code != codes.CREATED:
             logger.error("Failed to push revision.", status_code=response.status_code, body=response.text)
