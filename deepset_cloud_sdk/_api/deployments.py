@@ -214,7 +214,7 @@ class DeploymentsAPI:
         :raises FailedToCreateDeploymentError: If the deployment could not be created.
         :return: The created deployment.
         """
-        payload: Dict[str, Any] = {"name": name}
+        payload: Dict[str, Any] = {"name": name, "source_type": DeploymentSourceType.EXTERNAL_PIPELINE.value}
         if service_level is not None:
             payload["service_level"] = service_level.value
         for key, value in {
