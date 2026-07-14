@@ -64,9 +64,9 @@ def _prototype() -> SharedPrototype:
 
 class TestDeployCommand:
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
-    def test_deploy_without_activate(self, client_cls: Mock) -> None:
+    def test_deploy_skip_activation(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=False)
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--skip-activation"])
         assert result.exit_code == 0
         assert "PENDING" in result.stdout
         _, kwargs = client_cls.return_value.deploy.call_args
@@ -74,9 +74,9 @@ class TestDeployCommand:
         assert "activate" not in kwargs or kwargs["activate"] is False
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
-    def test_deploy_activate_success(self, client_cls: Mock) -> None:
+    def test_deploy_activates_by_default(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=True, status=DeploymentStatus.DEPLOYED)
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--activate"])
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 0
         assert "DEPLOYED" in result.stdout
         _, kwargs = client_cls.return_value.deploy.call_args
@@ -86,14 +86,14 @@ class TestDeployCommand:
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
     def test_deploy_activate_timed_out(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=True, timed_out=True)
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--activate"])
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 0
         assert "still in progress" in result.stdout
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
     def test_deploy_failure_exits_1(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.side_effect = DeploymentFailedError(_deployment(), "check the UI")
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--activate"])
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 1
         assert "check the UI" in result.stdout
 
@@ -106,7 +106,7 @@ class TestDeployCommand:
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
     def test_deploy_create_passes_options(self, client_cls: Mock) -> None:
-        client_cls.return_value.deploy.return_value = _result(activated=False)
+        client_cls.return_value.deploy.return_value = _result(activated=True)
         result = runner.invoke(
             cli_app,
             ["deploy", FIXTURE, "svc", "--create", "--service-level", "PRODUCTION", "--cpu", "2", "--max-replicas", "3"],
@@ -134,7 +134,7 @@ class TestDeployCommand:
 
         client_cls.return_value.deploy.return_value = _result(activated=True)
         client_cls.return_value.create_shared_prototype.return_value = _prototype()
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--activate", "--share"])
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--share"])
         assert result.exit_code == 0
         _, kwargs = client_cls.return_value.deploy.call_args
         assert kwargs["io_resolver"] is _resolve_io_for_share
@@ -151,7 +151,7 @@ class TestDeployCommand:
         result = runner.invoke(
             cli_app,
             [
-                "deploy", FIXTURE, "svc", "--activate", "--share",
+                "deploy", FIXTURE, "svc", "--share",
                 "--share-expiration-days", "7", "--no-share-login-required",
             ],
         )
@@ -161,12 +161,21 @@ class TestDeployCommand:
         assert options.login_required is False
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
-    def test_deploy_share_without_activate_warns(self, client_cls: Mock) -> None:
-        client_cls.return_value.deploy.return_value = _result(activated=False)
-        client_cls.return_value.create_shared_prototype.return_value = _prototype()
+    def test_deploy_share_with_skip_activation_errors(self, client_cls: Mock) -> None:
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--share", "--skip-activation"])
+        assert result.exit_code == 1
+        assert "--share requires activation" in result.stdout
+        client_cls.return_value.deploy.assert_not_called()
+        client_cls.return_value.create_shared_prototype.assert_not_called()
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_deploy_share_skipped_when_not_deployed(self, client_cls: Mock) -> None:
+        # Rollout timed out: the service never reached DEPLOYED, so the prototype must not be attempted.
+        client_cls.return_value.deploy.return_value = _result(activated=True, timed_out=True)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--share"])
         assert result.exit_code == 0
-        assert "only return results once the revision is activated" in result.stdout
+        assert "Skipped shared prototype" in result.stdout
+        client_cls.return_value.create_shared_prototype.assert_not_called()
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
     def test_deploy_share_failure_exits_1(self, client_cls: Mock) -> None:
@@ -174,14 +183,14 @@ class TestDeployCommand:
         client_cls.return_value.create_shared_prototype.side_effect = FailedToCreateSharedPrototypeError(
             "boom"
         )
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--activate", "--share"])
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--share"])
         assert result.exit_code == 1
         assert "could not create the shared prototype" in result.stdout
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
     def test_deploy_interrupt_detaches(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.side_effect = KeyboardInterrupt()
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--activate"])
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 0
         assert "Detached" in result.stdout
 

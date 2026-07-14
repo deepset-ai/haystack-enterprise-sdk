@@ -14,7 +14,7 @@ from yaspin import yaspin
 
 __version__ = version("deepset-cloud-sdk")
 from deepset_cloud_sdk._api.config import DEFAULT_WORKSPACE_NAME, ENV_FILE_PATH
-from deepset_cloud_sdk._api.deployments import DeploymentServiceLevel
+from deepset_cloud_sdk._api.deployments import DeploymentServiceLevel, DeploymentStatus
 from deepset_cloud_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from deepset_cloud_sdk._api.upload_sessions import WriteMode
 from deepset_cloud_sdk._service.deployment_service import (
@@ -348,7 +348,7 @@ def get_upload_session(
 def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     target: Path,
     service_name: str,
-    activate: bool = False,
+    skip_activation: bool = typer.Option(False, "--skip-activation"),
     create: bool = False,
     entrypoint: Optional[str] = None,
     requirements: Optional[Path] = None,
@@ -382,7 +382,8 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
 
     :param target: Path to the Python file that defines the pipeline.
     :param service_name: Name of the target service deployment.
-    :param activate: Activate the new revision and wait for the rollout to finish.
+    :param skip_activation: Push the revision without activating it (skips the rollout and wait).
+        By default the new revision is activated and the CLI waits for the rollout to finish.
     :param create: Create the service if it does not exist (Development sizing unless overridden).
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
     :param requirements: Requirements file (or a pyproject.toml, whose [project].dependencies are
@@ -408,8 +409,11 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param api_url: API URL to use for authentication.
     :param workspace_name: Workspace to deploy into. Uses the workspace from the .ENV file by default.
 
-    Example:
-    `deepset-cloud deploy pipeline.py my-service --activate --create`
+    Example (activates and waits for the rollout by default):
+    `deepset-cloud deploy pipeline.py my-service --create`
+
+    Push a revision without rolling it out:
+    `deepset-cloud deploy pipeline.py my-service --skip-activation`
 
     Preview the transformed YAML without deploying:
     `deepset-cloud deploy pipeline.py my-service --dry-run --output out.yaml`
@@ -433,9 +437,18 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         else None
     )
 
-    # Decide whether to create a shared prototype up front: it drives whether we resolve the
-    # pipeline inputs/outputs (needed for the chat UI) into the deployed YAML.
-    do_share = share if share is not None else _prompt_share()
+    activate = not skip_activation
+
+    # A shared prototype requires the service to be deployed, so it is only offered when we
+    # activate. Deciding this up front also drives whether we resolve the pipeline inputs/outputs
+    # (needed for the chat UI) into the deployed YAML.
+    if skip_activation:
+        if share:
+            typer.echo("--share requires activation; drop --skip-activation to share a prototype.")
+            raise typer.Exit(1)
+        do_share = False
+    else:
+        do_share = share if share is not None else _prompt_share()
     io_resolver = _resolve_io_for_share if do_share else None
 
     try:
@@ -485,7 +498,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     if not activate:
         typer.echo(
             f"Pushed revision {result.revision.revision_id} to '{service_name}' (status: PENDING). "
-            f"Re-run with --activate or activate it in the platform to roll it out."
+            f"Re-run without --skip-activation or activate it in the platform to roll it out."
         )
     elif result.timed_out:
         typer.echo(
@@ -496,20 +509,29 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         typer.echo(f"Service '{service_name}' is now {result.deployment.status.value}.")
 
     if do_share:
-        login_required = (
-            share_login_required if share_login_required is not None else _prompt_login_required()
+        deployed = (not result.timed_out) and result.deployment.status in (
+            DeploymentStatus.DEPLOYED,
+            DeploymentStatus.IDLE,
         )
-        try:
-            prototype = client.create_shared_prototype(
-                service_name,
-                ShareOptions(expiration_days=share_expiration_days, login_required=login_required),
+        if not deployed:
+            typer.echo(
+                f"Skipped shared prototype: '{service_name}' is not deployed yet "
+                f"(status: {result.deployment.status.value}). Create the link in the platform "
+                f"once it is deployed."
             )
-        except FailedToCreateSharedPrototypeError as err:
-            typer.echo(f"Deployed, but could not create the shared prototype link: {err}")
-            raise typer.Exit(1)  # noqa: B904
-        typer.echo(f"Shared prototype link: {prototype.link}")
-        if not activate:
-            typer.echo("The chat UI will only return results once the revision is activated and rolled out.")
+        else:
+            login_required = (
+                share_login_required if share_login_required is not None else _prompt_login_required()
+            )
+            try:
+                prototype = client.create_shared_prototype(
+                    service_name,
+                    ShareOptions(expiration_days=share_expiration_days, login_required=login_required),
+                )
+            except FailedToCreateSharedPrototypeError as err:
+                typer.echo(f"Deployed, but could not create the shared prototype link: {err}")
+                raise typer.Exit(1)  # noqa: B904
+            typer.echo(f"Shared prototype link: {prototype.link}")
 
 
 def _deploy_dry_run(
