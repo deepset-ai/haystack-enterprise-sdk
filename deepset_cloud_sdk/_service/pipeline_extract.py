@@ -114,9 +114,7 @@ def _resolve_pipeline(module: Any, entrypoint: Optional[str], pipeline_types: tu
         return _coerce_to_pipeline(getattr(module, entrypoint), entrypoint, pipeline_types)
 
     instances = {
-        name: obj
-        for name, obj in vars(module).items()
-        if not name.startswith("_") and isinstance(obj, pipeline_types)
+        name: obj for name, obj in vars(module).items() if not name.startswith("_") and isinstance(obj, pipeline_types)
     }
     if len(instances) == 1:
         return next(iter(instances.values()))
@@ -413,9 +411,7 @@ def validate_code_block(comp_name: str, code: str) -> None:
         node for node in tree.body if isinstance(node, ast.ClassDef) and _has_component_decorator(node)
     ]
     if not component_classes:
-        raise PipelineTransformError(
-            f"Component '{comp_name}': no @component class found in the generated code block."
-        )
+        raise PipelineTransformError(f"Component '{comp_name}': no @component class found in the generated code block.")
     if len(component_classes) > 1:
         names = ", ".join(c.name for c in component_classes)
         raise PipelineTransformError(
@@ -458,8 +454,20 @@ def _reject_required_init_params(comp_name: str, class_node: ast.ClassDef) -> No
 # --------------------------------------------------------------------------- #
 # Inputs / outputs inference
 # --------------------------------------------------------------------------- #
+# Open input sockets are mapped to platform inputs by name. Several socket names are
+# conventional synonyms for the same platform input — most importantly ``question``, which is
+# the variable Haystack's own ``PromptBuilder`` templates use for the user query. Mapping these
+# synonyms is what lets the shared prototype (which only ever sends ``query``) reach them.
+_QUERY_SOCKET_NAMES = frozenset({"query", "question"})
+_FILTERS_SOCKET_NAMES = frozenset({"filters"})
+
+
 def infer_inputs(pipeline: Any) -> dict:
-    """Heuristically map open input sockets named ``query``/``filters`` to platform inputs."""
+    """Heuristically map open input sockets to platform ``query``/``filters`` inputs.
+
+    Sockets named ``query`` or its synonyms (see :data:`_QUERY_SOCKET_NAMES`, e.g. ``question``)
+    are routed to the platform ``query`` input; ``filters`` sockets to ``filters``.
+    """
     query: list[str] = []
     filters: list[str] = []
     try:
@@ -468,15 +476,40 @@ def infer_inputs(pipeline: Any) -> dict:
         return {}
     for comp_name, sockets in open_inputs.items():
         for socket_name in sockets:
-            if socket_name == "query":
+            if socket_name in _QUERY_SOCKET_NAMES:
                 query.append(f"{comp_name}.{socket_name}")
-            elif socket_name == "filters":
+            elif socket_name in _FILTERS_SOCKET_NAMES:
                 filters.append(f"{comp_name}.{socket_name}")
     result: dict[str, list[str]] = {}
     if query:
         result["query"] = query
     if filters:
         result["filters"] = filters
+    return result
+
+
+def mandatory_inputs(pipeline: Any) -> dict:
+    """Return the open input sockets that are *mandatory*, as ``{component_name: [socket_name, ...]}``.
+
+    A mandatory socket has no default and is not fed by another component, so the deployed pipeline
+    cannot run unless a platform input maps to it. Callers compare this against the resolved inputs to
+    catch pipelines that would fail at query time with "Missing mandatory input '<socket>'".
+    """
+    try:
+        open_inputs = pipeline.inputs()
+    except Exception:  # noqa: BLE001
+        return {}
+    result: dict[str, list[str]] = {}
+    for comp_name, sockets in open_inputs.items():
+        required = [
+            socket_name
+            for socket_name in sockets
+            if isinstance(sockets, dict)
+            and isinstance(sockets.get(socket_name), dict)
+            and sockets[socket_name].get("is_mandatory")
+        ]
+        if required:
+            result[comp_name] = required
     return result
 
 
@@ -541,7 +574,7 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
     :param project_root: Directory that roots the user's local modules (used to classify imports).
     :return: A bundle with keys ``pipeline`` (dict, local components rewritten to Code),
         ``async_enabled``, ``inferred_inputs``, ``inferred_outputs``, ``available_inputs``,
-        ``available_outputs``, and ``dependencies`` (pinned).
+        ``available_outputs``, ``mandatory_inputs``, and ``dependencies`` (pinned).
     """
     import yaml  # type: ignore[import-untyped]
     from haystack import AsyncPipeline
@@ -574,6 +607,7 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
         "inferred_outputs": infer_outputs(pipeline),
         "available_inputs": available_inputs(pipeline),
         "available_outputs": available_outputs(pipeline),
+        "mandatory_inputs": mandatory_inputs(pipeline),
         "dependencies": pin_dependencies(external_modules),
     }
 

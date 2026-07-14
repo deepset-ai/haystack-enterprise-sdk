@@ -1,5 +1,6 @@
 """The CLI for the deepset AI Platform SDK."""
 
+import functools
 import json
 import sys
 from importlib.metadata import version
@@ -23,7 +24,10 @@ from deepset_cloud_sdk._service.deployment_service import (
     ServiceNotFoundError,
     ShareOptions,
 )
-from deepset_cloud_sdk._service.pipeline_transform import PipelineTransformError
+from deepset_cloud_sdk._service.pipeline_transform import (
+    PipelineTransformError,
+    unmapped_mandatory_inputs,
+)
 from deepset_cloud_sdk.workflows.sync_client.deployment_client import DeploymentClient
 from deepset_cloud_sdk.workflows.sync_client.files import download as sync_download
 from deepset_cloud_sdk.workflows.sync_client.files import (
@@ -362,11 +366,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     python: Optional[str] = None,
     dry_run: bool = False,
     output: Optional[Path] = None,
+    skip_io_validation: bool = typer.Option(False, "--skip-io-validation"),
     share: Optional[bool] = typer.Option(None, "--share/--no-share"),
     share_expiration_days: int = 30,
-    share_login_required: Optional[bool] = typer.Option(
-        None, "--share-login-required/--no-share-login-required"
-    ),
+    share_login_required: Optional[bool] = typer.Option(None, "--share-login-required/--no-share-login-required"),
     api_key: Optional[str] = None,
     api_url: Optional[str] = None,
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
@@ -400,6 +403,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param dry_run: Transform the pipeline and print/write the resulting YAML without deploying. No
         API credentials are needed.
     :param output: With --dry-run, write the transformed YAML to this file instead of stdout.
+    :param skip_io_validation: Deploy even if mandatory pipeline inputs aren't mapped to platform
+        inputs; skips the interactive input/output prompt and deploys with whatever was inferred.
+        Use for arbitrary pipelines you invoke directly rather than via the shared prototype chat UI.
     :param share: Create a shareable prototype link (opens a chat UI) after deploying. Omit to be
         prompted on an interactive terminal; pass --share/--no-share to force the choice.
     :param share_expiration_days: Days until the shared prototype link expires (default 30).
@@ -419,7 +425,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     `deepset-cloud deploy pipeline.py my-service --dry-run --output out.yaml`
     """
     if dry_run:
-        _deploy_dry_run(target, entrypoint, requirements, python, output)
+        _deploy_dry_run(target, entrypoint, requirements, python, output, skip_io_validation)
         return
 
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
@@ -449,7 +455,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         do_share = False
     else:
         do_share = share if share is not None else _prompt_share()
-    io_resolver = _resolve_io_for_share if do_share else None
+    io_resolver = functools.partial(_resolve_io_for_share, skip_validation=skip_io_validation) if do_share else None
 
     try:
         if activate:
@@ -520,9 +526,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 f"once it is deployed."
             )
         else:
-            login_required = (
-                share_login_required if share_login_required is not None else _prompt_login_required()
-            )
+            login_required = share_login_required if share_login_required is not None else _prompt_login_required()
             try:
                 prototype = client.create_shared_prototype(
                     service_name,
@@ -540,13 +544,14 @@ def _deploy_dry_run(
     requirements: Optional[Path],
     python: Optional[str],
     output: Optional[Path],
+    skip_io_validation: bool = False,
 ) -> None:
     """Transform the pipeline and print/write the YAML without contacting the API."""
     from deepset_cloud_sdk._service import pipeline_transform
 
     try:
         extraction = pipeline_transform.extract_via_subprocess(target, entrypoint, python)
-        inputs, outputs = _resolve_io_for_share(extraction)
+        inputs, outputs = _resolve_io_for_share(extraction, skip_validation=skip_io_validation)
         config_yaml = pipeline_transform.render_config_yaml(
             extraction,
             requirements=requirements,
@@ -573,9 +578,7 @@ def _prompt_share() -> bool:
     """Ask whether to create a shareable prototype link. Returns False on a non-interactive terminal."""
     if not _stdin_is_tty():
         return False
-    return typer.confirm(
-        "Create a shareable prototype link (opens a chat UI) for this service?", default=False
-    )
+    return typer.confirm("Create a shareable prototype link (opens a chat UI) for this service?", default=False)
 
 
 def _prompt_login_required() -> bool:
@@ -585,36 +588,61 @@ def _prompt_login_required() -> bool:
     return typer.confirm("Require login to open the shared link?", default=True)
 
 
-def _resolve_io_for_share(extraction: dict) -> Tuple[dict, dict]:
+def _resolve_io_for_share(extraction: dict, *, skip_validation: bool = False) -> Tuple[dict, dict]:
     """Resolve the pipeline inputs/outputs the shared prototype (chat UI) needs.
 
     Used as the ``io_resolver`` for the deploy flow when the user chose to share (and in --dry-run).
     It is called with the extraction bundle; it returns the ``(inputs, outputs)`` dicts to use. When
-    both were inferred from the pipeline's open sockets it returns them as-is. Otherwise, on an
-    interactive TTY, it prompts the user to pick the query/filters and answers/documents sockets;
-    off a TTY it returns whatever was inferred (warn-and-deploy-without-them behavior).
+    inference covered every mandatory input socket and produced outputs it returns them as-is.
+    Otherwise, on an interactive TTY, it prompts the user to map the query/filters and answers/documents
+    sockets — including any *mandatory* socket inference missed, which would otherwise crash the shared
+    prototype at query time. Off a TTY it returns whatever was inferred, warning loudly about unmapped
+    mandatory sockets.
+
+    :param skip_validation: When True (``--skip-io-validation``), skip all prompting and mandatory-input
+        enforcement and return whatever inference produced. For arbitrary pipelines invoked directly
+        rather than via the shared prototype chat UI.
     """
     inferred_inputs = extraction.get("inferred_inputs") or {}
     inferred_outputs = extraction.get("inferred_outputs") or {}
-    if inferred_inputs and inferred_outputs:
+    if skip_validation:
         return inferred_inputs, inferred_outputs
+    unmapped = unmapped_mandatory_inputs(extraction.get("mandatory_inputs") or {}, inferred_inputs)
+
+    # Happy path: every mandatory socket is reachable and we have outputs — nothing to ask.
+    if inferred_inputs and inferred_outputs and not unmapped:
+        return inferred_inputs, inferred_outputs
+
     if not _stdin_is_tty():
+        if unmapped:
+            typer.echo(
+                "Warning: the shared prototype will fail at query time — these mandatory pipeline "
+                f"inputs are not mapped to any platform input: {', '.join(unmapped)}. Re-run on a "
+                "terminal to map them interactively, or pass an explicit inputs mapping."
+            )
         return inferred_inputs, inferred_outputs
 
     typer.echo(
-        "\nCould not infer the pipeline inputs/outputs required for the shared prototype "
+        "\nCould not fully infer the pipeline inputs/outputs required for the shared prototype "
         "(the chat UI). Please select them."
     )
 
-    inputs = dict(inferred_inputs)
-    if not inputs:
-        input_sockets = _flatten_sockets(extraction.get("available_inputs") or {})
+    inputs = {key: list(sockets) for key, sockets in inferred_inputs.items()}
+    input_sockets = _flatten_sockets(extraction.get("available_inputs") or {})
+    if not inputs.get("query"):
         query = _select_socket(input_sockets, "Which socket is the 'query' input?", required=True)
         if query:
-            inputs["query"] = [query]
+            inputs.setdefault("query", []).append(query)
+    if not inputs.get("filters"):
         filters = _select_socket(input_sockets, "Which socket is the 'filters' input?", required=False)
         if filters:
-            inputs["filters"] = [filters]
+            inputs.setdefault("filters", []).append(filters)
+
+    # Any mandatory socket still unmapped would crash the prototype at query time — map each one.
+    for socket in unmapped_mandatory_inputs(extraction.get("mandatory_inputs") or {}, inputs):
+        key = _select_input_key_for_socket(socket)
+        if socket not in inputs.setdefault(key, []):
+            inputs[key].append(socket)
 
     outputs = dict(inferred_outputs)
     if not outputs:
@@ -662,6 +690,20 @@ def _select_socket(sockets: List[str], prompt: str, *, required: bool) -> Option
         if 1 <= number <= len(sockets):
             return sockets[number - 1]
         typer.echo("  Out of range.")
+
+
+def _select_input_key_for_socket(socket: str) -> str:
+    """Ask which platform input should feed an otherwise-unmapped mandatory socket.
+
+    Returns the chosen input key (``"query"`` or ``"filters"``); defaults to ``"query"`` since the
+    shared prototype's chat box sends the user text under ``query``.
+    """
+    typer.echo(
+        f"Mandatory input '{socket}' is not mapped to any platform input; "
+        "the shared prototype would fail at query time without it."
+    )
+    choice = _select_socket(["query", "filters"], f"  Which input feeds '{socket}'?", required=True)
+    return choice or "query"
 
 
 @cli_app.command()

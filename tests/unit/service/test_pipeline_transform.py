@@ -23,6 +23,7 @@ from deepset_cloud_sdk._service.pipeline_transform import (
     load_pipeline_from_file,
     render_config_yaml,
     transform_to_config_yaml,
+    unmapped_mandatory_inputs,
 )
 
 FIXTURE_DIR = Path(__file__).parent.parent.parent / "test_data" / "deploy"
@@ -332,6 +333,78 @@ class TestInputsOutputsAndDeps:
         bundle = extract_from_pipeline(pipeline, project_root=tmp_path)
         assert set(bundle["available_inputs"]["searcher"]) == {"query", "filters"}
         assert set(bundle["available_outputs"]["searcher"]) == {"answers", "documents"}
+
+    def _prompt_builder_project(self, tmp_path: Path) -> Path:
+        """A summarization-style pipeline whose only open input is a ``question`` prompt variable."""
+        return _write_project(
+            tmp_path,
+            {
+                "pipeline.py": """
+                from haystack import Pipeline
+                from haystack.components.builders.prompt_builder import PromptBuilder
+
+                pipeline = Pipeline()
+                pipeline.add_component(
+                    "prompt_builder",
+                    PromptBuilder(template="Passage: {{ question }}", required_variables="*"),
+                )
+                """,
+            },
+        )
+
+    def test_infers_question_socket_as_query(self, tmp_path: Path) -> None:
+        # Regression: a PromptBuilder using {{ question }} must be routed to the platform `query`
+        # input, otherwise the shared prototype fails with "Missing mandatory input 'question'".
+        pipeline = load_pipeline_from_file(self._prompt_builder_project(tmp_path))
+        doc = _load_yaml(transform_to_config_yaml(pipeline, project_root=tmp_path))
+        assert doc["inputs"]["query"] == ["prompt_builder.question"]
+
+    def test_bundle_reports_mandatory_inputs(self, tmp_path: Path) -> None:
+        pipeline = load_pipeline_from_file(self._prompt_builder_project(tmp_path))
+        bundle = extract_from_pipeline(pipeline, project_root=tmp_path)
+        assert bundle["mandatory_inputs"]["prompt_builder"] == ["question"]
+
+    def test_unmapped_mandatory_input_warns(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        # A mandatory socket whose name inference doesn't recognize must be surfaced, not shipped silently.
+        path = _write_project(
+            tmp_path,
+            {
+                "custom/__init__.py": "",
+                "custom/summarizer.py": """
+                from typing import List
+                from haystack import component
+
+                @component
+                class Summarizer:
+                    @component.output_types(answers=List[str])
+                    def run(self, passage: str):
+                        return {"answers": [passage]}
+                """,
+                "pipeline.py": """
+                from haystack import Pipeline
+                from custom.summarizer import Summarizer
+
+                pipeline = Pipeline()
+                pipeline.add_component("summarizer", Summarizer())
+                """,
+            },
+        )
+        pipeline = load_pipeline_from_file(path)
+        doc = _load_yaml(transform_to_config_yaml(pipeline, project_root=tmp_path))
+        # `passage` is not recognized as query/filters, so it is left unmapped...
+        assert "query" not in doc.get("inputs", {})
+        # ...and the deploy warns that it will fail at query time.
+        assert "summarizer.passage" in caplog.text
+
+    def test_unmapped_mandatory_inputs_helper(self) -> None:
+        mandatory = {"prompt_builder": ["question"], "searcher": ["query"]}
+        inputs = {"query": ["searcher.query"]}
+        assert unmapped_mandatory_inputs(mandatory, inputs) == ["prompt_builder.question"]
+
+    def test_unmapped_mandatory_inputs_helper_all_mapped(self) -> None:
+        mandatory = {"prompt_builder": ["question"]}
+        inputs = {"query": ["prompt_builder.question", "answer_builder.query"]}
+        assert unmapped_mandatory_inputs(mandatory, inputs) == []
 
     def test_requirements_file_overrides_autodetect(self, tmp_path: Path) -> None:
         pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")

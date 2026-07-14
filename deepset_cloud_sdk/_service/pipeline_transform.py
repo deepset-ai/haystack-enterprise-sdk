@@ -44,6 +44,7 @@ __all__ = [
     "render_config_yaml",
     "transform_to_config_yaml",
     "detect_project_python",
+    "unmapped_mandatory_inputs",
 ]
 
 # Interpreter names to look for inside a discovered virtual environment.
@@ -79,6 +80,15 @@ def render_config_yaml(
             "the Playground query UI will be unavailable. Pass inputs/outputs explicitly to enable it."
         )
 
+    unmapped = unmapped_mandatory_inputs(extraction.get("mandatory_inputs") or {}, resolved_inputs)
+    if unmapped:
+        logger.warning(
+            "Deploying with mandatory pipeline inputs not mapped to any platform input: %s. "
+            'The pipeline will fail at query time with "Missing mandatory input". Pass an explicit '
+            "`inputs` mapping that routes a platform input (e.g. `query`) to each of these sockets.",
+            ", ".join(unmapped),
+        )
+
     if extraction.get("async_enabled"):
         pipeline_dict["async_enabled"] = True
 
@@ -93,6 +103,22 @@ def render_config_yaml(
     if dependency_block:
         config_yaml = f"{config_yaml}\n{dependency_block}"
     return config_yaml
+
+
+def unmapped_mandatory_inputs(mandatory: dict, inputs: dict) -> list[str]:
+    """Return the mandatory ``"component.socket"`` paths not covered by any platform ``inputs`` mapping.
+
+    :param mandatory: ``{component_name: [socket_name, ...]}`` mandatory open sockets (from the bundle).
+    :param inputs: The resolved platform inputs mapping (``{input_key: ["component.socket", ...]}``).
+    :return: Sorted list of ``"component.socket"`` paths that no input routes to.
+    """
+    mapped = {socket for sockets in (inputs or {}).values() for socket in sockets}
+    return sorted(
+        f"{comp}.{socket}"
+        for comp, sockets in (mandatory or {}).items()
+        for socket in sockets
+        if f"{comp}.{socket}" not in mapped
+    )
 
 
 def transform_to_config_yaml(
@@ -142,9 +168,7 @@ def extract_via_subprocess(
         completed = subprocess.run(cmd, capture_output=True, text=True, check=False)  # noqa: S603
         if completed.returncode != 0:
             message = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
-            raise PipelineTransformError(
-                f"Failed to load the pipeline using interpreter '{python}':\n{message}"
-            )
+            raise PipelineTransformError(f"Failed to load the pipeline using interpreter '{python}':\n{message}")
         out_file.seek(0)
         bundle: dict = json.load(out_file)
         return bundle
@@ -176,11 +200,7 @@ def _build_dependency_block(dependencies: list, requirements: Optional[Path]) ->
     if not lines:
         return ""
     body = "\n".join(f"#   - {line}" for line in lines)
-    return (
-        "# Custom dependencies (not yet supported; uncomment once the feature is live):\n"
-        "# dependencies:\n"
-        f"{body}\n"
-    )
+    return f"# Custom dependencies (not yet supported; uncomment once the feature is live):\n# dependencies:\n{body}\n"
 
 
 def _read_requirements(requirements: Path) -> list:
