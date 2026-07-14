@@ -119,7 +119,13 @@ class TestCreate:
         mocked_deepset_cloud_api.post.assert_called_once_with(
             workspace_name="ws",
             endpoint="deployments",
-            json={"name": "svc", "service_level": "PRODUCTION", "max_query_replica_count": 3, "cpu_limit": "2"},
+            json={
+                "name": "svc",
+                "source_type": "EXTERNAL_PIPELINE",
+                "service_level": "PRODUCTION",
+                "max_query_replica_count": 3,
+                "cpu_limit": "2",
+            },
         )
 
     async def test_create_deployment_minimal_payload(
@@ -128,7 +134,7 @@ class TestCreate:
         mocked_deepset_cloud_api.post.return_value = _resp(codes.CREATED, json=_deployment_body("svc"))
         await deployments_api.create_deployment("ws", name="svc")
         _, kwargs = mocked_deepset_cloud_api.post.call_args
-        assert kwargs["json"] == {"name": "svc"}
+        assert kwargs["json"] == {"name": "svc", "source_type": "EXTERNAL_PIPELINE"}
 
     async def test_create_deployment_failure_raises(
         self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock

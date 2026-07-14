@@ -385,7 +385,8 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param activate: Activate the new revision and wait for the rollout to finish.
     :param create: Create the service if it does not exist (Development sizing unless overridden).
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
-    :param requirements: Requirements file to use instead of autodetecting dependencies.
+    :param requirements: Requirements file (or a pyproject.toml, whose [project].dependencies are
+        used) to source dependencies from instead of autodetecting them.
     :param service_level: Service sizing tier when creating the service.
     :param min_replicas: Minimum query replicas (with --create).
     :param max_replicas: Maximum query replicas (with --create).

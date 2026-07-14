@@ -59,7 +59,8 @@ def render_config_yaml(
     """Render deployable YAML from an extraction bundle.
 
     :param extraction: A bundle produced by the extractor (see :func:`extract_from_pipeline`).
-    :param requirements: Optional requirements file whose lines override the extracted dependencies.
+    :param requirements: Optional requirements file (or ``pyproject.toml``) whose dependencies
+        override the extracted ones.
     :param inputs: Optional explicit inputs dict; overrides the inferred inputs.
     :param outputs: Optional explicit outputs dict; overrides the inferred outputs.
     :return: The platform-ready ``config_yaml`` string.
@@ -169,11 +170,7 @@ def detect_project_python(target: Path) -> str:
 def _build_dependency_block(dependencies: list, requirements: Optional[Path]) -> str:
     """Build a commented, ready-to-uncomment ``dependencies`` block (a no-op until the feature ships)."""
     if requirements is not None:
-        lines = [
-            line.strip()
-            for line in requirements.read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
+        lines = _read_requirements(requirements)
     else:
         lines = list(dependencies)
     if not lines:
@@ -184,3 +181,38 @@ def _build_dependency_block(dependencies: list, requirements: Optional[Path]) ->
         "# dependencies:\n"
         f"{body}\n"
     )
+
+
+def _read_requirements(requirements: Path) -> list:
+    """Read dependency specifiers from a requirements file or a ``pyproject.toml``.
+
+    A ``pyproject.toml`` (matched by file name) is parsed for its PEP 621 ``[project].dependencies``;
+    any other file is treated as a plain requirements list (one specifier per line, ``#`` comments and
+    blank lines ignored).
+    """
+    if requirements.name == "pyproject.toml":
+        return _read_pyproject_dependencies(requirements)
+    return [
+        line.strip()
+        for line in requirements.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+def _read_pyproject_dependencies(pyproject: Path) -> list:
+    """Extract ``[project].dependencies`` (PEP 621) from a ``pyproject.toml``.
+
+    :raises PipelineTransformError: If the file cannot be parsed as TOML.
+    """
+    try:
+        import tomllib  # noqa: PLC0415  (stdlib from 3.11)
+    except ModuleNotFoundError:  # Python 3.9/3.10
+        import tomli as tomllib  # noqa: PLC0415
+
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as err:
+        raise PipelineTransformError(f"Failed to parse '{pyproject}' as TOML: {err}") from err
+
+    dependencies = data.get("project", {}).get("dependencies", [])
+    return [str(dep).strip() for dep in dependencies if str(dep).strip()]

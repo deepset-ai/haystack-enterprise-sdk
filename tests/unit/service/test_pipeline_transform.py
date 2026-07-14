@@ -342,6 +342,32 @@ class TestInputsOutputsAndDeps:
         assert "#   - numpy==1.26.4" in config_yaml
         assert "requests" not in config_yaml.split("# Custom dependencies")[1]
 
+    def test_pyproject_toml_dependencies_override_autodetect(self, tmp_path: Path) -> None:
+        pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "demo"\ndependencies = ["trafilatura==1.6.0", "numpy>=1.26"]\n',
+            encoding="utf-8",
+        )
+        config_yaml = transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR, requirements=pyproject)
+        assert "#   - trafilatura==1.6.0" in config_yaml
+        assert "#   - numpy>=1.26" in config_yaml
+        assert "requests" not in config_yaml.split("# Custom dependencies")[1]
+
+    def test_pyproject_toml_without_dependencies_omits_block(self, tmp_path: Path) -> None:
+        pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text('[project]\nname = "demo"\n', encoding="utf-8")
+        config_yaml = transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR, requirements=pyproject)
+        assert "# Custom dependencies" not in config_yaml
+
+    def test_malformed_pyproject_toml_raises(self, tmp_path: Path) -> None:
+        pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text("[project\nname = broken", encoding="utf-8")
+        with pytest.raises(PipelineTransformError):
+            transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR, requirements=pyproject)
+
 
 # --------------------------------------------------------------------------- #
 # classify_module
