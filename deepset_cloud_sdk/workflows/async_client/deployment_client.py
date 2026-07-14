@@ -13,12 +13,14 @@ from deepset_cloud_sdk._api.config import (
 )
 from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
 from deepset_cloud_sdk._api.deployments import Deployment, DeploymentStatus
+from deepset_cloud_sdk._api.shared_prototypes import SharedPrototype
 from deepset_cloud_sdk._service.deployment_service import (
     DEFAULT_ACTIVATION_TIMEOUT_S,
     DEFAULT_POLL_INTERVAL_S,
     CreateOptions,
     DeploymentService,
     DeployResult,
+    ShareOptions,
 )
 
 logger = structlog.get_logger(__name__)
@@ -104,3 +106,14 @@ class AsyncDeploymentClient:
         async with DeepsetCloudAPI.factory(self._api_config) as api:
             service = DeploymentService(api, self._workspace_name)
             return await service.get_service_status(service_name)
+
+    async def create_shared_prototype(
+        self, service_name: str, options: Optional[ShareOptions] = None
+    ) -> SharedPrototype:
+        """Create a shared prototype (a shareable chat UI link) for a deployed service.
+
+        See :meth:`deepset_cloud_sdk._service.deployment_service.DeploymentService.create_shared_prototype`.
+        """
+        async with DeepsetCloudAPI.factory(self._api_config) as api:
+            service = DeploymentService(api, self._workspace_name)
+            return await service.create_shared_prototype(service_name, options)

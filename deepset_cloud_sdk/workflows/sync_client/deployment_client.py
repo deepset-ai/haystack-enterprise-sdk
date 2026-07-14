@@ -7,11 +7,13 @@ from typing import Awaitable, Callable, Optional, Tuple, TypeVar
 import structlog
 
 from deepset_cloud_sdk._api.deployments import Deployment, DeploymentStatus
+from deepset_cloud_sdk._api.shared_prototypes import SharedPrototype
 from deepset_cloud_sdk._service.deployment_service import (
     DEFAULT_ACTIVATION_TIMEOUT_S,
     DEFAULT_POLL_INTERVAL_S,
     CreateOptions,
     DeployResult,
+    ShareOptions,
 )
 from deepset_cloud_sdk.workflows.async_client.deployment_client import (
     AsyncDeploymentClient,
@@ -106,3 +108,9 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
     def get_service_status(self, service_name: str) -> Deployment:
         """Return the current deployment (with live runtime status) for ``service_name``."""
         return _run(self._async_client.get_service_status(service_name))
+
+    def create_shared_prototype(
+        self, service_name: str, options: Optional[ShareOptions] = None
+    ) -> SharedPrototype:
+        """Create a shared prototype (a shareable chat UI link) for a deployed service synchronously."""
+        return _run(self._async_client.create_shared_prototype(service_name, options))

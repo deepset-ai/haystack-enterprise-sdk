@@ -15,11 +15,13 @@ from yaspin import yaspin
 __version__ = version("deepset-cloud-sdk")
 from deepset_cloud_sdk._api.config import DEFAULT_WORKSPACE_NAME, ENV_FILE_PATH
 from deepset_cloud_sdk._api.deployments import DeploymentServiceLevel
+from deepset_cloud_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from deepset_cloud_sdk._api.upload_sessions import WriteMode
 from deepset_cloud_sdk._service.deployment_service import (
     CreateOptions,
     DeploymentFailedError,
     ServiceNotFoundError,
+    ShareOptions,
 )
 from deepset_cloud_sdk._service.pipeline_transform import PipelineTransformError
 from deepset_cloud_sdk.workflows.sync_client.deployment_client import DeploymentClient
@@ -360,6 +362,11 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     python: Optional[str] = None,
     dry_run: bool = False,
     output: Optional[Path] = None,
+    share: Optional[bool] = typer.Option(None, "--share/--no-share"),
+    share_expiration_days: int = 30,
+    share_login_required: Optional[bool] = typer.Option(
+        None, "--share-login-required/--no-share-login-required"
+    ),
     api_key: Optional[str] = None,
     api_url: Optional[str] = None,
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
@@ -391,6 +398,11 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param dry_run: Transform the pipeline and print/write the resulting YAML without deploying. No
         API credentials are needed.
     :param output: With --dry-run, write the transformed YAML to this file instead of stdout.
+    :param share: Create a shareable prototype link (opens a chat UI) after deploying. Omit to be
+        prompted on an interactive terminal; pass --share/--no-share to force the choice.
+    :param share_expiration_days: Days until the shared prototype link expires (default 30).
+    :param share_login_required: Whether recipients must log in to open the shared link. Omit to be
+        prompted when sharing interactively (default require login).
     :param api_key: deepset API key to use for authentication.
     :param api_url: API URL to use for authentication.
     :param workspace_name: Workspace to deploy into. Uses the workspace from the .ENV file by default.
@@ -420,6 +432,11 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         else None
     )
 
+    # Decide whether to create a shared prototype up front: it drives whether we resolve the
+    # pipeline inputs/outputs (needed for the chat UI) into the deployed YAML.
+    do_share = share if share is not None else _prompt_share()
+    io_resolver = _resolve_io_for_share if do_share else None
+
     try:
         if activate:
             with yaspin().arc as spinner:
@@ -436,7 +453,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     create_options=create_options,
                     entrypoint=entrypoint,
                     requirements=requirements,
-                    io_resolver=_resolve_missing_io,
+                    io_resolver=io_resolver,
                     python_executable=python,
                     on_status=_on_status,
                 )
@@ -448,7 +465,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 create_options=create_options,
                 entrypoint=entrypoint,
                 requirements=requirements,
-                io_resolver=_resolve_missing_io,
+                io_resolver=io_resolver,
                 python_executable=python,
             )
     except KeyboardInterrupt:
@@ -477,6 +494,22 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     else:
         typer.echo(f"Service '{service_name}' is now {result.deployment.status.value}.")
 
+    if do_share:
+        login_required = (
+            share_login_required if share_login_required is not None else _prompt_login_required()
+        )
+        try:
+            prototype = client.create_shared_prototype(
+                service_name,
+                ShareOptions(expiration_days=share_expiration_days, login_required=login_required),
+            )
+        except FailedToCreateSharedPrototypeError as err:
+            typer.echo(f"Deployed, but could not create the shared prototype link: {err}")
+            raise typer.Exit(1)  # noqa: B904
+        typer.echo(f"Shared prototype link: {prototype.link}")
+        if not activate:
+            typer.echo("The chat UI will only return results once the revision is activated and rolled out.")
+
 
 def _deploy_dry_run(
     target: Path,
@@ -490,7 +523,7 @@ def _deploy_dry_run(
 
     try:
         extraction = pipeline_transform.extract_via_subprocess(target, entrypoint, python)
-        inputs, outputs = _resolve_missing_io(extraction)
+        inputs, outputs = _resolve_io_for_share(extraction)
         config_yaml = pipeline_transform.render_config_yaml(
             extraction,
             requirements=requirements,
@@ -513,15 +546,30 @@ def _stdin_is_tty() -> bool:
     return sys.stdin.isatty()
 
 
-def _resolve_missing_io(extraction: dict) -> Tuple[dict, dict]:
-    """Interactively set the pipeline inputs/outputs the shared prototype (Playground) needs.
+def _prompt_share() -> bool:
+    """Ask whether to create a shareable prototype link. Returns False on a non-interactive terminal."""
+    if not _stdin_is_tty():
+        return False
+    return typer.confirm(
+        "Create a shareable prototype link (opens a chat UI) for this service?", default=False
+    )
 
-    Used as the ``io_resolver`` for the deploy flow (and in --dry-run). It is called with the extraction
-    bundle when inputs or outputs could not be inferred from the pipeline's open sockets. It returns the
-    ``(inputs, outputs)`` dicts to use; empty dicts mean "leave unset" so the deploy proceeds as before.
 
-    It only prompts on an interactive TTY — in CI or with piped input it returns whatever was inferred,
-    keeping the existing warn-and-deploy-without-them behavior.
+def _prompt_login_required() -> bool:
+    """Ask whether the shared link should require login. Returns True (the safe default) on non-TTY."""
+    if not _stdin_is_tty():
+        return True
+    return typer.confirm("Require login to open the shared link?", default=True)
+
+
+def _resolve_io_for_share(extraction: dict) -> Tuple[dict, dict]:
+    """Resolve the pipeline inputs/outputs the shared prototype (chat UI) needs.
+
+    Used as the ``io_resolver`` for the deploy flow when the user chose to share (and in --dry-run).
+    It is called with the extraction bundle; it returns the ``(inputs, outputs)`` dicts to use. When
+    both were inferred from the pipeline's open sockets it returns them as-is. Otherwise, on an
+    interactive TTY, it prompts the user to pick the query/filters and answers/documents sockets;
+    off a TTY it returns whatever was inferred (warn-and-deploy-without-them behavior).
     """
     inferred_inputs = extraction.get("inferred_inputs") or {}
     inferred_outputs = extraction.get("inferred_outputs") or {}
@@ -532,10 +580,8 @@ def _resolve_missing_io(extraction: dict) -> Tuple[dict, dict]:
 
     typer.echo(
         "\nCould not infer the pipeline inputs/outputs required for the shared prototype "
-        "(the Playground query UI)."
+        "(the chat UI). Please select them."
     )
-    if not typer.confirm("Set them now?", default=False):
-        return inferred_inputs, inferred_outputs
 
     inputs = dict(inferred_inputs)
     if not inputs:

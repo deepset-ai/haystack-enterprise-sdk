@@ -57,3 +57,26 @@ def test_get_service_status_forwards(async_cls: Mock) -> None:
 
     assert result is deployment
     async_instance.get_service_status.assert_awaited_once_with("svc")
+
+
+@patch("deepset_cloud_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
+def test_create_shared_prototype_forwards(async_cls: Mock) -> None:
+    from deepset_cloud_sdk._api.shared_prototypes import SharedPrototype
+    from deepset_cloud_sdk._service.deployment_service import ShareOptions
+
+    prototype = SharedPrototype(
+        shared_prototype_id=uuid4(),
+        link="https://app/shared_prototypes?share_token=tok",
+        expiration_date="2026-08-12T00:00:00+00:00",
+        is_revoked=False,
+        service_names=["svc"],
+    )
+    async_instance = async_cls.return_value
+    async_instance.create_shared_prototype = AsyncMock(return_value=prototype)
+
+    client = DeploymentClient()
+    options = ShareOptions(expiration_days=7, login_required=False)
+    result = client.create_shared_prototype("svc", options)
+
+    assert result is prototype
+    async_instance.create_shared_prototype.assert_awaited_once_with("svc", options)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 from uuid import UUID
@@ -18,6 +19,10 @@ from deepset_cloud_sdk._api.deployments import (
     DeploymentsAPI,
     DeploymentServiceLevel,
     DeploymentStatus,
+)
+from deepset_cloud_sdk._api.shared_prototypes import (
+    SharedPrototype,
+    SharedPrototypesAPI,
 )
 from deepset_cloud_sdk._service import pipeline_transform
 
@@ -52,6 +57,19 @@ class DeployResult:
     revision: DeploymentRevision
     activated: bool
     timed_out: bool
+
+
+@dataclass
+class ShareOptions:
+    """Options for creating a shared prototype (chat UI link) for a deployed service."""
+
+    expiration_days: int = 30
+    login_required: bool = True
+    description: Optional[str] = None
+    show_metadata_filters: bool = False
+    show_files: bool = False
+    file_upload_enabled: bool = False
+    runtime_params_enabled: bool = False
 
 
 class ServiceNotFoundError(Exception):
@@ -168,6 +186,35 @@ class DeploymentService:
         if deployment is None:
             raise ServiceNotFoundError(f"No service deployment named '{service_name}' in workspace '{self._workspace_name}'.")
         return await self._deployments.get_deployment(self._workspace_name, deployment.deployment_id)
+
+    async def create_shared_prototype(
+        self, service_name: str, options: Optional[ShareOptions] = None
+    ) -> SharedPrototype:
+        """Create a shared prototype (a shareable chat UI link) for a deployed service.
+
+        The link opens a chat UI backed by the deployed service. The service must exist; its chat
+        only returns results once a revision has been activated and rolled out.
+
+        :param service_name: Name of the deployed service to share.
+        :param options: Share options (expiration, login requirement, exposed inputs/outputs).
+            Defaults to a 30-day, login-required link.
+        :raises FailedToCreateSharedPrototypeError: If the shared prototype could not be created.
+        :return: The created shared prototype, including its shareable ``link``.
+        """
+        options = options or ShareOptions()
+        expiration_date = (datetime.now(timezone.utc) + timedelta(days=options.expiration_days)).isoformat()
+        prototypes = SharedPrototypesAPI(self._api)
+        return await prototypes.create(
+            self._workspace_name,
+            service_name=service_name,
+            expiration_date=expiration_date,
+            login_required=options.login_required,
+            description=options.description,
+            show_metadata_filters=options.show_metadata_filters,
+            show_files=options.show_files,
+            file_upload_enabled=options.file_upload_enabled,
+            runtime_params_enabled=options.runtime_params_enabled,
+        )
 
     # ------------------------------------------------------------------ #
     def build_config_yaml(

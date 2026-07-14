@@ -215,3 +215,42 @@ class TestGetServiceStatus:
         service._deployments.find_by_name.return_value = None
         with pytest.raises(ServiceNotFoundError):
             await service.get_service_status("svc")
+
+
+@pytest.mark.asyncio
+class TestCreateSharedPrototype:
+    async def test_computes_expiration_and_forwards_options(
+        self, service: DeploymentService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from datetime import datetime, timezone
+
+        from deepset_cloud_sdk._api.shared_prototypes import SharedPrototype
+        from deepset_cloud_sdk._service.deployment_service import ShareOptions
+
+        prototype = SharedPrototype(
+            shared_prototype_id=uuid4(),
+            link="https://app/shared_prototypes?share_token=tok",
+            expiration_date="d",
+            is_revoked=False,
+            service_names=["svc"],
+        )
+        api_mock = AsyncMock()
+        api_mock.create.return_value = prototype
+        monkeypatch.setattr(
+            "deepset_cloud_sdk._service.deployment_service.SharedPrototypesAPI",
+            lambda _api: api_mock,
+        )
+
+        result = await service.create_shared_prototype(
+            "svc", ShareOptions(expiration_days=7, login_required=False, show_files=True)
+        )
+
+        assert result is prototype
+        _, kwargs = api_mock.create.call_args
+        assert kwargs["service_name"] == "svc"
+        assert kwargs["login_required"] is False
+        assert kwargs["show_files"] is True
+        # expiration_date is ~7 days out, ISO 8601 with timezone
+        expiry = datetime.fromisoformat(kwargs["expiration_date"])
+        delta_days = (expiry - datetime.now(timezone.utc)).total_seconds() / 86400
+        assert 6.9 < delta_days < 7.1

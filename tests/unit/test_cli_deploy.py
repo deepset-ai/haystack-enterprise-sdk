@@ -13,6 +13,10 @@ from deepset_cloud_sdk._api.deployments import (
     DeploymentServiceLevel,
     DeploymentStatus,
 )
+from deepset_cloud_sdk._api.shared_prototypes import (
+    FailedToCreateSharedPrototypeError,
+    SharedPrototype,
+)
 from deepset_cloud_sdk._service.deployment_service import (
     DeploymentFailedError,
     DeployResult,
@@ -46,6 +50,16 @@ def _result(activated: bool, timed_out: bool = False, status: DeploymentStatus =
         config_hash="hash",
     )
     return DeployResult(deployment=deployment, revision=revision, activated=activated, timed_out=timed_out)
+
+
+def _prototype() -> SharedPrototype:
+    return SharedPrototype(
+        shared_prototype_id=uuid4(),
+        link="https://app.example/shared_prototypes?share_token=tok",
+        expiration_date="2026-08-12T00:00:00+00:00",
+        is_revoked=False,
+        service_names=["svc"],
+    )
 
 
 class TestDeployCommand:
@@ -105,14 +119,64 @@ class TestDeployCommand:
         assert options.max_query_replica_count == 3
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
-    def test_deploy_forwards_io_resolver(self, client_cls: Mock) -> None:
-        from deepset_cloud_sdk.cli import _resolve_missing_io
-
+    def test_deploy_no_share_omits_io_resolver(self, client_cls: Mock) -> None:
+        # Default (non-interactive, no --share): deploy as-is, no io_resolver, no prototype.
         client_cls.return_value.deploy.return_value = _result(activated=False)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 0
         _, kwargs = client_cls.return_value.deploy.call_args
-        assert kwargs["io_resolver"] is _resolve_missing_io
+        assert kwargs["io_resolver"] is None
+        client_cls.return_value.create_shared_prototype.assert_not_called()
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_deploy_share_forwards_io_resolver_and_creates_prototype(self, client_cls: Mock) -> None:
+        from deepset_cloud_sdk.cli import _resolve_io_for_share
+
+        client_cls.return_value.deploy.return_value = _result(activated=True)
+        client_cls.return_value.create_shared_prototype.return_value = _prototype()
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--activate", "--share"])
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.deploy.call_args
+        assert kwargs["io_resolver"] is _resolve_io_for_share
+        assert "https://app.example/shared_prototypes?share_token=tok" in result.stdout
+        service_name, options = client_cls.return_value.create_shared_prototype.call_args.args
+        assert service_name == "svc"
+        assert options.expiration_days == 30
+        assert options.login_required is True
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_deploy_share_flags_forward_to_options(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=True)
+        client_cls.return_value.create_shared_prototype.return_value = _prototype()
+        result = runner.invoke(
+            cli_app,
+            [
+                "deploy", FIXTURE, "svc", "--activate", "--share",
+                "--share-expiration-days", "7", "--no-share-login-required",
+            ],
+        )
+        assert result.exit_code == 0
+        _, options = client_cls.return_value.create_shared_prototype.call_args.args
+        assert options.expiration_days == 7
+        assert options.login_required is False
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_deploy_share_without_activate_warns(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        client_cls.return_value.create_shared_prototype.return_value = _prototype()
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--share"])
+        assert result.exit_code == 0
+        assert "only return results once the revision is activated" in result.stdout
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_deploy_share_failure_exits_1(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=True)
+        client_cls.return_value.create_shared_prototype.side_effect = FailedToCreateSharedPrototypeError(
+            "boom"
+        )
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--activate", "--share"])
+        assert result.exit_code == 1
+        assert "could not create the shared prototype" in result.stdout
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
     def test_deploy_interrupt_detaches(self, client_cls: Mock) -> None:
@@ -175,7 +239,6 @@ class TestDryRun:
         }
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"])
         assert result.exit_code == 0
-        assert "Set them now?" not in result.stdout
         assert "inputs:" not in result.stdout
 
     @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
@@ -190,29 +253,13 @@ class TestDryRun:
             "available_outputs": {"reader": ["answers", "documents"]},
             "dependencies": [],
         }
-        # confirm=y, query=1, filters=skip(0), answers=1, documents=skip(0)
+        # query=1, filters=skip(0), answers=1, documents=skip(0) — no confirm step anymore
         result = runner.invoke(
-            cli_app, ["deploy", FIXTURE, "svc", "--dry-run"], input="y\n1\n0\n1\n0\n"
+            cli_app, ["deploy", FIXTURE, "svc", "--dry-run"], input="1\n0\n1\n0\n"
         )
         assert result.exit_code == 0
         assert "retriever.query" in result.stdout
         assert "reader.answers" in result.stdout
-
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
-    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
-    def test_dry_run_prompt_declined_omits_io(self, extract_mock: Mock, _isatty: Mock) -> None:
-        extract_mock.return_value = {
-            "pipeline": {"components": {}},
-            "async_enabled": False,
-            "inferred_inputs": {},
-            "inferred_outputs": {},
-            "available_inputs": {"retriever": ["query"]},
-            "available_outputs": {"reader": ["answers"]},
-            "dependencies": [],
-        }
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"], input="n\n")
-        assert result.exit_code == 0
-        assert "inputs:" not in result.stdout
 
 
 class TestServiceStatusCommand:
