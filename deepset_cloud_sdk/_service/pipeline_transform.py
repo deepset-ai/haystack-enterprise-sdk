@@ -188,14 +188,15 @@ def detect_project_python(target: Path) -> str:
 
 
 def _build_dependency_block(dependencies: list) -> str:
-    """Build the ``dependencies`` YAML block that pins the Haystack version, e.g.::
+    """Build the commented-out ``dependencies`` YAML block that pins the Haystack version, e.g.::
 
-        dependencies:
-          - haystack-ai==2.30.2
+        # dependencies:
+        #   - haystack-ai==2.30.2
 
-    Returns an empty string when there is nothing to pin.
+    The block is emitted commented out so it does not affect deployment by default; users can
+    uncomment it to pin the listed dependencies. Returns an empty string when there is nothing to pin.
     """
     if not dependencies:
         return ""
-    body = "\n".join(f"  - {line}" for line in dependencies)
-    return f"dependencies:\n{body}\n"
+    body = "\n".join(f"#   - {line}" for line in dependencies)
+    return f"# dependencies:\n{body}\n"
