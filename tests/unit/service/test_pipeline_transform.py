@@ -50,7 +50,7 @@ def _write_project(root: Path, files: dict) -> Path:
 
 
 def _load_yaml(config_yaml: str) -> dict:
-    base = config_yaml.split("\n# Custom dependencies")[0]
+    base = config_yaml.split("\ndependencies:")[0]
     return YAML().load(base)
 
 
@@ -84,13 +84,16 @@ class TestTransformFixture:
         doc = _load_yaml(transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR))
         assert doc["components"]["prompt_builder"]["type"].startswith("haystack.")
 
-    def test_dependency_block_is_commented_and_pinned(self) -> None:
+    def test_dependency_block_pins_haystack_version(self) -> None:
         pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
         config_yaml = transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR)
-        assert "# dependencies:" in config_yaml
-        assert "#   - requests==" in config_yaml
-        # base packages are never listed
-        assert "haystack" not in config_yaml.split("# Custom dependencies")[1]
+        # a real, uncommented dependencies block pinning only the executing haystack-ai version
+        assert "\ndependencies:\n" in config_yaml
+        block = config_yaml.split("\ndependencies:\n")[1]
+        assert "  - haystack-ai==" in block
+        assert "#" not in block
+        # user packages are never listed in the dependency block
+        assert "requests" not in block
 
     def test_roundtrips_through_haystack_and_platform_parser(self) -> None:
         pytest.importorskip("deepset_cloud_custom_nodes")
@@ -98,7 +101,7 @@ class TestTransformFixture:
 
         pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
         config_yaml = transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR)
-        base = config_yaml.split("\n# Custom dependencies")[0]
+        base = config_yaml.split("\ndependencies:")[0]
         doc = _load_yaml(config_yaml)
         for name, comp in doc["components"].items():
             if comp["type"] == CODE_COMPONENT_TYPE:
@@ -406,41 +409,6 @@ class TestInputsOutputsAndDeps:
         inputs = {"query": ["prompt_builder.question", "answer_builder.query"]}
         assert unmapped_mandatory_inputs(mandatory, inputs) == []
 
-    def test_requirements_file_overrides_autodetect(self, tmp_path: Path) -> None:
-        pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
-        req = tmp_path / "requirements.txt"
-        req.write_text("# a comment\ntrafilatura==1.6.0\nnumpy==1.26.4\n", encoding="utf-8")
-        config_yaml = transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR, requirements=req)
-        assert "#   - trafilatura==1.6.0" in config_yaml
-        assert "#   - numpy==1.26.4" in config_yaml
-        assert "requests" not in config_yaml.split("# Custom dependencies")[1]
-
-    def test_pyproject_toml_dependencies_override_autodetect(self, tmp_path: Path) -> None:
-        pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text(
-            '[project]\nname = "demo"\ndependencies = ["trafilatura==1.6.0", "numpy>=1.26"]\n',
-            encoding="utf-8",
-        )
-        config_yaml = transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR, requirements=pyproject)
-        assert "#   - trafilatura==1.6.0" in config_yaml
-        assert "#   - numpy>=1.26" in config_yaml
-        assert "requests" not in config_yaml.split("# Custom dependencies")[1]
-
-    def test_pyproject_toml_without_dependencies_omits_block(self, tmp_path: Path) -> None:
-        pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text('[project]\nname = "demo"\n', encoding="utf-8")
-        config_yaml = transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR, requirements=pyproject)
-        assert "# Custom dependencies" not in config_yaml
-
-    def test_malformed_pyproject_toml_raises(self, tmp_path: Path) -> None:
-        pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
-        pyproject = tmp_path / "pyproject.toml"
-        pyproject.write_text("[project\nname = broken", encoding="utf-8")
-        with pytest.raises(PipelineTransformError):
-            transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR, requirements=pyproject)
-
 
 # --------------------------------------------------------------------------- #
 # classify_module
@@ -482,11 +450,12 @@ class TestSubprocessExtraction:
     def test_extract_via_subprocess_roundtrips(self) -> None:
         # Uses the current interpreter, which has haystack installed.
         extraction = extract_via_subprocess(FIXTURE_DIR / "pipeline.py", python_executable=sys.executable)
-        assert any(dep.startswith("requests==") for dep in extraction["dependencies"])
+        assert any(dep.startswith("haystack-ai==") for dep in extraction["dependencies"])
         config_yaml = render_config_yaml(extraction)
         assert CODE_COMPONENT_TYPE in config_yaml
         assert "class Greeter" in config_yaml
-        assert "# dependencies:" in config_yaml
+        assert "\ndependencies:\n" in config_yaml
+        assert "  - haystack-ai==" in config_yaml
 
     def test_extract_via_subprocess_missing_dep_errors(self, tmp_path: Path) -> None:
         path = _write_project(tmp_path, {"pipeline.py": "import a_missing_module_xyz\n"})

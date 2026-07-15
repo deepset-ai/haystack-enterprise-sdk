@@ -115,7 +115,6 @@ class DeploymentService:
         create: bool = False,
         create_options: Optional[CreateOptions] = None,
         entrypoint: Optional[str] = None,
-        requirements: Optional[Path] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
         io_resolver: Optional[Callable[[dict], Tuple[dict, dict]]] = None,
@@ -132,7 +131,6 @@ class DeploymentService:
         :param create: If True, create the service when it does not exist.
         :param create_options: Sizing options used when creating the service.
         :param entrypoint: Name of the pipeline instance/factory when the file is ambiguous.
-        :param requirements: Optional requirements file overriding dependency autodetection.
         :param inputs: Optional explicit pipeline inputs (overrides inference).
         :param outputs: Optional explicit pipeline outputs (overrides inference).
         :param io_resolver: Optional callback invoked with the extraction bundle when inputs or outputs
@@ -148,7 +146,6 @@ class DeploymentService:
         config_yaml = self.build_config_yaml(
             target,
             entrypoint=entrypoint,
-            requirements=requirements,
             inputs=inputs,
             outputs=outputs,
             io_resolver=io_resolver,
@@ -222,7 +219,6 @@ class DeploymentService:
         target: Path,
         *,
         entrypoint: Optional[str] = None,
-        requirements: Optional[Path] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
         io_resolver: Optional[Callable[[dict], Tuple[dict, dict]]] = None,
@@ -250,7 +246,6 @@ class DeploymentService:
 
         return pipeline_transform.render_config_yaml(
             extraction,
-            requirements=requirements,
             inputs=resolved_inputs or None,
             outputs=resolved_outputs or None,
         )

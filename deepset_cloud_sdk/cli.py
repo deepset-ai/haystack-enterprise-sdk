@@ -355,7 +355,6 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     skip_activation: bool = typer.Option(False, "--skip-activation"),
     create: bool = False,
     entrypoint: Optional[str] = None,
-    requirements: Optional[Path] = None,
     service_level: Optional[DeploymentServiceLevel] = None,
     min_replicas: Optional[int] = None,
     max_replicas: Optional[int] = None,
@@ -377,7 +376,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     """Deploy a Haystack pipeline defined in a local Python file to a service deployment.
 
     Transforms the pipeline (rewriting local custom components into the platform Code component and
-    extracting dependencies), then pushes it as a new revision of the given service.
+    pinning the executing Haystack version), then pushes it as a new revision of the given service.
 
     The pipeline is loaded in your project's Python environment (auto-detected virtualenv, or the
     interpreter given by --python), so this CLI's own environment does not need your pipeline's
@@ -389,8 +388,6 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         By default the new revision is activated and the CLI waits for the rollout to finish.
     :param create: Create the service if it does not exist (Development sizing unless overridden).
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
-    :param requirements: Requirements file (or a pyproject.toml, whose [project].dependencies are
-        used) to source dependencies from instead of autodetecting them.
     :param service_level: Service sizing tier when creating the service.
     :param min_replicas: Minimum query replicas (with --create).
     :param max_replicas: Maximum query replicas (with --create).
@@ -425,7 +422,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     `deepset-cloud deploy pipeline.py my-service --dry-run --output out.yaml`
     """
     if dry_run:
-        _deploy_dry_run(target, entrypoint, requirements, python, output, skip_io_validation)
+        _deploy_dry_run(target, entrypoint, python, output, skip_io_validation)
         return
 
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
@@ -472,7 +469,6 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     create=create,
                     create_options=create_options,
                     entrypoint=entrypoint,
-                    requirements=requirements,
                     io_resolver=io_resolver,
                     python_executable=python,
                     on_status=_on_status,
@@ -484,7 +480,6 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 create=create,
                 create_options=create_options,
                 entrypoint=entrypoint,
-                requirements=requirements,
                 io_resolver=io_resolver,
                 python_executable=python,
             )
@@ -541,7 +536,6 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
 def _deploy_dry_run(
     target: Path,
     entrypoint: Optional[str],
-    requirements: Optional[Path],
     python: Optional[str],
     output: Optional[Path],
     skip_io_validation: bool = False,
@@ -554,7 +548,6 @@ def _deploy_dry_run(
         inputs, outputs = _resolve_io_for_share(extraction, skip_validation=skip_io_validation)
         config_yaml = pipeline_transform.render_config_yaml(
             extraction,
-            requirements=requirements,
             inputs=inputs or None,
             outputs=outputs or None,
         )

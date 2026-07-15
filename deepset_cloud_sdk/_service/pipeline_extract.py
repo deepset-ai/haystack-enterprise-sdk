@@ -38,10 +38,6 @@ logger = logging.getLogger(__name__)
 # The platform component that runs arbitrary user code.
 CODE_COMPONENT_TYPE = "deepset_cloud_custom_nodes.code.code_component.Code"
 
-# Packages that are part of the runtime base image. Their imports must never be inlined and they must
-# never appear in the extracted-dependencies block.
-BASE_PACKAGES = {"haystack", "haystack_experimental", "deepset_cloud_custom_nodes"}
-
 # A DocumentWriter is the tell-tale sign of an indexing pipeline, which v1 does not support.
 _INDEX_MARKER_SUFFIXES = ("DocumentWriter",)
 
@@ -259,17 +255,6 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
-def _distribution_name(module_name: str) -> str:
-    """Best-effort import-name -> distribution-name mapping (e.g. ``cv2`` -> ``opencv-python``)."""
-    root = module_name.split(".")[0]
-    try:
-        mapping = importlib.metadata.packages_distributions()
-    except Exception:  # noqa: BLE001 - fall back to the import name
-        return root
-    dists = mapping.get(root)
-    return dists[0] if dists else root
-
-
 # --------------------------------------------------------------------------- #
 # Transitive local inlining
 # --------------------------------------------------------------------------- #
@@ -289,7 +274,6 @@ class _ModuleSymbols:
         # bound-name -> (local module, original name) for `from <local> import x`
         self.local_import_bindings: dict[str, tuple[str, str]] = {}
         self.preserved_import_lines: list[str] = []
-        self.external_modules: set[str] = set()
         self._index(project_root)
 
     def _segment(self, node: ast.AST) -> str:
@@ -323,8 +307,6 @@ class _ModuleSymbols:
                     self.local_import_bindings[alias.asname or alias.name] = (mod, alias.name)
                 return
             self.preserved_import_lines.append(self._segment(node))
-            if kind == "external":
-                self.external_modules.add(mod.split(".")[0])
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 kind = classify_module(alias.name, project_root)
@@ -333,17 +315,15 @@ class _ModuleSymbols:
                     continue
                 line = f"import {alias.name}" + (f" as {alias.asname}" if alias.asname else "")
                 self.preserved_import_lines.append(line)
-                if kind == "external":
-                    self.external_modules.add(alias.name.split(".")[0])
 
 
 def _referenced_names(node: ast.AST) -> set[str]:
     return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
 
 
-def _build_code_block(component_type: str, project_root: Path) -> tuple[str, set[str]]:
+def _build_code_block(component_type: str, project_root: Path) -> str:
     """Build a self-contained code string for ``component_type`` (a fully-qualified class name),
-    transitively inlining local symbols. Returns ``(code, external_module_roots)``."""
+    transitively inlining local symbols."""
     module_name, _, class_name = component_type.rpartition(".")
 
     caches: dict[str, _ModuleSymbols] = {}
@@ -354,7 +334,6 @@ def _build_code_block(component_type: str, project_root: Path) -> tuple[str, set
         return caches[mod]
 
     preserved_imports: list[str] = []
-    external_modules: set[str] = set()
     emitted: list[tuple[str, str, str]] = []  # (module, symbol, source)
     seen: set[tuple[str, str]] = set()
     worklist: list[tuple[str, str]] = [(module_name, class_name)]
@@ -368,7 +347,6 @@ def _build_code_block(component_type: str, project_root: Path) -> tuple[str, set
         for line in idx.preserved_import_lines:
             if line and line not in preserved_imports:
                 preserved_imports.append(line)
-        external_modules.update(idx.external_modules)
         if sym not in idx.defs:
             continue
         for ref in _referenced_names(idx.def_nodes[sym]):
@@ -393,7 +371,7 @@ def _build_code_block(component_type: str, project_root: Path) -> tuple[str, set
         parts.append("\n".join(preserved_imports))
     parts.extend(ordered)
     code = "\n\n\n".join(parts) + "\n"
-    return code, external_modules
+    return code
 
 
 # --------------------------------------------------------------------------- #
@@ -551,17 +529,17 @@ def available_outputs(pipeline: Any) -> dict:
     return {comp_name: list(sockets) for comp_name, sockets in open_outputs.items() if sockets}
 
 
-def pin_dependencies(external_modules: set[str]) -> list[str]:
-    """Version-pin external dependency import-roots, excluding base-image packages."""
-    distributions = sorted({_distribution_name(mod) for mod in external_modules if mod not in BASE_PACKAGES})
-    pinned: list[str] = []
-    for dist in distributions:
-        try:
-            pinned.append(f"{dist}=={importlib.metadata.version(dist)}")
-        except importlib.metadata.PackageNotFoundError:
-            logger.warning("Could not pin a version for dependency '%s'; listing it unpinned.", dist)
-            pinned.append(dist)
-    return pinned
+def _haystack_dependency() -> list[str]:
+    """Pin the ``haystack-ai`` version the pipeline is executing under, for the ``dependencies`` block.
+
+    Runs in the pipeline's own interpreter, where ``haystack-ai`` is installed. Returns an empty list
+    (so no block is rendered) if the version cannot be determined.
+    """
+    try:
+        return [f"haystack-ai=={importlib.metadata.version('haystack-ai')}"]
+    except importlib.metadata.PackageNotFoundError:
+        logger.warning("Could not determine the installed haystack-ai version; omitting the dependencies block.")
+        return []
 
 
 # --------------------------------------------------------------------------- #
@@ -574,7 +552,8 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
     :param project_root: Directory that roots the user's local modules (used to classify imports).
     :return: A bundle with keys ``pipeline`` (dict, local components rewritten to Code),
         ``async_enabled``, ``inferred_inputs``, ``inferred_outputs``, ``available_inputs``,
-        ``available_outputs``, ``mandatory_inputs``, and ``dependencies`` (pinned).
+        ``available_outputs``, ``mandatory_inputs``, and ``dependencies`` (the executing
+        ``haystack-ai`` version).
     """
     import yaml  # type: ignore[import-untyped]
     from haystack import AsyncPipeline
@@ -582,7 +561,6 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
     project_root = Path(project_root).resolve()
     pipeline_dict = yaml.safe_load(pipeline.dumps())
 
-    external_modules: set[str] = set()
     components = pipeline_dict.get("components", {}) or {}
     for comp_name, comp in components.items():
         comp_type = comp.get("type", "")
@@ -590,9 +568,8 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
         if classify_module(module_name, project_root) != "local":
             continue
         logger.debug("Rewriting local component '%s' (%s) to Code", comp_name, comp_type)
-        code, deps = _build_code_block(comp_type, project_root)
+        code = _build_code_block(comp_type, project_root)
         validate_code_block(comp_name, code)
-        external_modules.update(deps)
         original_init = comp.get("init_parameters", {}) or {}
         new_init: dict[str, Any] = {"code": code}
         if original_init:
@@ -608,7 +585,7 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
         "available_inputs": available_inputs(pipeline),
         "available_outputs": available_outputs(pipeline),
         "mandatory_inputs": mandatory_inputs(pipeline),
-        "dependencies": pin_dependencies(external_modules),
+        "dependencies": _haystack_dependency(),
     }
 
 

@@ -53,15 +53,12 @@ _VENV_PYTHONS = ("bin/python", "bin/python3", "Scripts/python.exe")
 
 def render_config_yaml(
     extraction: dict,
-    requirements: Optional[Path] = None,
     inputs: Optional[dict] = None,
     outputs: Optional[dict] = None,
 ) -> str:
     """Render deployable YAML from an extraction bundle.
 
     :param extraction: A bundle produced by the extractor (see :func:`extract_from_pipeline`).
-    :param requirements: Optional requirements file (or ``pyproject.toml``) whose dependencies
-        override the extracted ones.
     :param inputs: Optional explicit inputs dict; overrides the inferred inputs.
     :param outputs: Optional explicit outputs dict; overrides the inferred outputs.
     :return: The platform-ready ``config_yaml`` string.
@@ -99,7 +96,7 @@ def render_config_yaml(
     yaml.dump(pipeline_dict, buffer)
     config_yaml = buffer.getvalue()
 
-    dependency_block = _build_dependency_block(extraction.get("dependencies") or [], requirements)
+    dependency_block = _build_dependency_block(extraction.get("dependencies") or [])
     if dependency_block:
         config_yaml = f"{config_yaml}\n{dependency_block}"
     return config_yaml
@@ -124,7 +121,6 @@ def unmapped_mandatory_inputs(mandatory: dict, inputs: dict) -> list[str]:
 def transform_to_config_yaml(
     pipeline: Any,
     project_root: Path,
-    requirements: Optional[Path] = None,
     inputs: Optional[dict] = None,
     outputs: Optional[dict] = None,
 ) -> str:
@@ -135,7 +131,7 @@ def transform_to_config_yaml(
     :func:`extract_via_subprocess` instead to avoid that requirement.
     """
     extraction = extract_from_pipeline(pipeline, Path(project_root))
-    return render_config_yaml(extraction, requirements=requirements, inputs=inputs, outputs=outputs)
+    return render_config_yaml(extraction, inputs=inputs, outputs=outputs)
 
 
 def extract_via_subprocess(
@@ -191,48 +187,15 @@ def detect_project_python(target: Path) -> str:
     return sys.executable
 
 
-def _build_dependency_block(dependencies: list, requirements: Optional[Path]) -> str:
-    """Build a commented, ready-to-uncomment ``dependencies`` block (a no-op until the feature ships)."""
-    if requirements is not None:
-        lines = _read_requirements(requirements)
-    else:
-        lines = list(dependencies)
-    if not lines:
+def _build_dependency_block(dependencies: list) -> str:
+    """Build the ``dependencies`` YAML block that pins the Haystack version, e.g.::
+
+        dependencies:
+          - haystack-ai==2.30.2
+
+    Returns an empty string when there is nothing to pin.
+    """
+    if not dependencies:
         return ""
-    body = "\n".join(f"#   - {line}" for line in lines)
-    return f"# Custom dependencies (not yet supported; uncomment once the feature is live):\n# dependencies:\n{body}\n"
-
-
-def _read_requirements(requirements: Path) -> list:
-    """Read dependency specifiers from a requirements file or a ``pyproject.toml``.
-
-    A ``pyproject.toml`` (matched by file name) is parsed for its PEP 621 ``[project].dependencies``;
-    any other file is treated as a plain requirements list (one specifier per line, ``#`` comments and
-    blank lines ignored).
-    """
-    if requirements.name == "pyproject.toml":
-        return _read_pyproject_dependencies(requirements)
-    return [
-        line.strip()
-        for line in requirements.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
-
-
-def _read_pyproject_dependencies(pyproject: Path) -> list:
-    """Extract ``[project].dependencies`` (PEP 621) from a ``pyproject.toml``.
-
-    :raises PipelineTransformError: If the file cannot be parsed as TOML.
-    """
-    try:
-        import tomllib  # noqa: PLC0415  (stdlib from 3.11)
-    except ModuleNotFoundError:  # Python 3.9/3.10
-        import tomli as tomllib  # noqa: PLC0415
-
-    try:
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as err:
-        raise PipelineTransformError(f"Failed to parse '{pyproject}' as TOML: {err}") from err
-
-    dependencies = data.get("project", {}).get("dependencies", [])
-    return [str(dep).strip() for dep in dependencies if str(dep).strip()]
+    body = "\n".join(f"  - {line}" for line in dependencies)
+    return f"dependencies:\n{body}\n"

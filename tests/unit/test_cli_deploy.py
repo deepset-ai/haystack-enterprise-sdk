@@ -234,13 +234,14 @@ class TestDryRun:
             "async_enabled": False,
             "inferred_inputs": {},
             "inferred_outputs": {},
-            "dependencies": ["requests==2.32.5"],
+            "dependencies": ["haystack-ai==2.30.2"],
         }
         with patch("deepset_cloud_sdk.cli.DeploymentClient") as client_cls:
             result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"])
         assert result.exit_code == 0
         assert "haystack.X" in result.stdout
-        assert "# dependencies:" in result.stdout
+        assert "dependencies:" in result.stdout
+        assert "- haystack-ai==2.30.2" in result.stdout
         client_cls.assert_not_called()  # dry-run never touches the API
 
     @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
