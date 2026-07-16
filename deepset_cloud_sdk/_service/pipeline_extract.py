@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 import importlib
 import importlib.metadata
 import importlib.util
@@ -271,7 +272,7 @@ class _ModuleSymbols:
         self.source_lines = self.source.splitlines()
         self.tree = ast.parse(self.source)
         self.defs: dict[str, str] = {}
-        self.def_nodes: dict[str, ast.AST] = {}
+        self.def_nodes: dict[str, ast.stmt] = {}
         # bound-name -> (local module, original name) for `from <local> import x`
         self.local_import_bindings: dict[str, tuple[str, str]] = {}
         self.preserved_import_lines: list[str] = []
@@ -324,20 +325,249 @@ def _referenced_names(node: ast.AST) -> list[str]:
     return list(dict.fromkeys(n.id for n in ast.walk(node) if isinstance(n, ast.Name)))
 
 
+# --------------------------------------------------------------------------- #
+# Folding helpers into the component class
+# --------------------------------------------------------------------------- #
+# The platform's Code component keeps ONLY the single ``@component`` class at runtime; any other
+# module-level ``def``/``class``/constant is inaccessible and breaks the deployed pipeline. So every
+# inlined helper is folded *into* the component class (functions -> @staticmethod, constants -> class
+# attributes, helper classes -> nested classes) and every reference to a folded symbol is rewritten to
+# the class-qualified form ``ClassName.<symbol>``.
+
+# Nodes that open a new (non-module, non-class) name scope. A function's locals are decided by
+# scanning its body WITHOUT descending into these — Python's whole-function locality rule.
+_SCOPE_BOUNDARIES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ClassDef,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+
+
+def _iter_same_scope(nodes: Any) -> Any:
+    """Yield ``nodes`` and their descendants without crossing into a nested scope.
+
+    A scope-boundary node (nested function/class/lambda/comprehension) is yielded but not descended
+    into, so its inner bindings do not leak into the enclosing scope's analysis.
+    """
+    for node in nodes:
+        yield node
+        if isinstance(node, _SCOPE_BOUNDARIES):
+            continue
+        yield from _iter_same_scope(ast.iter_child_nodes(node))
+
+
+def _arg_names(args: ast.arguments) -> set[str]:
+    """Return every parameter name declared by ``args`` (positional, keyword-only, *args, **kwargs)."""
+    names = {a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
+    if args.vararg:
+        names.add(args.vararg.arg)
+    if args.kwarg:
+        names.add(args.kwarg.arg)
+    return names
+
+
+def _local_bindings(fn: Any) -> set[str]:
+    """Return the names bound locally in a function scope (so a matching symbol ref must stay bare).
+
+    Covers parameters plus every name assigned anywhere in the body — assignment targets,
+    ``for``/``with as``/``except as`` targets, walrus targets, imports, and nested def/class names —
+    minus names declared ``global``/``nonlocal`` (which do not create a local binding).
+    """
+    bound = _arg_names(fn.args)
+    declared_global: set[str] = set()
+    for node in _iter_same_scope(fn.body):
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            declared_global.update(node.names)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bound.add(node.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            bound.add(node.target.id)
+    return bound - declared_global
+
+
+def _lambda_bindings(node: ast.Lambda) -> set[str]:
+    """Return names bound in a lambda scope (parameters plus any walrus targets in its body)."""
+    bound = _arg_names(node.args)
+    for child in _iter_same_scope([node.body]):
+        if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+            bound.add(child.target.id)
+    return bound
+
+
+def _comprehension_bindings(node: ast.AST) -> set[str]:
+    """Return names bound in a comprehension scope (``for`` targets plus walrus targets)."""
+    bound: set[str] = set()
+    for gen in node.generators:  # type: ignore[attr-defined]
+        for name in _iter_same_scope([gen.target]):
+            if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store):
+                bound.add(name.id)
+    for child in ast.walk(node):
+        if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+            bound.add(child.target.id)
+    return bound
+
+
+class _QualifyReferences(ast.NodeTransformer):
+    """Rewrite bare references to folded symbols into ``ClassName.<symbol>``.
+
+    Only references that execute at *call time* (inside a function body) are qualified — at that point
+    the class exists and the class namespace is not in lexical scope. References that execute at
+    *class-definition time* (constant values, method decorators/defaults/annotations, nested-class
+    bases) are left bare, because ``ClassName`` is not yet bound there.
+    """
+
+    def __init__(self, entry_class: str, symbols: set[str]) -> None:
+        self.entry_class = entry_class
+        self.symbols = symbols
+        self.func_depth = 0
+        self.scopes: list[set[str]] = []
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        if (
+            isinstance(node.ctx, ast.Load)
+            and node.id in self.symbols
+            and self.func_depth > 0
+            and not any(node.id in scope for scope in self.scopes)
+        ):
+            qualified = ast.Attribute(
+                value=ast.Name(id=self.entry_class, ctx=ast.Load()),
+                attr=node.id,
+                ctx=ast.Load(),
+            )
+            return ast.copy_location(qualified, node)
+        return node
+
+    def _visit_signature(self, args: ast.arguments, returns: Optional[ast.AST]) -> None:
+        # Defaults and annotations are evaluated in the ENCLOSING scope, so visit them at the current
+        # depth (before the new function scope is opened by the caller).
+        args.defaults = [self.visit(d) for d in args.defaults]
+        args.kw_defaults = [self.visit(d) if d is not None else None for d in args.kw_defaults]
+        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg):
+            if arg is not None and arg.annotation is not None:
+                arg.annotation = self.visit(arg.annotation)
+        if returns is not None:
+            self.visit(returns)
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.AST:
+        node.decorator_list = [self.visit(d) for d in node.decorator_list]
+        self._visit_signature(node.args, None)
+        if node.returns is not None:
+            node.returns = self.visit(node.returns)
+        self.func_depth += 1
+        self.scopes.append(_local_bindings(node))
+        node.body = [self.visit(stmt) for stmt in node.body]
+        self.scopes.pop()
+        self.func_depth -= 1
+        return node
+
+    visit_FunctionDef = _visit_function
+    visit_AsyncFunctionDef = _visit_function
+
+    def visit_Lambda(self, node: ast.Lambda) -> ast.AST:
+        self._visit_signature(node.args, None)
+        self.func_depth += 1
+        self.scopes.append(_lambda_bindings(node))
+        node.body = self.visit(node.body)
+        self.scopes.pop()
+        self.func_depth -= 1
+        return node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+        # A class body is its own (non-function) scope: its names are not visible to nested method
+        # bodies, so we do not push a shadowing scope and do not treat it as a function body.
+        node.decorator_list = [self.visit(d) for d in node.decorator_list]
+        node.bases = [self.visit(b) for b in node.bases]
+        node.keywords = [self.visit(k) for k in node.keywords]
+        node.body = [self.visit(stmt) for stmt in node.body]
+        return node
+
+    def _visit_comprehension(self, node: ast.AST) -> ast.AST:
+        self.func_depth += 1
+        self.scopes.append(_comprehension_bindings(node))
+        self.generic_visit(node)
+        self.scopes.pop()
+        self.func_depth -= 1
+        return node
+
+    visit_ListComp = _visit_comprehension
+    visit_SetComp = _visit_comprehension
+    visit_DictComp = _visit_comprehension
+    visit_GeneratorExp = _visit_comprehension
+
+
+def _class_scope_load_names(class_node: ast.ClassDef) -> list[str]:
+    """Return names *loaded at class-definition time* in ``class_node`` (excluding function bodies).
+
+    These are references in constant values, method decorators/defaults/annotations, and nested-class
+    bases/decorators — the places where a folded-symbol reference can neither stay bare (defined later
+    in the body) nor be class-qualified (the class is not yet bound). Used to reject un-transformable
+    inputs early.
+    """
+    names: list[str] = []
+
+    def collect(node: ast.AST) -> None:
+        for child in _iter_same_scope([node]):
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
+                names.append(child.id)
+
+    for stmt in class_node.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for dec in stmt.decorator_list:
+                collect(dec)
+            for default in (*stmt.args.defaults, *stmt.args.kw_defaults):
+                if default is not None:
+                    collect(default)
+            for arg in (*stmt.args.posonlyargs, *stmt.args.args, *stmt.args.kwonlyargs, stmt.args.vararg, stmt.args.kwarg):
+                if arg is not None and arg.annotation is not None:
+                    collect(arg.annotation)
+            if stmt.returns is not None:
+                collect(stmt.returns)
+        elif isinstance(stmt, ast.ClassDef):
+            for dec in stmt.decorator_list:
+                collect(dec)
+            for base in stmt.bases:
+                collect(base)
+            for kw in stmt.keywords:
+                collect(kw.value)
+            names.extend(_class_scope_load_names(stmt))
+        else:
+            collect(stmt)
+    return names
+
+
 def _build_code_block(component_type: str, project_root: Path) -> str:
-    """Build a self-contained code string for ``component_type`` (a fully-qualified class name),
-    transitively inlining local symbols."""
+    """Build a self-contained code string for ``component_type`` (a fully-qualified class name).
+
+    Transitively collects the component's local helpers and folds them INTO the component class so the
+    generated code has nothing at module level except imports and the single ``@component`` class (the
+    only shape the platform Code component runs correctly).
+    """
     module_name, _, class_name = component_type.rpartition(".")
 
     caches: dict[str, _ModuleSymbols] = {}
 
-    def symbols(mod: str) -> _ModuleSymbols:
+    def module_symbols(mod: str) -> _ModuleSymbols:
         if mod not in caches:
             caches[mod] = _ModuleSymbols(mod, project_root)
         return caches[mod]
 
     preserved_imports: list[str] = []
-    emitted: list[tuple[str, str, str]] = []  # (module, symbol, source)
+    # BFS closure over local symbols, keeping AST nodes (not source text) so we can restructure.
+    helpers: list[tuple[str, ast.stmt]] = []  # (symbol name, AST node), in discovery order
+    entry_node: Optional[ast.ClassDef] = None
+    by_name: dict[str, tuple[str, str]] = {}  # symbol name -> (module, symbol) that first claimed it
     seen: set[tuple[str, str]] = set()
     worklist: list[tuple[str, str]] = [(module_name, class_name)]
 
@@ -346,12 +576,13 @@ def _build_code_block(component_type: str, project_root: Path) -> str:
         if (mod, sym) in seen:
             continue
         seen.add((mod, sym))
-        idx = symbols(mod)
+        idx = module_symbols(mod)
         for line in idx.preserved_import_lines:
             if line and line not in preserved_imports:
                 preserved_imports.append(line)
         if sym not in idx.defs:
             continue
+        node = copy.deepcopy(idx.def_nodes[sym])
         for ref in _referenced_names(idx.def_nodes[sym]):
             if ref == sym:
                 continue
@@ -359,22 +590,126 @@ def _build_code_block(component_type: str, project_root: Path) -> str:
                 worklist.append(idx.local_import_bindings[ref])
             elif ref in idx.defs:
                 worklist.append((mod, ref))
-        emitted.append((mod, sym, idx.defs[sym]))
+        if mod == module_name and sym == class_name and isinstance(node, ast.ClassDef):
+            entry_node = node
+            continue
+        if sym in by_name and by_name[sym] != (mod, sym):
+            raise PipelineTransformError(
+                f"Component '{class_name}': two different local helpers named '{sym}' were pulled in "
+                f"(from '{by_name[sym][0]}' and '{mod}'). Rename one so they can be folded into the "
+                "component class without colliding."
+            )
+        by_name[sym] = (mod, sym)
+        helpers.append((sym, node))
 
-    # Emit helpers first, the component class last, de-duplicating identical segments.
-    entry_segments = [seg for (m, s, seg) in emitted if m == module_name and s == class_name]
-    helper_segments = [seg for (m, s, seg) in emitted if not (m == module_name and s == class_name)]
-    ordered: list[str] = []
-    for seg in helper_segments + entry_segments:
-        if seg not in ordered:
-            ordered.append(seg)
+    if entry_node is None:
+        raise PipelineTransformError(
+            f"Could not find the component class '{class_name}' to inline for type '{component_type}'."
+        )
+
+    code = _fold_helpers_into_class(class_name, entry_node, helpers)
 
     parts: list[str] = []
     if preserved_imports:
         parts.append("\n".join(preserved_imports))
-    parts.extend(ordered)
-    code = "\n\n\n".join(parts) + "\n"
-    return code
+    parts.append(code)
+    return "\n\n\n".join(parts) + "\n"
+
+
+def _fold_helpers_into_class(
+    class_name: str,
+    entry_node: ast.ClassDef,
+    helpers: list[tuple[str, ast.stmt]],
+) -> str:
+    """Fold ``helpers`` into ``entry_node`` and return the rendered class source.
+
+    Functions become ``@staticmethod`` methods, constants become class attributes, helper classes
+    become nested classes, and every reference to a folded symbol (including inside the component's own
+    methods, and helper self/mutual references) is rewritten to ``ClassName.<symbol>``.
+    """
+    symbol_names = {name for name, _ in helpers}
+    existing_members = _class_member_names(entry_node)
+
+    constants: list[ast.stmt] = []
+    nested_classes: list[ast.stmt] = []
+    static_methods: list[ast.stmt] = []
+
+    for name, node in helpers:
+        if name in existing_members:
+            raise PipelineTransformError(
+                f"Component '{class_name}': local helper '{name}' collides with a member the component "
+                "class already defines. Rename the helper."
+            )
+        if isinstance(node, ast.ClassDef):
+            if _has_component_decorator(node):
+                raise PipelineTransformError(
+                    f"Component '{class_name}': inlining would define multiple @component classes "
+                    f"('{class_name}' and '{node.name}'). A Code component must wrap exactly one. "
+                    "Split them into separate components."
+                )
+            nested_classes.append(node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            _reject_global_symbol_rebinding(class_name, node, symbol_names)
+            node.decorator_list = [ast.Name(id="staticmethod", ctx=ast.Load()), *node.decorator_list]
+            static_methods.append(node)
+        else:  # Assign / AnnAssign constant
+            constants.append(node)
+
+    new_class = copy.deepcopy(entry_node)
+    # Keep a leading class docstring first so it stays a docstring rather than a stray string expr.
+    original_body = new_class.body
+    docstring: list[ast.stmt] = []
+    if (
+        original_body
+        and isinstance(original_body[0], ast.Expr)
+        and isinstance(original_body[0].value, ast.Constant)
+        and isinstance(original_body[0].value.value, str)
+    ):
+        docstring, original_body = original_body[:1], original_body[1:]
+    new_class.body = [*docstring, *constants, *nested_classes, *static_methods, *original_body]
+
+    # Names that resolve at class-definition time cannot be class-qualified; reject references there to
+    # folded functions/classes (a constant value or decorator that calls a helper).
+    func_class_symbols = {
+        name for name, node in helpers if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    for loaded in _class_scope_load_names(new_class):
+        if loaded in func_class_symbols:
+            raise PipelineTransformError(
+                f"Component '{class_name}': local helper '{loaded}' is referenced at class-definition "
+                "time (e.g. in a decorator, default value, or class-level constant). Such helpers cannot "
+                "be folded into the component class. Move the reference inside a method."
+            )
+
+    _QualifyReferences(class_name, symbol_names).visit(new_class)
+    module = ast.Module(body=[new_class], type_ignores=[])
+    ast.fix_missing_locations(module)
+    return ast.unparse(module)
+
+
+def _class_member_names(class_node: ast.ClassDef) -> set[str]:
+    """Return the top-level member names a class defines (methods, nested classes, attributes)."""
+    names: set[str] = set()
+    for stmt in class_node.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(stmt.name)
+        elif isinstance(stmt, ast.Assign):
+            names.update(t.id for t in stmt.targets if isinstance(t, ast.Name))
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            names.add(stmt.target.id)
+    return names
+
+
+def _reject_global_symbol_rebinding(class_name: str, fn: Any, symbol_names: set[str]) -> None:
+    """Raise if ``fn`` declares ``global``/``nonlocal`` on a folded symbol (unrepresentable as an attr)."""
+    for node in _iter_same_scope(fn.body):
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            offending = symbol_names.intersection(node.names)
+            if offending:
+                raise PipelineTransformError(
+                    f"Component '{class_name}': helper '{fn.name}' uses global/nonlocal on "
+                    f"{', '.join(sorted(offending))}, which cannot be folded into the component class."
+                )
 
 
 # --------------------------------------------------------------------------- #
@@ -384,10 +719,16 @@ def validate_code_block(comp_name: str, code: str) -> None:
     """Validate a generated Code block locally, mirroring the platform's parser.
 
     The platform's ``Code`` component requires exactly one ``@component`` class with no *required*
-    ``__init__`` parameters. We replicate that check via AST so a bad transform fails fast locally
-    instead of as a ``DEPLOYMENT_FAILED`` after a wasted rollout.
+    ``__init__`` parameters, and keeps ONLY that class at runtime — so nothing else may live at module
+    level. We replicate those checks via AST so a bad transform fails fast locally instead of as a
+    ``DEPLOYMENT_FAILED`` after a wasted rollout.
     """
-    tree = ast.parse(code)
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as err:
+        raise PipelineTransformError(
+            f"Component '{comp_name}': the generated code block is not valid Python ({err})."
+        ) from err
     component_classes = [
         node for node in tree.body if isinstance(node, ast.ClassDef) and _has_component_decorator(node)
     ]
@@ -399,7 +740,37 @@ def validate_code_block(comp_name: str, code: str) -> None:
             f"Component '{comp_name}': the generated code block defines multiple @component classes "
             f"({names}). A Code component must wrap exactly one. Split them into separate components."
         )
+    _reject_module_level_definitions(comp_name, tree, component_classes[0])
     _reject_required_init_params(comp_name, component_classes[0])
+
+
+def _reject_module_level_definitions(comp_name: str, tree: ast.Module, component_class: ast.ClassDef) -> None:
+    """Raise if the code has any module-level definition besides the single ``@component`` class.
+
+    The platform Code component keeps only that class at runtime; a stray module-level
+    ``def``/``class``/constant would be inaccessible and break the deployed pipeline. Imports and a
+    module docstring are allowed.
+    """
+    for node in tree.body:
+        if node is component_class:
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            continue  # module docstring
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            offender = node.name
+        elif isinstance(node, ast.Assign):
+            offender = ", ".join(t.id for t in node.targets if isinstance(t, ast.Name)) or "<assignment>"
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            offender = node.target.id
+        else:
+            offender = type(node).__name__
+        raise PipelineTransformError(
+            f"Component '{comp_name}': the generated code has a module-level definition '{offender}' "
+            "outside the @component class. The platform Code component keeps only the single @component "
+            "class, so helpers must be folded into it."
+        )
 
 
 def _has_component_decorator(node: ast.ClassDef) -> bool:

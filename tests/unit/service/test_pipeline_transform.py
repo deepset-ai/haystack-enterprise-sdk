@@ -1,5 +1,6 @@
 """Tests for the pipeline transform (local .py -> deployable platform YAML)."""
 
+import ast
 import os
 import sys
 import textwrap
@@ -14,6 +15,7 @@ from ruamel.yaml import YAML
 from deepset_cloud_sdk._service.pipeline_extract import (
     _classify_origin,
     extract_from_pipeline,
+    validate_code_block,
 )
 from deepset_cloud_sdk._service.pipeline_transform import (
     CODE_COMPONENT_TYPE,
@@ -62,6 +64,19 @@ def _write_project(root: Path, files: dict) -> Path:
 def _load_yaml(config_yaml: str) -> dict:
     base = config_yaml.split("\n# dependencies:")[0]
     return YAML().load(base)
+
+
+def _component_code(config_yaml: str, comp_name: str) -> str:
+    """Return the ``code`` string of a rewritten Code component from rendered YAML."""
+    return _load_yaml(config_yaml)["components"][comp_name]["init_parameters"]["code"]
+
+
+def _class_def(code: str, class_name: str) -> ast.ClassDef:
+    """Parse ``code`` and return the named class node (fails if it is not the sole top-level class)."""
+    tree = ast.parse(code)
+    classes = [n for n in tree.body if isinstance(n, ast.ClassDef)]
+    assert [c.name for c in classes] == [class_name], f"expected exactly one class {class_name}"
+    return classes[0]
 
 
 # --------------------------------------------------------------------------- #
@@ -463,7 +478,10 @@ class TestSubprocessExtraction:
         inputs, outputs = resolve_io(extraction, None, None, None)
         config_yaml = render_config_yaml(extraction, inputs=inputs, outputs=outputs)
         assert CODE_COMPONENT_TYPE in config_yaml
-        assert "class Greeter" in config_yaml
+        # Parse the YAML rather than string-match: ruamel line-wraps the code scalar, which can split
+        # a token like "class Greeter" across a folded line.
+        doc = _load_yaml(config_yaml)
+        assert "class Greeter" in doc["components"]["greeter"]["init_parameters"]["code"]
         assert "\n# dependencies:\n" in config_yaml
         assert "#   - haystack-ai==" in config_yaml
 
@@ -593,3 +611,261 @@ class TestClassifyModule:
 
     def test_unresolvable_is_external(self, tmp_path: Path) -> None:
         assert classify_module("totally_missing_pkg_xyz", tmp_path) == "external"
+
+
+# --------------------------------------------------------------------------- #
+# Folding local helpers into the component class (platform Code invariant)
+# --------------------------------------------------------------------------- #
+class TestHelperFolding:
+    """The generated code must have nothing at module level except imports and the one @component class."""
+
+    def test_helpers_folded_into_class(self) -> None:
+        pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
+        code = _component_code(transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR), "greeter")
+
+        tree = ast.parse(code)
+        # Module level: only imports + the single component class — no stray def/class/constant.
+        non_import = [n for n in tree.body if not isinstance(n, (ast.Import, ast.ImportFrom))]
+        assert [type(n).__name__ for n in non_import] == ["ClassDef"]
+
+        greeter = non_import[0]
+        assert greeter.name == "Greeter"
+        members = {n.name: n for n in greeter.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        # Helper functions folded as @staticmethod inside the class.
+        for helper in ("normalize_name", "make_greeting"):
+            assert helper in members
+            decorators = {d.id for d in members[helper].decorator_list if isinstance(d, ast.Name)}
+            assert "staticmethod" in decorators
+        # The constant folded as a class attribute.
+        attrs = {t.id for n in greeter.body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
+        assert "GREETING_PREFIX" in attrs
+
+    def test_references_qualified(self) -> None:
+        pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
+        code = _component_code(transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR), "greeter")
+        # References to folded symbols become ClassName.<symbol>, inside run() and inside helpers.
+        assert "Greeter.GREETING_PREFIX" in code
+        assert "Greeter.make_greeting" in code
+        assert "Greeter.normalize_name" in code
+        # The external import is used unqualified; its attribute access is untouched.
+        assert "requests.utils.default_user_agent()" in code
+
+    def test_generated_code_reparses(self) -> None:
+        pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
+        code = _component_code(transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR), "greeter")
+        ast.parse(code)  # 3.9 ast.unparse smoke: emitted code must be valid Python
+
+    def test_shadowing_kept_bare(self, tmp_path: Path) -> None:
+        path = _write_project(
+            tmp_path,
+            {
+                "custom/__init__.py": "",
+                "custom/helpers.py": """
+                def helper(x):
+                    return x + 1
+                """,
+                "custom/comp.py": """
+                from haystack import component
+                from custom.helpers import helper
+
+                @component
+                class C:
+                    @component.output_types(x=int)
+                    def run(self, x: int):
+                        helper = x * 2   # local shadows the folded helper -> must stay bare
+                        return {"x": helper}
+                """,
+                "pipeline.py": """
+                from haystack import Pipeline
+                from custom.comp import C
+
+                pipeline = Pipeline()
+                pipeline.add_component("c", C())
+                """,
+            },
+        )
+        pipeline = load_pipeline_from_file(path)
+        code = _component_code(transform_to_config_yaml(pipeline, project_root=tmp_path), "c")
+        # The folded def is qualified where called, but the shadowing local assignment stays bare.
+        assert "helper = x * 2" in code
+        assert "C.helper = x * 2" not in code
+
+    def test_recursion_and_mutual_refs_qualified(self, tmp_path: Path) -> None:
+        path = _write_project(
+            tmp_path,
+            {
+                "custom/__init__.py": "",
+                "custom/helpers.py": """
+                def fib(n):
+                    return n if n < 2 else fib(n - 1) + fib(n - 2)
+                """,
+                "custom/comp.py": """
+                from haystack import component
+                from custom.helpers import fib
+
+                @component
+                class C:
+                    @component.output_types(x=int)
+                    def run(self, x: int):
+                        return {"x": fib(x)}
+                """,
+                "pipeline.py": """
+                from haystack import Pipeline
+                from custom.comp import C
+
+                pipeline = Pipeline()
+                pipeline.add_component("c", C())
+                """,
+            },
+        )
+        pipeline = load_pipeline_from_file(path)
+        code = _component_code(transform_to_config_yaml(pipeline, project_root=tmp_path), "c")
+        # Self-reference inside the folded staticmethod is qualified.
+        assert "C.fib(n - 1)" in code
+        assert "C.fib(x)" in code
+
+    def test_global_on_folded_symbol_rejected(self, tmp_path: Path) -> None:
+        path = _write_project(
+            tmp_path,
+            {
+                "custom/__init__.py": "",
+                "custom/helpers.py": """
+                COUNTER = 0
+
+                def bump():
+                    global COUNTER
+                    COUNTER += 1
+                    return COUNTER
+                """,
+                "custom/comp.py": """
+                from haystack import component
+                from custom.helpers import bump
+
+                @component
+                class C:
+                    @component.output_types(x=int)
+                    def run(self, x: int):
+                        return {"x": bump()}
+                """,
+                "pipeline.py": """
+                from haystack import Pipeline
+                from custom.comp import C
+
+                pipeline = Pipeline()
+                pipeline.add_component("c", C())
+                """,
+            },
+        )
+        pipeline = load_pipeline_from_file(path)
+        with pytest.raises(PipelineTransformError, match="global/nonlocal"):
+            transform_to_config_yaml(pipeline, project_root=tmp_path)
+
+    def test_helper_name_collision_with_member_rejected(self, tmp_path: Path) -> None:
+        path = _write_project(
+            tmp_path,
+            {
+                "custom/__init__.py": "",
+                "custom/helpers.py": """
+                def prepare(x):
+                    return x
+                """,
+                "custom/comp.py": """
+                from haystack import component
+                from custom.helpers import prepare
+
+                @component
+                class C:
+                    def prepare(self):   # collides with the folded helper name
+                        return None
+
+                    @component.output_types(x=int)
+                    def run(self, x: int):
+                        return {"x": prepare(x)}
+                """,
+                "pipeline.py": """
+                from haystack import Pipeline
+                from custom.comp import C
+
+                pipeline = Pipeline()
+                pipeline.add_component("c", C())
+                """,
+            },
+        )
+        pipeline = load_pipeline_from_file(path)
+        with pytest.raises(PipelineTransformError, match="collides"):
+            transform_to_config_yaml(pipeline, project_root=tmp_path)
+
+    def test_class_scope_helper_reference_rejected(self, tmp_path: Path) -> None:
+        path = _write_project(
+            tmp_path,
+            {
+                "custom/__init__.py": "",
+                "custom/helpers.py": """
+                def default_name():
+                    return "anon"
+                """,
+                "custom/comp.py": """
+                from haystack import component
+                from custom.helpers import default_name
+
+                @component
+                class C:
+                    @component.output_types(x=str)
+                    def run(self, x: str = default_name()):   # helper called at def time -> unfoldable
+                        return {"x": x}
+                """,
+                "pipeline.py": """
+                from haystack import Pipeline
+                from custom.comp import C
+
+                pipeline = Pipeline()
+                pipeline.add_component("c", C())
+                """,
+            },
+        )
+        pipeline = load_pipeline_from_file(path)
+        with pytest.raises(PipelineTransformError, match="class-definition time"):
+            transform_to_config_yaml(pipeline, project_root=tmp_path)
+
+
+class TestModuleLevelInvariant:
+    """Unit tests for the validate_code_block module-level check."""
+
+    def test_module_level_function_rejected(self) -> None:
+        code = textwrap.dedent(
+            """
+            from haystack import component
+
+            def helper():
+                return 1
+
+            @component
+            class C:
+                @component.output_types(x=int)
+                def run(self):
+                    return {"x": helper()}
+            """
+        )
+        with pytest.raises(PipelineTransformError, match="module-level definition 'helper'"):
+            validate_code_block("c", code)
+
+    def test_clean_single_class_passes(self) -> None:
+        code = textwrap.dedent(
+            '''
+            """A module docstring is allowed."""
+            from haystack import component
+
+            @component
+            class C:
+                CONST = 1
+
+                @staticmethod
+                def helper():
+                    return C.CONST
+
+                @component.output_types(x=int)
+                def run(self):
+                    return {"x": C.helper()}
+            '''
+        )
+        validate_code_block("c", code)  # must not raise
