@@ -23,6 +23,24 @@ class WorkspaceNotDefinedError(Exception):
     """The workspace_name is not defined. Set an environment variable or pass the `workspace_name` argument."""
 
 
+def raise_for_unexpected_status(
+    response: Response,
+    accepted: tuple,
+    error_cls: type,
+    message: str,
+) -> None:
+    """Log and raise ``error_cls`` when ``response`` has a status code outside ``accepted``.
+
+    :param response: The HTTP response to check.
+    :param accepted: Status codes that count as success.
+    :param error_cls: Exception type to raise on an unexpected status.
+    :param message: Context for the log entry and exception (e.g. ``"Failed to create deployment 'x'."``).
+    """
+    if response.status_code not in accepted:
+        logger.error(message, status_code=response.status_code, body=response.text)
+        raise error_cls(f"{message} Status code: {response.status_code}. {response.text}")
+
+
 class DeepsetCloudAPI:
     """deepset AI Platform API client.
 

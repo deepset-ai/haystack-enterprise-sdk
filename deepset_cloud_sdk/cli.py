@@ -5,7 +5,7 @@ import json
 import sys
 from importlib.metadata import version
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 from uuid import UUID
 
 import click
@@ -15,7 +15,7 @@ from yaspin import yaspin
 
 __version__ = version("deepset-cloud-sdk")
 from deepset_cloud_sdk._api.config import DEFAULT_WORKSPACE_NAME, ENV_FILE_PATH
-from deepset_cloud_sdk._api.deployments import DeploymentServiceLevel, DeploymentStatus
+from deepset_cloud_sdk._api.deployments import DeploymentServiceLevel
 from deepset_cloud_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from deepset_cloud_sdk._api.upload_sessions import WriteMode
 from deepset_cloud_sdk._service.deployment_service import (
@@ -25,8 +25,12 @@ from deepset_cloud_sdk._service.deployment_service import (
     ShareOptions,
 )
 from deepset_cloud_sdk._service.pipeline_transform import (
+    ExtractionBundle,
     PipelineTransformError,
+    build_config_yaml,
+    flatten_sockets,
     unmapped_mandatory_inputs,
+    unmapped_mandatory_warning,
 )
 from deepset_cloud_sdk.workflows.sync_client.deployment_client import DeploymentClient
 from deepset_cloud_sdk.workflows.sync_client.files import download as sync_download
@@ -352,7 +356,7 @@ def get_upload_session(
 def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     target: Path,
     service_name: str,
-    skip_activation: bool = typer.Option(False, "--skip-activation"),
+    skip_activation: bool = False,
     create: bool = False,
     entrypoint: Optional[str] = None,
     service_level: Optional[DeploymentServiceLevel] = None,
@@ -365,7 +369,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     python: Optional[str] = None,
     dry_run: bool = False,
     output: Optional[Path] = None,
-    skip_io_validation: bool = typer.Option(False, "--skip-io-validation"),
+    skip_io_validation: bool = False,
     share: Optional[bool] = typer.Option(None, "--share/--no-share"),
     share_expiration_days: int = 30,
     share_login_required: Optional[bool] = typer.Option(None, "--share-login-required/--no-share-login-required"),
@@ -375,8 +379,8 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
 ) -> None:
     """Deploy a Haystack pipeline defined in a local Python file to a service deployment.
 
-    Transforms the pipeline (rewriting local custom components into the platform Code component and
-    pinning the executing Haystack version), then pushes it as a new revision of the given service.
+    Transforms the pipeline (rewriting local custom components into the platform Code component),
+    then pushes it as a new revision of the given service.
 
     The pipeline is loaded in your project's Python environment (auto-detected virtualenv, or the
     interpreter given by --python), so this CLI's own environment does not need your pipeline's
@@ -489,10 +493,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             f"Check with `deepset-cloud service-status {service_name}`."
         )
         raise typer.Exit(0)  # noqa: B904
-    except DeploymentFailedError as err:
-        typer.echo(str(err))
-        raise typer.Exit(1)  # noqa: B904
-    except (ServiceNotFoundError, PipelineTransformError) as err:
+    except (DeploymentFailedError, ServiceNotFoundError, PipelineTransformError) as err:
         typer.echo(str(err))
         raise typer.Exit(1)  # noqa: B904
 
@@ -510,11 +511,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         typer.echo(f"Service '{service_name}' is now {result.deployment.status.value}.")
 
     if do_share:
-        deployed = (not result.timed_out) and result.deployment.status in (
-            DeploymentStatus.DEPLOYED,
-            DeploymentStatus.IDLE,
-        )
-        if not deployed:
+        if not result.is_deployed:
             typer.echo(
                 f"Skipped shared prototype: '{service_name}' is not deployed yet "
                 f"(status: {result.deployment.status.value}). Create the link in the platform "
@@ -528,9 +525,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     ShareOptions(expiration_days=share_expiration_days, login_required=login_required),
                 )
             except FailedToCreateSharedPrototypeError as err:
+                # The deploy itself succeeded, so this is a warning, not a failure exit.
                 typer.echo(f"Deployed, but could not create the shared prototype link: {err}")
-                raise typer.Exit(1)  # noqa: B904
-            typer.echo(f"Shared prototype link: {prototype.link}")
+            else:
+                typer.echo(f"Shared prototype link: {prototype.link}")
 
 
 def _deploy_dry_run(
@@ -540,16 +538,17 @@ def _deploy_dry_run(
     output: Optional[Path],
     skip_io_validation: bool = False,
 ) -> None:
-    """Transform the pipeline and print/write the YAML without contacting the API."""
-    from deepset_cloud_sdk._service import pipeline_transform
+    """Transform the pipeline and print/write the YAML without contacting the API.
 
+    Uses the same extract → resolve → render path as the real deploy (:func:`build_config_yaml`).
+    """
+    io_resolver = functools.partial(_resolve_io_for_share, skip_validation=skip_io_validation)
     try:
-        extraction = pipeline_transform.extract_via_subprocess(target, entrypoint, python)
-        inputs, outputs = _resolve_io_for_share(extraction, skip_validation=skip_io_validation)
-        config_yaml = pipeline_transform.render_config_yaml(
-            extraction,
-            inputs=inputs or None,
-            outputs=outputs or None,
+        config_yaml = build_config_yaml(
+            target,
+            entrypoint=entrypoint,
+            io_resolver=io_resolver,
+            python_executable=python,
         )
     except PipelineTransformError as err:
         typer.echo(str(err))
@@ -581,38 +580,29 @@ def _prompt_login_required() -> bool:
     return typer.confirm("Require login to open the shared link?", default=True)
 
 
-def _resolve_io_for_share(extraction: dict, *, skip_validation: bool = False) -> Tuple[dict, dict]:
+def _resolve_io_for_share(extraction: ExtractionBundle, *, skip_validation: bool = False) -> Tuple[dict, dict]:
     """Resolve the pipeline inputs/outputs the shared prototype (chat UI) needs.
 
-    Used as the ``io_resolver`` for the deploy flow when the user chose to share (and in --dry-run).
-    It is called with the extraction bundle; it returns the ``(inputs, outputs)`` dicts to use. When
-    inference covered every mandatory input socket and produced outputs it returns them as-is.
-    Otherwise, on an interactive TTY, it prompts the user to map the query/filters and answers/documents
-    sockets — including any *mandatory* socket inference missed, which would otherwise crash the shared
-    prototype at query time. Off a TTY it returns whatever was inferred, warning loudly about unmapped
-    mandatory sockets.
+    Used as the ``io_resolver`` for the deploy flow when the user chose to share (and in --dry-run);
+    :func:`resolve_io` only calls it when resolution is incomplete. It returns the ``(inputs, outputs)``
+    dicts to use. On an interactive TTY it prompts the user to map the query/filters and
+    answers/documents sockets — including any *mandatory* socket inference missed, which would
+    otherwise crash the shared prototype at query time. Off a TTY it returns whatever was inferred,
+    warning loudly about unmapped mandatory sockets.
 
     :param skip_validation: When True (``--skip-io-validation``), skip all prompting and mandatory-input
         enforcement and return whatever inference produced. For arbitrary pipelines invoked directly
         rather than via the shared prototype chat UI.
     """
-    inferred_inputs = extraction.get("inferred_inputs") or {}
-    inferred_outputs = extraction.get("inferred_outputs") or {}
+    inferred_inputs = extraction.inferred_inputs
+    inferred_outputs = extraction.inferred_outputs
     if skip_validation:
         return inferred_inputs, inferred_outputs
-    unmapped = unmapped_mandatory_inputs(extraction.get("mandatory_inputs") or {}, inferred_inputs)
-
-    # Happy path: every mandatory socket is reachable and we have outputs — nothing to ask.
-    if inferred_inputs and inferred_outputs and not unmapped:
-        return inferred_inputs, inferred_outputs
+    unmapped = unmapped_mandatory_inputs(extraction.mandatory_inputs, inferred_inputs)
 
     if not _stdin_is_tty():
         if unmapped:
-            typer.echo(
-                "Warning: the shared prototype will fail at query time — these mandatory pipeline "
-                f"inputs are not mapped to any platform input: {', '.join(unmapped)}. Re-run on a "
-                "terminal to map them interactively, or pass an explicit inputs mapping."
-            )
+            typer.echo(f"Warning: {unmapped_mandatory_warning(unmapped)}")
         return inferred_inputs, inferred_outputs
 
     typer.echo(
@@ -621,7 +611,7 @@ def _resolve_io_for_share(extraction: dict, *, skip_validation: bool = False) ->
     )
 
     inputs = {key: list(sockets) for key, sockets in inferred_inputs.items()}
-    input_sockets = _flatten_sockets(extraction.get("available_inputs") or {})
+    input_sockets = flatten_sockets(extraction.available_inputs)
     if not inputs.get("query"):
         query = _select_socket(input_sockets, "Which socket is the 'query' input?", required=True)
         if query:
@@ -632,14 +622,14 @@ def _resolve_io_for_share(extraction: dict, *, skip_validation: bool = False) ->
             inputs.setdefault("filters", []).append(filters)
 
     # Any mandatory socket still unmapped would crash the prototype at query time — map each one.
-    for socket in unmapped_mandatory_inputs(extraction.get("mandatory_inputs") or {}, inputs):
+    for socket in unmapped_mandatory_inputs(extraction.mandatory_inputs, inputs):
         key = _select_input_key_for_socket(socket)
         if socket not in inputs.setdefault(key, []):
             inputs[key].append(socket)
 
     outputs = dict(inferred_outputs)
     if not outputs:
-        output_sockets = _flatten_sockets(extraction.get("available_outputs") or {})
+        output_sockets = flatten_sockets(extraction.available_outputs)
         answers = _select_socket(output_sockets, "Which socket is the 'answers' output?", required=False)
         if answers:
             outputs["answers"] = answers
@@ -648,12 +638,6 @@ def _resolve_io_for_share(extraction: dict, *, skip_validation: bool = False) ->
             outputs["documents"] = documents
 
     return inputs, outputs
-
-
-def _flatten_sockets(sockets_by_component: Dict[str, List[str]]) -> List[str]:
-    """Flatten ``{component: [socket, ...]}`` into sorted ``"component.socket"`` paths."""
-    paths = [f"{comp}.{socket}" for comp, sockets in sockets_by_component.items() for socket in sockets]
-    return sorted(paths)
 
 
 def _select_socket(sockets: List[str], prompt: str, *, required: bool) -> Optional[str]:

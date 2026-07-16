@@ -2,7 +2,7 @@
 
 import asyncio
 from pathlib import Path
-from typing import Awaitable, Callable, Optional, Tuple, TypeVar
+from typing import Awaitable, Callable, Optional, TypeVar
 
 import structlog
 
@@ -15,6 +15,7 @@ from deepset_cloud_sdk._service.deployment_service import (
     DeployResult,
     ShareOptions,
 )
+from deepset_cloud_sdk._service.pipeline_transform import IoResolver
 from deepset_cloud_sdk.workflows.async_client.deployment_client import (
     AsyncDeploymentClient,
 )
@@ -78,7 +79,7 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
         entrypoint: Optional[str] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
-        io_resolver: Optional[Callable[[dict], Tuple[dict, dict]]] = None,
+        io_resolver: Optional[IoResolver] = None,
         python_executable: Optional[str] = None,
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
@@ -107,8 +108,6 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
         """Return the current deployment (with live runtime status) for ``service_name``."""
         return _run(self._async_client.get_service_status(service_name))
 
-    def create_shared_prototype(
-        self, service_name: str, options: Optional[ShareOptions] = None
-    ) -> SharedPrototype:
+    def create_shared_prototype(self, service_name: str, options: Optional[ShareOptions] = None) -> SharedPrototype:
         """Create a shared prototype (a shareable chat UI link) for a deployed service synchronously."""
         return _run(self._async_client.create_shared_prototype(service_name, options))

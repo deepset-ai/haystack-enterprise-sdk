@@ -58,6 +58,11 @@ class DeployResult:
     activated: bool
     timed_out: bool
 
+    @property
+    def is_deployed(self) -> bool:
+        """Whether the rollout finished in a deployed (running or idle) state."""
+        return not self.timed_out and self.deployment.status in _SUCCESS_STATUSES
+
 
 @dataclass
 class ShareOptions:
@@ -117,7 +122,7 @@ class DeploymentService:
         entrypoint: Optional[str] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
-        io_resolver: Optional[Callable[[dict], Tuple[dict, dict]]] = None,
+        io_resolver: Optional[pipeline_transform.IoResolver] = None,
         python_executable: Optional[str] = None,
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
@@ -133,8 +138,8 @@ class DeploymentService:
         :param entrypoint: Name of the pipeline instance/factory when the file is ambiguous.
         :param inputs: Optional explicit pipeline inputs (overrides inference).
         :param outputs: Optional explicit pipeline outputs (overrides inference).
-        :param io_resolver: Optional callback invoked with the extraction bundle when inputs or outputs
-            could not be inferred; returns ``(inputs, outputs)`` dicts to use (empty means "leave unset").
+        :param io_resolver: Optional callback consulted when input/output resolution is incomplete
+            (see :func:`pipeline_transform.resolve_io`); returns ``(inputs, outputs)`` dicts to use.
         :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
         :param timeout_s: Max seconds to poll for activation before detaching.
         :param poll_interval_s: Seconds between activation polls.
@@ -143,7 +148,7 @@ class DeploymentService:
         :raises DeploymentFailedError: If ``activate`` is set and the rollout fails.
         :return: A :class:`DeployResult`.
         """
-        config_yaml = self.build_config_yaml(
+        config_yaml = pipeline_transform.build_config_yaml(
             target,
             entrypoint=entrypoint,
             inputs=inputs,
@@ -154,9 +159,7 @@ class DeploymentService:
 
         deployment = await self._resolve_or_create(service_name, create, create_options)
 
-        revision = await self._deployments.push_revision(
-            self._workspace_name, deployment.deployment_id, config_yaml
-        )
+        revision = await self._deployments.push_revision(self._workspace_name, deployment.deployment_id, config_yaml)
         logger.info("Pushed deployment revision.", service=service_name, revision_id=str(revision.revision_id))
 
         if not activate:
@@ -181,7 +184,9 @@ class DeploymentService:
         """
         deployment = await self._deployments.find_by_name(self._workspace_name, service_name)
         if deployment is None:
-            raise ServiceNotFoundError(f"No service deployment named '{service_name}' in workspace '{self._workspace_name}'.")
+            raise ServiceNotFoundError(
+                f"No service deployment named '{service_name}' in workspace '{self._workspace_name}'."
+            )
         return await self._deployments.get_deployment(self._workspace_name, deployment.deployment_id)
 
     async def create_shared_prototype(
@@ -211,43 +216,6 @@ class DeploymentService:
             show_files=options.show_files,
             file_upload_enabled=options.file_upload_enabled,
             runtime_params_enabled=options.runtime_params_enabled,
-        )
-
-    # ------------------------------------------------------------------ #
-    def build_config_yaml(
-        self,
-        target: Path,
-        *,
-        entrypoint: Optional[str] = None,
-        inputs: Optional[dict] = None,
-        outputs: Optional[dict] = None,
-        io_resolver: Optional[Callable[[dict], Tuple[dict, dict]]] = None,
-        python_executable: Optional[str] = None,
-    ) -> str:
-        """Transform ``target`` into deployable YAML without any API calls (used for --dry-run too).
-
-        The pipeline is loaded in a subprocess using ``python_executable`` (or an auto-detected venv),
-        so this environment does not need the pipeline's dependencies installed.
-
-        Explicit ``inputs``/``outputs`` win; otherwise inferred values are used. When ``io_resolver`` is
-        provided and either side is still empty, it is called with the extraction bundle to obtain them
-        (this is how the CLI prompts the user to set the inputs/outputs the shared prototype needs).
-        """
-        extraction = pipeline_transform.extract_via_subprocess(target, entrypoint, python_executable)
-
-        resolved_inputs = inputs if inputs is not None else extraction.get("inferred_inputs") or {}
-        resolved_outputs = outputs if outputs is not None else extraction.get("inferred_outputs") or {}
-        if io_resolver is not None and (not resolved_inputs or not resolved_outputs):
-            new_inputs, new_outputs = io_resolver(extraction)
-            if new_inputs:
-                resolved_inputs = new_inputs
-            if new_outputs:
-                resolved_outputs = new_outputs
-
-        return pipeline_transform.render_config_yaml(
-            extraction,
-            inputs=resolved_inputs or None,
-            outputs=resolved_outputs or None,
         )
 
     async def _resolve_or_create(

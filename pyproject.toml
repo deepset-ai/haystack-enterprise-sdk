@@ -40,9 +40,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Extras needed by `deepset-cloud deploy`, which imports your local pipeline file.
+# Optional extra for `deepset-cloud deploy`. The deploy command loads your pipeline in a subprocess
+# using your project's own interpreter (auto-detected venv or --python), so the CLI environment does
+# NOT need Haystack. Install this extra only when the CLI environment doubles as the pipeline
+# environment (i.e. there is no separate project venv to detect).
 # Install with: pip install "deepset-cloud-sdk[deploy]"  (or uv pip install / uv tool install).
-# Note: your pipeline's own dependencies (custom-component imports) must also be installed.
 deploy = [
   "haystack-ai>=2.13.2",
 ]

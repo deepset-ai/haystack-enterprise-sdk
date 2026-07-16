@@ -10,15 +10,20 @@ list endpoint and matching client-side.
 
 import enum
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Type, TypeVar
 from uuid import UUID
 
 import structlog
 from httpx import codes
 
-from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
+from deepset_cloud_sdk._api.deepset_cloud_api import (
+    DeepsetCloudAPI,
+    raise_for_unexpected_status,
+)
 
 logger = structlog.get_logger(__name__)
+
+_E = TypeVar("_E", bound=enum.Enum)
 
 
 class DeploymentStatus(str, enum.Enum):
@@ -135,6 +140,9 @@ class DeploymentsAPI:
     """Service deployments API for deepset AI Platform."""
 
     _ENDPOINT = "deployments"
+    # Revisions pushed by this SDK send self-contained inline YAML with no platform pipeline version
+    # behind them, so their source is EXTERNAL_PIPELINE rather than the default PLATFORM_PIPELINE.
+    _SOURCE_TYPE = DeploymentSourceType.EXTERNAL_PIPELINE.value
 
     def __init__(self, deepset_cloud_api: DeepsetCloudAPI) -> None:
         """Create a DeploymentsAPI object.
@@ -214,7 +222,7 @@ class DeploymentsAPI:
         :raises FailedToCreateDeploymentError: If the deployment could not be created.
         :return: The created deployment.
         """
-        payload: Dict[str, Any] = {"name": name, "source_type": DeploymentSourceType.EXTERNAL_PIPELINE.value}
+        payload: Dict[str, Any] = {"name": name, "source_type": self._SOURCE_TYPE}
         if service_level is not None:
             payload["service_level"] = service_level.value
         for key, value in {
@@ -233,11 +241,9 @@ class DeploymentsAPI:
             endpoint=self._ENDPOINT,
             json=payload,
         )
-        if response.status_code != codes.CREATED:
-            logger.error("Failed to create deployment.", status_code=response.status_code, body=response.text)
-            raise FailedToCreateDeploymentError(
-                f"Failed to create deployment '{name}'. Status code: {response.status_code}. {response.text}"
-            )
+        raise_for_unexpected_status(
+            response, (codes.CREATED,), FailedToCreateDeploymentError, f"Failed to create deployment '{name}'."
+        )
         return Deployment.from_response(response.json())
 
     async def get_deployment(self, workspace_name: str, deployment_id: UUID) -> Deployment:
@@ -271,16 +277,14 @@ class DeploymentsAPI:
         response = await self._deepset_cloud_api.post(
             workspace_name=workspace_name,
             endpoint=f"{self._ENDPOINT}/{deployment_id}/revisions",
-            # The SDK pushes self-contained inline YAML with no platform pipeline version behind it,
-            # so the revision's source is EXTERNAL_PIPELINE rather than the default PLATFORM_PIPELINE.
-            json={"config_yaml": config_yaml, "source_type": DeploymentSourceType.EXTERNAL_PIPELINE.value},
+            json={"config_yaml": config_yaml, "source_type": self._SOURCE_TYPE},
         )
-        if response.status_code != codes.CREATED:
-            logger.error("Failed to push revision.", status_code=response.status_code, body=response.text)
-            raise FailedToPushRevisionError(
-                f"Failed to push a revision to deployment '{deployment_id}'. "
-                f"Status code: {response.status_code}. {response.text}"
-            )
+        raise_for_unexpected_status(
+            response,
+            (codes.CREATED,),
+            FailedToPushRevisionError,
+            f"Failed to push a revision to deployment '{deployment_id}'.",
+        )
         return DeploymentRevision.from_response(response.json())
 
     async def activate_revision(
@@ -303,12 +307,9 @@ class DeploymentsAPI:
             workspace_name=workspace_name,
             endpoint=f"{self._ENDPOINT}/{deployment_id}/revisions/{revision_id}/activate",
         )
-        if response.status_code != codes.OK:
-            logger.error("Failed to activate revision.", status_code=response.status_code, body=response.text)
-            raise FailedToActivateRevisionError(
-                f"Failed to activate revision '{revision_id}'. "
-                f"Status code: {response.status_code}. {response.text}"
-            )
+        raise_for_unexpected_status(
+            response, (codes.OK,), FailedToActivateRevisionError, f"Failed to activate revision '{revision_id}'."
+        )
         return Deployment.from_response(response.json())
 
     async def list_activity(self, workspace_name: str, deployment_id: UUID) -> List[Dict[str, Any]]:
@@ -341,12 +342,12 @@ def _optional_uuid(value: Optional[str]) -> Optional[UUID]:
     return UUID(value) if value else None
 
 
-def _enum_or_default(enum_cls: type, value: Any, default: Any) -> Any:
+def _enum_or_default(enum_cls: Type[_E], value: Any, default: _E) -> _E:
     """Return ``enum_cls(value)`` or ``default`` if ``value`` is missing/unknown (logs on unknown)."""
     if value is None:
         return default
     try:
         return enum_cls(value)
     except ValueError:
-        logger.warning("Unknown %s value '%s'; defaulting to '%s'.", enum_cls.__name__, value, default.value)
+        logger.warning("Unknown enum value; using default.", enum=enum_cls.__name__, value=value, default=default.value)
         return default

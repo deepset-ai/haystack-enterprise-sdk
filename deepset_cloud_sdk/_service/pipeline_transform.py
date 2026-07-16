@@ -1,11 +1,14 @@
-"""Render a deployable platform YAML from a pipeline extraction bundle.
+"""Build a deployable platform YAML from a local pipeline file.
 
-The heavy lifting (importing the user's pipeline, inlining local components, pinning dependencies)
-lives in :mod:`deepset_cloud_sdk._service.pipeline_extract`, which runs in the *pipeline's* Python
-environment — in-process for the programmatic API, or in a subprocess (:func:`extract_via_subprocess`)
-so the CLI/SDK environment never needs the pipeline's dependencies installed.
+The heavy lifting (importing the user's pipeline, inlining local components, recording the executing
+``haystack-ai`` version) lives in :mod:`deepset_cloud_sdk._service.pipeline_extract`, which runs in
+the *pipeline's* Python environment — in-process for the programmatic API, or in a subprocess
+(:func:`extract_via_subprocess`) so the CLI/SDK environment never needs the pipeline's dependencies.
 
-This module turns the resulting JSON bundle into the final ``config_yaml`` using ``ruamel.yaml``.
+This module owns the SDK side of that boundary: it parses the extractor's JSON into a typed
+:class:`ExtractionBundle`, resolves the platform inputs/outputs (:func:`resolve_io`), and renders the
+final ``config_yaml`` (:func:`render_config_yaml`). :func:`build_config_yaml` is the single
+extract → resolve → render path used by both the deploy flow and the CLI's ``--dry-run``.
 """
 
 from __future__ import annotations
@@ -14,9 +17,10 @@ import json
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
-from typing import Any, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 import structlog
 from ruamel.yaml import YAML
@@ -35,74 +39,167 @@ logger = structlog.get_logger(__name__)
 
 __all__ = [
     "CODE_COMPONENT_TYPE",
+    "ExtractionBundle",
+    "IoResolver",
     "PipelineTransformError",
+    "build_config_yaml",
     "classify_module",
-    "load_pipeline_from_file",
+    "detect_project_python",
     "extract_from_file",
     "extract_from_pipeline",
     "extract_via_subprocess",
+    "flatten_sockets",
+    "load_pipeline_from_file",
     "render_config_yaml",
-    "transform_to_config_yaml",
-    "detect_project_python",
+    "resolve_io",
     "unmapped_mandatory_inputs",
+    "unmapped_mandatory_warning",
 ]
 
 # Interpreter names to look for inside a discovered virtual environment.
 _VENV_PYTHONS = ("bin/python", "bin/python3", "Scripts/python.exe")
 
+# Haystack version pinning is temporarily disabled: the ``dependencies`` block is rendered commented
+# out so it has no effect on deployments. Flip to True to emit an active block again.
+_EMIT_ACTIVE_DEPENDENCY_BLOCK = False
+
+
+@dataclass(frozen=True)
+class ExtractionBundle:
+    """Typed view of the JSON "extraction bundle" produced by :mod:`pipeline_extract`.
+
+    The extractor cannot import the SDK (it runs in the user's interpreter), so it emits a plain JSON
+    dict; this class is the single place that dict's keys are interpreted on the SDK side.
+
+    Input mappings are ``{input_key: ["component.socket", ...]}``; output mappings are
+    ``{output_key: "component.socket"}``. ``available_*`` and ``mandatory_inputs`` are
+    ``{component_name: [socket_name, ...]}``.
+    """
+
+    pipeline: dict = field(default_factory=dict)
+    async_enabled: bool = False
+    inferred_inputs: dict = field(default_factory=dict)
+    inferred_outputs: dict = field(default_factory=dict)
+    available_inputs: dict = field(default_factory=dict)
+    available_outputs: dict = field(default_factory=dict)
+    mandatory_inputs: dict = field(default_factory=dict)
+    dependencies: list = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "ExtractionBundle":
+        """Parse the extractor's JSON dict, tolerating absent keys."""
+        return cls(
+            pipeline=raw.get("pipeline") or {},
+            async_enabled=bool(raw.get("async_enabled")),
+            inferred_inputs=raw.get("inferred_inputs") or {},
+            inferred_outputs=raw.get("inferred_outputs") or {},
+            available_inputs=raw.get("available_inputs") or {},
+            available_outputs=raw.get("available_outputs") or {},
+            mandatory_inputs=raw.get("mandatory_inputs") or {},
+            dependencies=raw.get("dependencies") or [],
+        )
+
+
+# Callback that receives the bundle when inputs/outputs need resolving and returns the
+# ``(inputs, outputs)`` dicts to use (empty means "leave unset").
+IoResolver = Callable[[ExtractionBundle], Tuple[dict, dict]]
+
+
+def build_config_yaml(
+    target: Path,
+    *,
+    entrypoint: Optional[str] = None,
+    inputs: Optional[dict] = None,
+    outputs: Optional[dict] = None,
+    io_resolver: Optional[IoResolver] = None,
+    python_executable: Optional[str] = None,
+) -> str:
+    """Transform ``target`` into deployable YAML — the single extract → resolve → render path.
+
+    The pipeline is loaded in a subprocess using ``python_executable`` (or an auto-detected venv),
+    so this environment does not need the pipeline's dependencies installed. No API calls are made;
+    the deploy flow and the CLI's ``--dry-run`` both go through here.
+
+    Explicit ``inputs``/``outputs`` win; otherwise inferred values are used. See :func:`resolve_io`
+    for when ``io_resolver`` is consulted.
+    """
+    bundle = extract_via_subprocess(target, entrypoint, python_executable)
+    resolved_inputs, resolved_outputs = resolve_io(bundle, inputs, outputs, io_resolver)
+    return render_config_yaml(bundle, inputs=resolved_inputs, outputs=resolved_outputs)
+
+
+def resolve_io(
+    bundle: ExtractionBundle,
+    inputs: Optional[dict],
+    outputs: Optional[dict],
+    io_resolver: Optional[IoResolver],
+) -> Tuple[dict, dict]:
+    """Resolve the platform inputs/outputs to deploy with.
+
+    Explicit ``inputs``/``outputs`` win; otherwise the bundle's inferred values are used. When
+    ``io_resolver`` is provided it is consulted only if resolution is incomplete: a side is still
+    empty, or a mandatory input socket is not mapped (which would fail at query time).
+    """
+    resolved_inputs = inputs if inputs is not None else bundle.inferred_inputs
+    resolved_outputs = outputs if outputs is not None else bundle.inferred_outputs
+    incomplete = (
+        not resolved_inputs
+        or not resolved_outputs
+        or unmapped_mandatory_inputs(bundle.mandatory_inputs, resolved_inputs)
+    )
+    if io_resolver is not None and incomplete:
+        new_inputs, new_outputs = io_resolver(bundle)
+        if new_inputs:
+            resolved_inputs = new_inputs
+        if new_outputs:
+            resolved_outputs = new_outputs
+    return resolved_inputs, resolved_outputs
+
 
 def render_config_yaml(
-    extraction: dict,
+    bundle: ExtractionBundle,
     inputs: Optional[dict] = None,
     outputs: Optional[dict] = None,
 ) -> str:
-    """Render deployable YAML from an extraction bundle.
+    """Render deployable YAML from an extraction bundle and the final inputs/outputs.
 
-    :param extraction: A bundle produced by the extractor (see :func:`extract_from_pipeline`).
-    :param inputs: Optional explicit inputs dict; overrides the inferred inputs.
-    :param outputs: Optional explicit outputs dict; overrides the inferred outputs.
+    :param bundle: The extraction bundle.
+    :param inputs: The resolved inputs mapping to embed; ``None``/empty omits the ``inputs`` section.
+    :param outputs: The resolved outputs mapping to embed; ``None``/empty omits the ``outputs`` section.
     :return: The platform-ready ``config_yaml`` string.
     """
-    pipeline_dict = extraction["pipeline"]
+    pipeline_dict = bundle.pipeline
 
-    resolved_inputs = inputs if inputs is not None else extraction.get("inferred_inputs") or {}
-    resolved_outputs = outputs if outputs is not None else extraction.get("inferred_outputs") or {}
-    if resolved_inputs:
-        pipeline_dict["inputs"] = resolved_inputs
-    if resolved_outputs:
-        pipeline_dict["outputs"] = resolved_outputs
-    if not resolved_inputs and not resolved_outputs:
+    if inputs:
+        pipeline_dict["inputs"] = inputs
+    if outputs:
+        pipeline_dict["outputs"] = outputs
+    if not inputs and not outputs:
         logger.warning(
             "Could not infer pipeline inputs/outputs from open sockets. Deploying without them; "
             "the Playground query UI will be unavailable. Pass inputs/outputs explicitly to enable it."
         )
 
-    unmapped = unmapped_mandatory_inputs(extraction.get("mandatory_inputs") or {}, resolved_inputs)
+    unmapped = unmapped_mandatory_inputs(bundle.mandatory_inputs, inputs or {})
     if unmapped:
-        logger.warning(
-            "Deploying with mandatory pipeline inputs not mapped to any platform input: %s. "
-            'The pipeline will fail at query time with "Missing mandatory input". Pass an explicit '
-            "`inputs` mapping that routes a platform input (e.g. `query`) to each of these sockets.",
-            ", ".join(unmapped),
-        )
+        logger.warning(unmapped_mandatory_warning(unmapped))
 
-    if extraction.get("async_enabled"):
+    if bundle.async_enabled:
         pipeline_dict["async_enabled"] = True
 
     yaml = YAML()
-    yaml.preserve_quotes = True
     yaml.indent(mapping=2, sequence=2)
     buffer = StringIO()
     yaml.dump(pipeline_dict, buffer)
     config_yaml = buffer.getvalue()
 
-    dependency_block = _build_dependency_block(extraction.get("dependencies") or [])
+    dependency_block = _build_dependency_block(bundle.dependencies)
     if dependency_block:
         config_yaml = f"{config_yaml}\n{dependency_block}"
     return config_yaml
 
 
-def unmapped_mandatory_inputs(mandatory: dict, inputs: dict) -> list[str]:
+def unmapped_mandatory_inputs(mandatory: dict, inputs: dict) -> List[str]:
     """Return the mandatory ``"component.socket"`` paths not covered by any platform ``inputs`` mapping.
 
     :param mandatory: ``{component_name: [socket_name, ...]}`` mandatory open sockets (from the bundle).
@@ -118,27 +215,26 @@ def unmapped_mandatory_inputs(mandatory: dict, inputs: dict) -> list[str]:
     )
 
 
-def transform_to_config_yaml(
-    pipeline: Any,
-    project_root: Path,
-    inputs: Optional[dict] = None,
-    outputs: Optional[dict] = None,
-) -> str:
-    """Transform an in-memory Haystack pipeline into deployable YAML (programmatic, in-process).
+def unmapped_mandatory_warning(unmapped: List[str]) -> str:
+    """The canonical warning for mandatory pipeline inputs left unmapped — used by log and CLI output."""
+    return (
+        f"These mandatory pipeline inputs are not mapped to any platform input: {', '.join(unmapped)}. "
+        'The pipeline will fail at query time with "Missing mandatory input". Map them interactively '
+        "on a terminal, or pass an explicit inputs mapping that routes a platform input (e.g. `query`) "
+        "to each of these sockets."
+    )
 
-    Convenience wrapper that extracts from the live pipeline object and renders. Requires Haystack and
-    the pipeline's dependencies to be importable in the current process; the CLI uses
-    :func:`extract_via_subprocess` instead to avoid that requirement.
-    """
-    extraction = extract_from_pipeline(pipeline, Path(project_root))
-    return render_config_yaml(extraction, inputs=inputs, outputs=outputs)
+
+def flatten_sockets(sockets_by_component: Dict[str, List[str]]) -> List[str]:
+    """Flatten ``{component: [socket, ...]}`` into sorted ``"component.socket"`` paths."""
+    return sorted(f"{comp}.{socket}" for comp, sockets in sockets_by_component.items() for socket in sockets)
 
 
 def extract_via_subprocess(
     target: Path,
     entrypoint: Optional[str] = None,
     python_executable: Optional[str] = None,
-) -> dict:
+) -> ExtractionBundle:
     """Extract the pipeline bundle by running the extractor in the pipeline's own interpreter.
 
     This is the decoupling that lets the CLI/SDK environment stay free of the pipeline's dependencies:
@@ -166,8 +262,7 @@ def extract_via_subprocess(
             message = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
             raise PipelineTransformError(f"Failed to load the pipeline using interpreter '{python}':\n{message}")
         out_file.seek(0)
-        bundle: dict = json.load(out_file)
-        return bundle
+        return ExtractionBundle.from_dict(json.load(out_file))
 
 
 def detect_project_python(target: Path) -> str:
@@ -188,15 +283,20 @@ def detect_project_python(target: Path) -> str:
 
 
 def _build_dependency_block(dependencies: list) -> str:
-    """Build the commented-out ``dependencies`` YAML block that pins the Haystack version, e.g.::
+    """Build the ``dependencies`` YAML block pinning the Haystack version.
+
+    While :data:`_EMIT_ACTIVE_DEPENDENCY_BLOCK` is False the block is emitted commented out, e.g.::
 
         # dependencies:
         #   - haystack-ai==2.30.2
 
-    The block is emitted commented out so it does not affect deployment by default; users can
-    uncomment it to pin the listed dependencies. Returns an empty string when there is nothing to pin.
+    so it does not affect deployment; users can uncomment it to pin the listed dependencies.
+    Returns an empty string when there is nothing to pin.
     """
     if not dependencies:
         return ""
+    if _EMIT_ACTIVE_DEPENDENCY_BLOCK:
+        body = "\n".join(f"  - {line}" for line in dependencies)
+        return f"dependencies:\n{body}\n"
     body = "\n".join(f"#   - {line}" for line in dependencies)
     return f"# dependencies:\n{body}\n"

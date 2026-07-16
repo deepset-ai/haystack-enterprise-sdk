@@ -22,12 +22,20 @@ from deepset_cloud_sdk._service.deployment_service import (
     DeployResult,
     ServiceNotFoundError,
 )
-from deepset_cloud_sdk._service.pipeline_transform import PipelineTransformError
+from deepset_cloud_sdk._service.pipeline_transform import (
+    ExtractionBundle,
+    PipelineTransformError,
+)
 from deepset_cloud_sdk.cli import cli_app
 
 runner = CliRunner()
 
 FIXTURE = "tests/test_data/deploy/pipeline.py"
+
+
+def _bundle(**raw: object) -> ExtractionBundle:
+    """An ExtractionBundle for extract_via_subprocess mocks, from the raw dict keys."""
+    return ExtractionBundle.from_dict({"pipeline": {"components": {}}, **raw})  # type: ignore[arg-type]
 
 
 def _deployment(status: DeploymentStatus = DeploymentStatus.DEPLOYED) -> Deployment:
@@ -211,11 +219,12 @@ class TestDeployCommand:
         client_cls.return_value.create_shared_prototype.assert_not_called()
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
-    def test_deploy_share_failure_exits_1(self, client_cls: Mock) -> None:
+    def test_deploy_share_failure_warns_but_exits_0(self, client_cls: Mock) -> None:
+        # The deploy itself succeeded; a failed share link is a warning, not a failure exit.
         client_cls.return_value.deploy.return_value = _result(activated=True)
         client_cls.return_value.create_shared_prototype.side_effect = FailedToCreateSharedPrototypeError("boom")
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--share"])
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert "could not create the shared prototype" in result.stdout
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
@@ -229,13 +238,10 @@ class TestDeployCommand:
 class TestDryRun:
     @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_prints_yaml_and_skips_api(self, extract_mock: Mock) -> None:
-        extract_mock.return_value = {
-            "pipeline": {"components": {"c": {"type": "haystack.X", "init_parameters": {}}}},
-            "async_enabled": False,
-            "inferred_inputs": {},
-            "inferred_outputs": {},
-            "dependencies": ["haystack-ai==2.30.2"],
-        }
+        extract_mock.return_value = _bundle(
+            pipeline={"components": {"c": {"type": "haystack.X", "init_parameters": {}}}},
+            dependencies=["haystack-ai==2.30.2"],
+        )
         with patch("deepset_cloud_sdk.cli.DeploymentClient") as client_cls:
             result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"])
         assert result.exit_code == 0
@@ -246,13 +252,7 @@ class TestDryRun:
 
     @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_writes_output_file(self, extract_mock: Mock, tmp_path: Path) -> None:
-        extract_mock.return_value = {
-            "pipeline": {"components": {}},
-            "async_enabled": False,
-            "inferred_inputs": {},
-            "inferred_outputs": {},
-            "dependencies": [],
-        }
+        extract_mock.return_value = _bundle()
         out = tmp_path / "out.yaml"
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run", "--output", str(out)])
         assert result.exit_code == 0
@@ -269,15 +269,10 @@ class TestDryRun:
     @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=False)
     @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_non_interactive_skips_prompt(self, extract_mock: Mock, _isatty: Mock) -> None:
-        extract_mock.return_value = {
-            "pipeline": {"components": {}},
-            "async_enabled": False,
-            "inferred_inputs": {},
-            "inferred_outputs": {},
-            "available_inputs": {"retriever": ["query"]},
-            "available_outputs": {"reader": ["answers"]},
-            "dependencies": [],
-        }
+        extract_mock.return_value = _bundle(
+            available_inputs={"retriever": ["query"]},
+            available_outputs={"reader": ["answers"]},
+        )
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"])
         assert result.exit_code == 0
         assert "inputs:" not in result.stdout
@@ -285,15 +280,10 @@ class TestDryRun:
     @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
     @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_prompt_sets_io(self, extract_mock: Mock, _isatty: Mock) -> None:
-        extract_mock.return_value = {
-            "pipeline": {"components": {}},
-            "async_enabled": False,
-            "inferred_inputs": {},
-            "inferred_outputs": {},
-            "available_inputs": {"retriever": ["query"]},
-            "available_outputs": {"reader": ["answers", "documents"]},
-            "dependencies": [],
-        }
+        extract_mock.return_value = _bundle(
+            available_inputs={"retriever": ["query"]},
+            available_outputs={"reader": ["answers", "documents"]},
+        )
         # query=1, filters=skip(0), answers=1, documents=skip(0) — no confirm step anymore
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"], input="1\n0\n1\n0\n")
         assert result.exit_code == 0
@@ -304,16 +294,13 @@ class TestDryRun:
     @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_fully_inferred_io_skips_prompt(self, extract_mock: Mock, _isatty: Mock) -> None:
         # Inference covered the (mandatory) question socket, so no interactive prompt is needed.
-        extract_mock.return_value = {
-            "pipeline": {"components": {}},
-            "async_enabled": False,
-            "inferred_inputs": {"query": ["prompt_builder.question"]},
-            "inferred_outputs": {"answers": "answer_builder.answers"},
-            "available_inputs": {"prompt_builder": ["question"]},
-            "available_outputs": {"answer_builder": ["answers"]},
-            "mandatory_inputs": {"prompt_builder": ["question"]},
-            "dependencies": [],
-        }
+        extract_mock.return_value = _bundle(
+            inferred_inputs={"query": ["prompt_builder.question"]},
+            inferred_outputs={"answers": "answer_builder.answers"},
+            available_inputs={"prompt_builder": ["question"]},
+            available_outputs={"answer_builder": ["answers"]},
+            mandatory_inputs={"prompt_builder": ["question"]},
+        )
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"])
         assert result.exit_code == 0
         assert "prompt_builder.question" in result.stdout
@@ -324,16 +311,13 @@ class TestDryRun:
     def test_unmapped_mandatory_socket_prompts_mapping(self, extract_mock: Mock, _isatty: Mock) -> None:
         # Inference produced a `query` input but left a differently-named mandatory socket dangling;
         # the CLI must prompt to map it rather than shipping a prototype that crashes at query time.
-        extract_mock.return_value = {
-            "pipeline": {"components": {}},
-            "async_enabled": False,
-            "inferred_inputs": {"query": ["answer_builder.query"]},
-            "inferred_outputs": {"answers": "answer_builder.answers"},
-            "available_inputs": {"answer_builder": ["query"], "prompt_builder": ["passage"]},
-            "available_outputs": {"answer_builder": ["answers"]},
-            "mandatory_inputs": {"prompt_builder": ["passage"]},
-            "dependencies": [],
-        }
+        extract_mock.return_value = _bundle(
+            inferred_inputs={"query": ["answer_builder.query"]},
+            inferred_outputs={"answers": "answer_builder.answers"},
+            available_inputs={"answer_builder": ["query"], "prompt_builder": ["passage"]},
+            available_outputs={"answer_builder": ["answers"]},
+            mandatory_inputs={"prompt_builder": ["passage"]},
+        )
         # filters=skip(0); then map mandatory 'prompt_builder.passage' -> query (choice 1)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"], input="0\n1\n")
         assert result.exit_code == 0
@@ -342,16 +326,13 @@ class TestDryRun:
     @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=False)
     @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_unmapped_mandatory_socket_warns_non_interactive(self, extract_mock: Mock, _isatty: Mock) -> None:
-        extract_mock.return_value = {
-            "pipeline": {"components": {}},
-            "async_enabled": False,
-            "inferred_inputs": {"query": ["answer_builder.query"]},
-            "inferred_outputs": {"answers": "answer_builder.answers"},
-            "available_inputs": {"answer_builder": ["query"], "prompt_builder": ["passage"]},
-            "available_outputs": {"answer_builder": ["answers"]},
-            "mandatory_inputs": {"prompt_builder": ["passage"]},
-            "dependencies": [],
-        }
+        extract_mock.return_value = _bundle(
+            inferred_inputs={"query": ["answer_builder.query"]},
+            inferred_outputs={"answers": "answer_builder.answers"},
+            available_inputs={"answer_builder": ["query"], "prompt_builder": ["passage"]},
+            available_outputs={"answer_builder": ["answers"]},
+            mandatory_inputs={"prompt_builder": ["passage"]},
+        )
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"])
         assert result.exit_code == 0
         assert "prompt_builder.passage" in result.stdout
@@ -362,16 +343,13 @@ class TestDryRun:
     def test_skip_io_validation_bypasses_prompt(self, extract_mock: Mock, _isatty: Mock) -> None:
         # On a TTY a dangling mandatory socket would normally force a prompt; --skip-io-validation
         # deploys with whatever was inferred and asks nothing (no stdin provided).
-        extract_mock.return_value = {
-            "pipeline": {"components": {}},
-            "async_enabled": False,
-            "inferred_inputs": {"query": ["answer_builder.query"]},
-            "inferred_outputs": {"answers": "answer_builder.answers"},
-            "available_inputs": {"answer_builder": ["query"], "prompt_builder": ["passage"]},
-            "available_outputs": {"answer_builder": ["answers"]},
-            "mandatory_inputs": {"prompt_builder": ["passage"]},
-            "dependencies": [],
-        }
+        extract_mock.return_value = _bundle(
+            inferred_inputs={"query": ["answer_builder.query"]},
+            inferred_outputs={"answers": "answer_builder.answers"},
+            available_inputs={"answer_builder": ["query"], "prompt_builder": ["passage"]},
+            available_outputs={"answer_builder": ["answers"]},
+            mandatory_inputs={"prompt_builder": ["passage"]},
+        )
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run", "--skip-io-validation"])
         assert result.exit_code == 0
         assert "Which socket" not in result.stdout
@@ -381,11 +359,11 @@ class TestDryRun:
     def test_resolve_io_skip_validation_returns_inferred(self) -> None:
         from deepset_cloud_sdk.cli import _resolve_io_for_share
 
-        extraction = {
-            "inferred_inputs": {"query": ["answer_builder.query"]},
-            "inferred_outputs": {"answers": "answer_builder.answers"},
-            "mandatory_inputs": {"prompt_builder": ["passage"]},  # unmapped, but validation skipped
-        }
+        extraction = _bundle(
+            inferred_inputs={"query": ["answer_builder.query"]},
+            inferred_outputs={"answers": "answer_builder.answers"},
+            mandatory_inputs={"prompt_builder": ["passage"]},  # unmapped, but validation skipped
+        )
         inputs, outputs = _resolve_io_for_share(extraction, skip_validation=True)
         assert inputs == {"query": ["answer_builder.query"]}
         assert outputs == {"answers": "answer_builder.answers"}

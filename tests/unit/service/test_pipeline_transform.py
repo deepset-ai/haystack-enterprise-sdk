@@ -5,6 +5,7 @@ import sys
 import textwrap
 from pathlib import Path
 from typing import Generator
+from unittest.mock import Mock
 
 import pytest
 from haystack import Pipeline
@@ -16,17 +17,26 @@ from deepset_cloud_sdk._service.pipeline_extract import (
 )
 from deepset_cloud_sdk._service.pipeline_transform import (
     CODE_COMPONENT_TYPE,
+    ExtractionBundle,
     PipelineTransformError,
+    build_config_yaml,
     classify_module,
     detect_project_python,
     extract_via_subprocess,
     load_pipeline_from_file,
     render_config_yaml,
-    transform_to_config_yaml,
+    resolve_io,
     unmapped_mandatory_inputs,
 )
 
 FIXTURE_DIR = Path(__file__).parent.parent.parent / "test_data" / "deploy"
+
+
+def transform_to_config_yaml(pipeline, project_root, inputs=None, outputs=None) -> str:
+    """In-process extract → resolve → render, mirroring the production assembly for a live pipeline."""
+    bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, Path(project_root)))
+    resolved_inputs, resolved_outputs = resolve_io(bundle, inputs, outputs, None)
+    return render_config_yaml(bundle, inputs=resolved_inputs, outputs=resolved_outputs)
 
 
 @pytest.fixture(autouse=True)
@@ -332,9 +342,9 @@ class TestInputsOutputsAndDeps:
 
     def test_bundle_reports_available_sockets(self, tmp_path: Path) -> None:
         pipeline = load_pipeline_from_file(self._query_project(tmp_path))
-        bundle = extract_from_pipeline(pipeline, project_root=tmp_path)
-        assert set(bundle["available_inputs"]["searcher"]) == {"query", "filters"}
-        assert set(bundle["available_outputs"]["searcher"]) == {"answers", "documents"}
+        bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, project_root=tmp_path))
+        assert set(bundle.available_inputs["searcher"]) == {"query", "filters"}
+        assert set(bundle.available_outputs["searcher"]) == {"answers", "documents"}
 
     def _prompt_builder_project(self, tmp_path: Path) -> Path:
         """A summarization-style pipeline whose only open input is a ``question`` prompt variable."""
@@ -363,8 +373,8 @@ class TestInputsOutputsAndDeps:
 
     def test_bundle_reports_mandatory_inputs(self, tmp_path: Path) -> None:
         pipeline = load_pipeline_from_file(self._prompt_builder_project(tmp_path))
-        bundle = extract_from_pipeline(pipeline, project_root=tmp_path)
-        assert bundle["mandatory_inputs"]["prompt_builder"] == ["question"]
+        bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, project_root=tmp_path))
+        assert bundle.mandatory_inputs["prompt_builder"] == ["question"]
 
     def test_unmapped_mandatory_input_warns(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         # A mandatory socket whose name inference doesn't recognize must be surfaced, not shipped silently.
@@ -449,8 +459,9 @@ class TestSubprocessExtraction:
     def test_extract_via_subprocess_roundtrips(self) -> None:
         # Uses the current interpreter, which has haystack installed.
         extraction = extract_via_subprocess(FIXTURE_DIR / "pipeline.py", python_executable=sys.executable)
-        assert any(dep.startswith("haystack-ai==") for dep in extraction["dependencies"])
-        config_yaml = render_config_yaml(extraction)
+        assert any(dep.startswith("haystack-ai==") for dep in extraction.dependencies)
+        inputs, outputs = resolve_io(extraction, None, None, None)
+        config_yaml = render_config_yaml(extraction, inputs=inputs, outputs=outputs)
         assert CODE_COMPONENT_TYPE in config_yaml
         assert "class Greeter" in config_yaml
         assert "\n# dependencies:\n" in config_yaml
@@ -474,6 +485,77 @@ class TestSubprocessExtraction:
         target = tmp_path / "pipeline.py"
         target.write_text("")
         assert detect_project_python(target) == sys.executable
+
+
+class TestBuildConfigYaml:
+    """The ``io_resolver`` is consulted only when resolution is incomplete."""
+
+    def _bundle(self, inferred_inputs: dict, inferred_outputs: dict, mandatory_inputs: dict = None) -> ExtractionBundle:
+        return ExtractionBundle.from_dict(
+            {
+                "pipeline": {"components": {}},
+                "async_enabled": False,
+                "inferred_inputs": inferred_inputs,
+                "inferred_outputs": inferred_outputs,
+                "available_inputs": {"retriever": ["query"]},
+                "available_outputs": {"reader": ["answers"]},
+                "mandatory_inputs": mandatory_inputs or {},
+                "dependencies": [],
+            }
+        )
+
+    def test_resolver_invoked_when_io_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deepset_cloud_sdk._service import pipeline_transform
+
+        monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: self._bundle({}, {}))
+        resolver = Mock(return_value=({"query": ["retriever.query"]}, {"answers": "reader.answers"}))
+
+        yaml = build_config_yaml(FIXTURE_DIR / "pipeline.py", io_resolver=resolver)
+
+        resolver.assert_called_once()
+        assert "retriever.query" in yaml
+        assert "reader.answers" in yaml
+
+    def test_resolver_not_invoked_when_io_inferred(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deepset_cloud_sdk._service import pipeline_transform
+
+        bundle = self._bundle({"query": ["retriever.query"]}, {"answers": "reader.answers"})
+        monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: bundle)
+        resolver = Mock(return_value=({}, {}))
+
+        build_config_yaml(FIXTURE_DIR / "pipeline.py", io_resolver=resolver)
+
+        resolver.assert_not_called()
+
+    def test_resolver_invoked_when_only_outputs_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deepset_cloud_sdk._service import pipeline_transform
+
+        bundle = self._bundle({"query": ["retriever.query"]}, {})
+        monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: bundle)
+        resolver = Mock(return_value=({}, {"answers": "reader.answers"}))
+
+        yaml = build_config_yaml(FIXTURE_DIR / "pipeline.py", io_resolver=resolver)
+
+        resolver.assert_called_once()
+        assert "reader.answers" in yaml
+
+    def test_resolver_invoked_when_mandatory_input_unmapped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Inference produced inputs and outputs, but a mandatory socket is not routed to any platform
+        # input — the resolver must still be consulted (same rule as --dry-run).
+        from deepset_cloud_sdk._service import pipeline_transform
+
+        bundle = self._bundle(
+            {"query": ["retriever.query"]},
+            {"answers": "reader.answers"},
+            mandatory_inputs={"prompt_builder": ["passage"]},
+        )
+        monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: bundle)
+        resolver = Mock(return_value=({"query": ["retriever.query", "prompt_builder.passage"]}, {}))
+
+        yaml = build_config_yaml(FIXTURE_DIR / "pipeline.py", io_resolver=resolver)
+
+        resolver.assert_called_once()
+        assert "prompt_builder.passage" in yaml
 
 
 class TestClassifyOrigin:

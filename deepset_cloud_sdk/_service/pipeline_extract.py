@@ -7,7 +7,8 @@ not necessarily the SDK.
 
 It loads a pipeline from a ``.py`` file, rewrites every locally-defined custom component into the
 platform ``Code`` component (inlining the class source and its transitive local helpers), infers
-inputs/outputs, and version-pins the external dependencies. The result is a JSON-serializable
+inputs/outputs, and records the executing ``haystack-ai`` version (rendered as a commented-out,
+currently inactive ``dependencies`` block — see the renderer). The result is a JSON-serializable
 "extraction bundle" that the SDK renders into deployable YAML.
 
 Run as a script (used by the SDK via a subprocess):
@@ -317,8 +318,10 @@ class _ModuleSymbols:
                 self.preserved_import_lines.append(line)
 
 
-def _referenced_names(node: ast.AST) -> set[str]:
-    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+def _referenced_names(node: ast.AST) -> list[str]:
+    # Ordered and deduplicated: a set would make the inlined-helper order (and thus the rendered
+    # YAML and its config hash) vary across runs with string hash randomization.
+    return list(dict.fromkeys(n.id for n in ast.walk(node) if isinstance(n, ast.Name)))
 
 
 def _build_code_block(component_type: str, project_root: Path) -> str:
@@ -438,6 +441,19 @@ def _reject_required_init_params(comp_name: str, class_node: ast.ClassDef) -> No
 # synonyms is what lets the shared prototype (which only ever sends ``query``) reach them.
 _QUERY_SOCKET_NAMES = frozenset({"query", "question"})
 _FILTERS_SOCKET_NAMES = frozenset({"filters"})
+# Open output sockets with these exact names are mapped to the platform output of the same name.
+_OUTPUT_SOCKET_NAMES = ("answers", "documents")
+
+
+def _open_sockets(pipeline: Any, direction: str) -> dict:
+    """Return the pipeline's open ``inputs()``/``outputs()``, or ``{}`` when inspection fails.
+
+    :param direction: ``"inputs"`` or ``"outputs"``.
+    """
+    try:
+        return getattr(pipeline, direction)() or {}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def infer_inputs(pipeline: Any) -> dict:
@@ -448,11 +464,7 @@ def infer_inputs(pipeline: Any) -> dict:
     """
     query: list[str] = []
     filters: list[str] = []
-    try:
-        open_inputs = pipeline.inputs()
-    except Exception:  # noqa: BLE001
-        return {}
-    for comp_name, sockets in open_inputs.items():
+    for comp_name, sockets in _open_sockets(pipeline, "inputs").items():
         for socket_name in sockets:
             if socket_name in _QUERY_SOCKET_NAMES:
                 query.append(f"{comp_name}.{socket_name}")
@@ -473,12 +485,8 @@ def mandatory_inputs(pipeline: Any) -> dict:
     cannot run unless a platform input maps to it. Callers compare this against the resolved inputs to
     catch pipelines that would fail at query time with "Missing mandatory input '<socket>'".
     """
-    try:
-        open_inputs = pipeline.inputs()
-    except Exception:  # noqa: BLE001
-        return {}
     result: dict[str, list[str]] = {}
-    for comp_name, sockets in open_inputs.items():
+    for comp_name, sockets in _open_sockets(pipeline, "inputs").items():
         required = [
             socket_name
             for socket_name in sockets
@@ -494,39 +502,30 @@ def mandatory_inputs(pipeline: Any) -> dict:
 def infer_outputs(pipeline: Any) -> dict:
     """Heuristically map open output sockets named ``answers``/``documents`` to platform outputs."""
     result: dict[str, str] = {}
-    try:
-        open_outputs = pipeline.outputs()
-    except Exception:  # noqa: BLE001
-        return {}
-    for comp_name, sockets in open_outputs.items():
+    for comp_name, sockets in _open_sockets(pipeline, "outputs").items():
         for socket_name in sockets:
-            if socket_name == "answers" and "answers" not in result:
-                result["answers"] = f"{comp_name}.{socket_name}"
-            elif socket_name == "documents" and "documents" not in result:
-                result["documents"] = f"{comp_name}.{socket_name}"
+            if socket_name in _OUTPUT_SOCKET_NAMES and socket_name not in result:
+                result[socket_name] = f"{comp_name}.{socket_name}"
     return result
 
 
-def available_inputs(pipeline: Any) -> dict:
-    """Return every open input socket as ``{component_name: [socket_name, ...]}``.
+def _available_sockets(pipeline: Any, direction: str) -> dict:
+    """Return every open socket in ``direction`` as ``{component_name: [socket_name, ...]}``.
 
-    Unlike :func:`infer_inputs`, this does not filter by socket name — it exposes all open sockets so a
-    caller (e.g. the CLI) can offer them for interactive mapping when inference finds nothing.
+    Unlike inference, this does not filter by socket name — it exposes all open sockets so a caller
+    (e.g. the CLI) can offer them for interactive mapping when inference finds nothing.
     """
-    try:
-        open_inputs = pipeline.inputs()
-    except Exception:  # noqa: BLE001
-        return {}
-    return {comp_name: list(sockets) for comp_name, sockets in open_inputs.items() if sockets}
+    return {comp_name: list(sockets) for comp_name, sockets in _open_sockets(pipeline, direction).items() if sockets}
+
+
+def available_inputs(pipeline: Any) -> dict:
+    """Return every open input socket as ``{component_name: [socket_name, ...]}`` (see :func:`_available_sockets`)."""
+    return _available_sockets(pipeline, "inputs")
 
 
 def available_outputs(pipeline: Any) -> dict:
-    """Return every open output socket as ``{component_name: [socket_name, ...]}`` (see :func:`available_inputs`)."""
-    try:
-        open_outputs = pipeline.outputs()
-    except Exception:  # noqa: BLE001
-        return {}
-    return {comp_name: list(sockets) for comp_name, sockets in open_outputs.items() if sockets}
+    """Return every open output socket as ``{component_name: [socket_name, ...]}`` (see :func:`_available_sockets`)."""
+    return _available_sockets(pipeline, "outputs")
 
 
 def _haystack_dependency() -> list[str]:

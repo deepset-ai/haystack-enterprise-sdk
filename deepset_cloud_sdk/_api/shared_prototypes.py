@@ -17,7 +17,10 @@ from uuid import UUID
 import structlog
 from httpx import codes
 
-from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
+from deepset_cloud_sdk._api.deepset_cloud_api import (
+    DeepsetCloudAPI,
+    raise_for_unexpected_status,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -115,10 +118,10 @@ class SharedPrototypesAPI:
             endpoint=self._ENDPOINT,
             json=payload,
         )
-        if response.status_code not in (codes.CREATED, codes.OK):
-            logger.error("Failed to create shared prototype.", status_code=response.status_code, body=response.text)
-            raise FailedToCreateSharedPrototypeError(
-                f"Failed to create a shared prototype for service '{service_name}'. "
-                f"Status code: {response.status_code}. {response.text}"
-            )
+        raise_for_unexpected_status(
+            response,
+            (codes.CREATED, codes.OK),
+            FailedToCreateSharedPrototypeError,
+            f"Failed to create a shared prototype for service '{service_name}'.",
+        )
         return SharedPrototype.from_response(response.json())

@@ -1,7 +1,8 @@
 """Async client for deploying local Haystack pipelines to deepset AI Platform service deployments."""
 
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import AsyncIterator, Callable, Optional
 
 import structlog
 
@@ -22,6 +23,7 @@ from deepset_cloud_sdk._service.deployment_service import (
     DeployResult,
     ShareOptions,
 )
+from deepset_cloud_sdk._service.pipeline_transform import IoResolver
 
 logger = structlog.get_logger(__name__)
 
@@ -60,6 +62,12 @@ class AsyncDeploymentClient:
                 "environment variable."
             )
 
+    @asynccontextmanager
+    async def _service(self) -> AsyncIterator[DeploymentService]:
+        """Yield a :class:`DeploymentService` backed by a managed API client."""
+        async with DeepsetCloudAPI.factory(self._api_config) as api:
+            yield DeploymentService(api, self._workspace_name)
+
     async def deploy(  # pylint: disable=too-many-arguments
         self,
         target: Path,
@@ -71,7 +79,7 @@ class AsyncDeploymentClient:
         entrypoint: Optional[str] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
-        io_resolver: Optional[Callable[[dict], Tuple[dict, dict]]] = None,
+        io_resolver: Optional[IoResolver] = None,
         python_executable: Optional[str] = None,
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
@@ -81,8 +89,7 @@ class AsyncDeploymentClient:
 
         See :meth:`deepset_cloud_sdk._service.deployment_service.DeploymentService.deploy` for details.
         """
-        async with DeepsetCloudAPI.factory(self._api_config) as api:
-            service = DeploymentService(api, self._workspace_name)
+        async with self._service() as service:
             return await service.deploy(
                 target,
                 service_name,
@@ -101,8 +108,7 @@ class AsyncDeploymentClient:
 
     async def get_service_status(self, service_name: str) -> Deployment:
         """Return the current deployment (with live runtime status) for ``service_name``."""
-        async with DeepsetCloudAPI.factory(self._api_config) as api:
-            service = DeploymentService(api, self._workspace_name)
+        async with self._service() as service:
             return await service.get_service_status(service_name)
 
     async def create_shared_prototype(
@@ -112,6 +118,5 @@ class AsyncDeploymentClient:
 
         See :meth:`deepset_cloud_sdk._service.deployment_service.DeploymentService.create_shared_prototype`.
         """
-        async with DeepsetCloudAPI.factory(self._api_config) as api:
-            service = DeploymentService(api, self._workspace_name)
+        async with self._service() as service:
             return await service.create_shared_prototype(service_name, options)

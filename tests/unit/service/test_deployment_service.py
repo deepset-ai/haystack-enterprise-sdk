@@ -49,7 +49,9 @@ def service(monkeypatch: pytest.MonkeyPatch) -> DeploymentService:
     svc = DeploymentService(api=Mock(), workspace_name="ws")
     svc._deployments = AsyncMock()  # type: ignore[assignment]
     # short-circuit the transform so tests don't need Haystack/import machinery
-    monkeypatch.setattr(svc, "build_config_yaml", lambda *a, **k: "components: {}\n")
+    monkeypatch.setattr(
+        "deepset_cloud_sdk._service.pipeline_transform.build_config_yaml", lambda *a, **k: "components: {}\n"
+    )
     return svc
 
 
@@ -64,9 +66,7 @@ class TestResolveAndPush:
 
         assert result.activated is False
         assert result.timed_out is False
-        service._deployments.push_revision.assert_awaited_once_with(
-            "ws", deployment.deployment_id, "components: {}\n"
-        )
+        service._deployments.push_revision.assert_awaited_once_with("ws", deployment.deployment_id, "components: {}\n")
         service._deployments.activate_revision.assert_not_called()
 
     async def test_missing_service_without_create_raises(self, service: DeploymentService) -> None:
@@ -139,67 +139,12 @@ class TestActivateAndPoll:
         service._deployments.activate_revision.return_value = _deployment(
             status=DeploymentStatus.DEPLOYMENT_IN_PROGRESS
         )
-        service._deployments.get_deployment.return_value = _deployment(
-            status=DeploymentStatus.DEPLOYMENT_IN_PROGRESS
-        )
+        service._deployments.get_deployment.return_value = _deployment(status=DeploymentStatus.DEPLOYMENT_IN_PROGRESS)
 
         result = await service.deploy(FIXTURE, "svc", activate=True, poll_interval_s=0, timeout_s=0)
 
         assert result.timed_out is True
         assert result.activated is True
-
-
-class TestBuildConfigYaml:
-    """The ``io_resolver`` is consulted only when inputs or outputs could not be inferred."""
-
-    def _service(self) -> DeploymentService:
-        return DeploymentService(api=Mock(), workspace_name="ws")
-
-    def _bundle(self, inferred_inputs: dict, inferred_outputs: dict) -> dict:
-        return {
-            "pipeline": {"components": {}},
-            "async_enabled": False,
-            "inferred_inputs": inferred_inputs,
-            "inferred_outputs": inferred_outputs,
-            "available_inputs": {"retriever": ["query"]},
-            "available_outputs": {"reader": ["answers"]},
-            "dependencies": [],
-        }
-
-    def test_resolver_invoked_when_io_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deepset_cloud_sdk._service import pipeline_transform
-
-        monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: self._bundle({}, {}))
-        resolver = Mock(return_value=({"query": ["retriever.query"]}, {"answers": "reader.answers"}))
-
-        yaml = self._service().build_config_yaml(FIXTURE, io_resolver=resolver)
-
-        resolver.assert_called_once()
-        assert "retriever.query" in yaml
-        assert "reader.answers" in yaml
-
-    def test_resolver_not_invoked_when_io_inferred(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deepset_cloud_sdk._service import pipeline_transform
-
-        bundle = self._bundle({"query": ["retriever.query"]}, {"answers": "reader.answers"})
-        monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: bundle)
-        resolver = Mock(return_value=({}, {}))
-
-        self._service().build_config_yaml(FIXTURE, io_resolver=resolver)
-
-        resolver.assert_not_called()
-
-    def test_resolver_invoked_when_only_outputs_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deepset_cloud_sdk._service import pipeline_transform
-
-        bundle = self._bundle({"query": ["retriever.query"]}, {})
-        monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: bundle)
-        resolver = Mock(return_value=({}, {"answers": "reader.answers"}))
-
-        yaml = self._service().build_config_yaml(FIXTURE, io_resolver=resolver)
-
-        resolver.assert_called_once()
-        assert "reader.answers" in yaml
 
 
 @pytest.mark.asyncio
