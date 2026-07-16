@@ -16,6 +16,7 @@ from deepset_cloud_sdk._api.deployments import (
     PipelineValidationIssue,
     PipelineValidationResult,
 )
+from deepset_cloud_sdk._api.pipeline_run import PipelineRunError
 from deepset_cloud_sdk._api.shared_prototypes import (
     FailedToCreateSharedPrototypeError,
     SharedPrototype,
@@ -442,3 +443,64 @@ class TestServiceStatusCommand:
         result = runner.invoke(cli_app, ["service-status", "svc"])
         assert result.exit_code == 1
         assert "missing" in result.stdout
+
+
+class TestRunCommand:
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_run_prints_output_json(self, client_cls: Mock) -> None:
+        client_cls.return_value.run.return_value = {"llm": {"replies": ["hi"]}}
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--query", "who?"])
+        assert result.exit_code == 0
+        assert '"replies"' in result.stdout
+        _, kwargs = client_cls.return_value.run.call_args
+        assert kwargs["query"] == "who?"
+        assert kwargs["extra_inputs"] is None
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_run_parses_inline_inputs_json(self, client_cls: Mock) -> None:
+        client_cls.return_value.run.return_value = {}
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--inputs", '{"retriever": {"top_k": 3}}'])
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.run.call_args
+        assert kwargs["extra_inputs"] == {"retriever": {"top_k": 3}}
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_run_reads_inputs_from_file(self, client_cls: Mock, tmp_path: Path) -> None:
+        client_cls.return_value.run.return_value = {}
+        inputs_file = tmp_path / "inputs.json"
+        inputs_file.write_text('{"llm": {"prompt": "hi"}}', encoding="utf-8")
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--inputs", f"@{inputs_file}"])
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.run.call_args
+        assert kwargs["extra_inputs"] == {"llm": {"prompt": "hi"}}
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_run_invalid_inputs_json_exits(self, client_cls: Mock) -> None:
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--inputs", "{not json"])
+        assert result.exit_code == 1
+        assert "not valid JSON" in result.stdout
+        client_cls.return_value.run.assert_not_called()
+
+    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_run_prompts_for_query_on_tty(self, client_cls: Mock, _tty: Mock) -> None:
+        client_cls.return_value.run.return_value = {}
+        result = runner.invoke(cli_app, ["run", FIXTURE], input="my question\n")
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.run.call_args
+        assert kwargs["query"] == "my question"
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_run_writes_output_file(self, client_cls: Mock, tmp_path: Path) -> None:
+        client_cls.return_value.run.return_value = {"a": 1}
+        out = tmp_path / "out.json"
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--query", "q", "--output", str(out)])
+        assert result.exit_code == 0
+        assert '"a": 1' in out.read_text(encoding="utf-8")
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_run_surfaces_run_error(self, client_cls: Mock) -> None:
+        client_cls.return_value.run.side_effect = PipelineRunError("missing secret")
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--query", "q"])
+        assert result.exit_code == 1
+        assert "missing secret" in result.stdout

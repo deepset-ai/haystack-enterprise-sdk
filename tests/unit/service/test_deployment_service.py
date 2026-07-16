@@ -148,6 +148,48 @@ class TestValidation:
 
 
 @pytest.mark.asyncio
+class TestRun:
+    def _mock_run_response(self, service: DeploymentService, body: dict) -> AsyncMock:
+        """Wire ``service._api.post`` to return an OK response carrying ``body``."""
+        from httpx import Request, Response, codes
+
+        post = AsyncMock(return_value=Response(codes.OK, request=Request("POST", "https://x"), json=body))
+        service._api.post = post  # type: ignore[attr-defined]
+        return post
+
+    async def test_run_sends_parsed_config_and_mapped_inputs(
+        self, service: DeploymentService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepset_cloud_sdk._service.pipeline_transform.build_config_yaml",
+            lambda *a, **k: "components: {}\ninputs:\n  query:\n  - retriever.query\n",
+        )
+        post = self._mock_run_response(service, {"llm": {"replies": ["hello"]}})
+
+        result = await service.run(FIXTURE, query="who?")
+
+        assert result == {"llm": {"replies": ["hello"]}}
+        _, kwargs = post.call_args
+        assert kwargs["endpoint"] == "haystack/pipelines/run"
+        assert kwargs["json"]["pipeline_config"]["inputs"] == {"query": ["retriever.query"]}
+        assert kwargs["json"]["inputs"] == {"retriever": {"query": "who?"}}
+
+    async def test_run_forwards_include_outputs_from(
+        self, service: DeploymentService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepset_cloud_sdk._service.pipeline_transform.build_config_yaml",
+            lambda *a, **k: "components: {}\ninputs:\n  query:\n  - retriever.query\n",
+        )
+        post = self._mock_run_response(service, {})
+
+        await service.run(FIXTURE, query="q", include_outputs_from=["retriever"])
+
+        _, kwargs = post.call_args
+        assert kwargs["json"]["include_outputs_from"] == ["retriever"]
+
+
+@pytest.mark.asyncio
 class TestActivateAndPoll:
     async def test_activate_polls_until_deployed(self, service: DeploymentService) -> None:
         deployment = _deployment(status=DeploymentStatus.UNDEPLOYED)

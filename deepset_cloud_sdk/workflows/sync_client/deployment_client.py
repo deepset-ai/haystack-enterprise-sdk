@@ -2,7 +2,7 @@
 
 import asyncio
 from pathlib import Path
-from typing import Awaitable, Callable, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 import structlog
 
@@ -129,6 +129,36 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
                 outputs=outputs,
                 io_resolver=io_resolver,
                 python_executable=python_executable,
+            )
+        )
+
+    def run(  # pylint: disable=too-many-arguments
+        self,
+        target: Path,
+        *,
+        entrypoint: Optional[str] = None,
+        inputs: Optional[dict] = None,
+        outputs: Optional[dict] = None,
+        io_resolver: Optional[IoResolver] = None,
+        python_executable: Optional[str] = None,
+        query: Optional[str] = None,
+        filters: Optional[Any] = None,
+        extra_inputs: Optional[Dict[str, Dict[str, Any]]] = None,
+        include_outputs_from: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Transform ``target`` and run the generated YAML in the platform sandbox synchronously."""
+        return _run(
+            self._async_client.run(
+                target,
+                entrypoint=entrypoint,
+                inputs=inputs,
+                outputs=outputs,
+                io_resolver=io_resolver,
+                python_executable=python_executable,
+                query=query,
+                filters=filters,
+                extra_inputs=extra_inputs,
+                include_outputs_from=include_outputs_from,
             )
         )
 

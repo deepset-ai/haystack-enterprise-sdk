@@ -9,6 +9,7 @@ from deepset_cloud_sdk._api.deployments import (
     PipelineValidationIssue,
     PipelineValidationResult,
 )
+from deepset_cloud_sdk._api.pipeline_run import PipelineRunError
 from deepset_cloud_sdk._api.shared_prototypes import (
     FailedToCreateSharedPrototypeError,
     SharedPrototype,
@@ -76,4 +77,5 @@ __all__ = [
     "PipelineValidationError",
     "PipelineValidationResult",
     "PipelineValidationIssue",
+    "PipelineRunError",
 ]

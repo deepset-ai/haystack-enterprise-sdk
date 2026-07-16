@@ -19,6 +19,7 @@ from deepset_cloud_sdk._api.deployments import (
     DeploymentServiceLevel,
     PipelineValidationError,
 )
+from deepset_cloud_sdk._api.pipeline_run import PipelineRunError
 from deepset_cloud_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from deepset_cloud_sdk._api.upload_sessions import WriteMode
 from deepset_cloud_sdk._service.deployment_service import (
@@ -583,6 +584,110 @@ def validate(
         typer.echo(f"Pipeline is invalid: {len(result.errors)} error(s).")
         raise typer.Exit(1)
     typer.echo("Pipeline is valid.")
+
+
+@cli_app.command()
+def run(  # pylint: disable=too-many-arguments,too-many-locals
+    target: Path,
+    query: Optional[str] = None,
+    inputs: Optional[str] = None,
+    include_outputs_from: Optional[List[str]] = None,
+    entrypoint: Optional[str] = None,
+    python: Optional[str] = None,
+    skip_io_validation: bool = False,
+    output: Optional[Path] = None,
+    api_key: Optional[str] = None,
+    api_url: Optional[str] = None,
+    workspace_name: str = DEFAULT_WORKSPACE_NAME,
+) -> None:
+    """Run a Haystack pipeline defined in a local Python file in the platform sandbox, without deploying.
+
+    Transforms the pipeline the same way ``deploy`` does (rewriting local custom components into the
+    platform Code component), then executes the resulting YAML on the platform with the given inputs
+    and prints the pipeline output. This is the same "run without deploying" the builder/playground does.
+
+    The pipeline is loaded in your project's Python environment (auto-detected virtualenv, or the
+    interpreter given by --python), so this CLI's own environment does not need your pipeline's
+    dependencies installed.
+
+    :param target: Path to the Python file that defines the pipeline.
+    :param query: Query text routed to the sockets mapped under the pipeline's 'query' input. Convenient
+        for the common case; on an interactive terminal you are prompted for it when neither --query nor
+        --inputs is given.
+    :param inputs: Explicit run inputs as JSON, either a literal JSON string or '@path/to/file.json'.
+        Shape is the Haystack run inputs dict, '{"component": {"socket": value}}'. Merged over (and
+        wins against) any inputs derived from --query.
+    :param include_outputs_from: Component name(s) whose outputs to include in the result. Repeat the
+        option to pass several. Defaults to all components.
+    :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
+    :param python: Path to the Python interpreter used to load your pipeline (defaults to an
+        auto-detected virtualenv near the target file, else the current interpreter).
+    :param skip_io_validation: Skip the interactive input/output prompt and use whatever was inferred.
+    :param output: Write the pipeline output JSON to this file instead of printing it to stdout.
+    :param api_key: deepset API key to use for authentication.
+    :param api_url: API URL to use for authentication.
+    :param workspace_name: Workspace to run in. Uses the workspace from the .ENV file by default.
+
+    Example:
+    `deepset-cloud run pipeline.py --query "What is deepset?"`
+
+    With explicit inputs from a file:
+    `deepset-cloud run pipeline.py --inputs @inputs.json`
+    """
+    extra_inputs = _parse_inputs_option(inputs)
+
+    if query is None and extra_inputs is None and _stdin_is_tty():
+        query = typer.prompt("Query")
+
+    client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
+    io_resolver = functools.partial(_resolve_io_for_share, skip_validation=skip_io_validation)
+    try:
+        result = client.run(
+            target,
+            entrypoint=entrypoint,
+            io_resolver=io_resolver,
+            python_executable=python,
+            query=query,
+            extra_inputs=extra_inputs,
+            include_outputs_from=include_outputs_from or None,
+        )
+    except (PipelineTransformError, PipelineRunError) as err:
+        typer.echo(str(err))
+        raise typer.Exit(1)  # noqa: B904
+
+    rendered = json.dumps(result, indent=2, ensure_ascii=False)
+    if output is not None:
+        output.write_text(rendered, encoding="utf-8")
+        typer.echo(f"Wrote pipeline output to {output}.")
+    else:
+        typer.echo(rendered)
+
+
+def _parse_inputs_option(inputs: Optional[str]) -> Optional[dict]:
+    """Parse the ``--inputs`` option into a dict: a literal JSON string, or ``@path`` to a JSON file.
+
+    Returns ``None`` when no ``--inputs`` was given. Exits with an error on invalid JSON or a missing file.
+    """
+    if inputs is None:
+        return None
+    if inputs.startswith("@"):
+        path = Path(inputs[1:])
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as err:
+            typer.echo(f"Could not read --inputs file '{path}': {err}")
+            raise typer.Exit(1)  # noqa: B904
+    else:
+        raw = inputs
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as err:
+        typer.echo(f"--inputs is not valid JSON: {err}")
+        raise typer.Exit(1)  # noqa: B904
+    if not isinstance(parsed, dict):
+        typer.echo("--inputs must be a JSON object mapping component names to their inputs.")
+        raise typer.Exit(1)
+    return parsed
 
 
 def _deploy_dry_run(

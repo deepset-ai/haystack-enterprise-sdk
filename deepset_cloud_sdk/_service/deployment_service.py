@@ -6,10 +6,11 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import UUID
 
 import structlog
+from ruamel.yaml import YAML
 
 from deepset_cloud_sdk._api.config import DEFAULT_WORKSPACE_NAME, CommonConfig
 from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
@@ -22,6 +23,7 @@ from deepset_cloud_sdk._api.deployments import (
     PipelineValidationError,
     PipelineValidationResult,
 )
+from deepset_cloud_sdk._api.pipeline_run import HaystackRunAPI, build_run_inputs
 from deepset_cloud_sdk._api.shared_prototypes import (
     SharedPrototype,
     SharedPrototypesAPI,
@@ -223,6 +225,61 @@ class DeploymentService:
             python_executable=python_executable,
         )
         return await self._deployments.validate_pipeline(self._workspace_name, query_yaml=config_yaml)
+
+    async def run(  # pylint: disable=too-many-arguments
+        self,
+        target: Path,
+        *,
+        entrypoint: Optional[str] = None,
+        inputs: Optional[dict] = None,
+        outputs: Optional[dict] = None,
+        io_resolver: Optional[pipeline_transform.IoResolver] = None,
+        python_executable: Optional[str] = None,
+        query: Optional[str] = None,
+        filters: Optional[Any] = None,
+        extra_inputs: Optional[Dict[str, Dict[str, Any]]] = None,
+        include_outputs_from: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Transform ``target`` and run the generated YAML in the platform sandbox, without deploying.
+
+        Runs the exact same transform path as :meth:`deploy`, so the YAML executed matches what a
+        deploy would push. The generated ``config_yaml`` is parsed back into a dict and sent, together
+        with the run inputs, to the sandbox run endpoint (the same call the builder/playground makes).
+
+        :param target: Path to the pipeline ``.py`` file.
+        :param entrypoint: Name of the pipeline instance/factory when the file is ambiguous.
+        :param inputs: Optional explicit pipeline inputs (overrides inference) embedded in the YAML.
+        :param outputs: Optional explicit pipeline outputs (overrides inference) embedded in the YAML.
+        :param io_resolver: Optional callback consulted when input/output resolution is incomplete.
+        :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
+        :param query: Query text routed to the sockets mapped under the ``query`` input key.
+        :param filters: Optional filters routed to the ``filters`` input key.
+        :param extra_inputs: Explicit ``{component: {socket: value}}`` run inputs, merged last (wins).
+        :param include_outputs_from: Component names whose outputs to include (defaults to all).
+        :raises PipelineRunError: If the run fails or the query cannot be mapped to any input.
+        :return: The pipeline output, a dict keyed by component name.
+        """
+        config_yaml = pipeline_transform.build_config_yaml(
+            target,
+            entrypoint=entrypoint,
+            inputs=inputs,
+            outputs=outputs,
+            io_resolver=io_resolver,
+            python_executable=python_executable,
+        )
+        pipeline_config = dict(YAML().load(config_yaml))
+        run_inputs = build_run_inputs(
+            pipeline_config,
+            query=query,
+            filters=filters,
+            extra_inputs=extra_inputs,
+        )
+        return await HaystackRunAPI(self._api).run_pipeline(
+            self._workspace_name,
+            pipeline_config=pipeline_config,
+            inputs=run_inputs,
+            include_outputs_from=include_outputs_from,
+        )
 
     async def get_service_status(self, service_name: str) -> Deployment:
         """Return the current deployment (with live runtime status) for ``service_name``.

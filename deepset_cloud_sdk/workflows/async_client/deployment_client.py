@@ -2,7 +2,7 @@
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Callable, Optional
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 import structlog
 
@@ -134,6 +134,38 @@ class AsyncDeploymentClient:
                 outputs=outputs,
                 io_resolver=io_resolver,
                 python_executable=python_executable,
+            )
+
+    async def run(  # pylint: disable=too-many-arguments
+        self,
+        target: Path,
+        *,
+        entrypoint: Optional[str] = None,
+        inputs: Optional[dict] = None,
+        outputs: Optional[dict] = None,
+        io_resolver: Optional[IoResolver] = None,
+        python_executable: Optional[str] = None,
+        query: Optional[str] = None,
+        filters: Optional[Any] = None,
+        extra_inputs: Optional[Dict[str, Dict[str, Any]]] = None,
+        include_outputs_from: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Transform ``target`` and run the generated YAML in the platform sandbox, without deploying.
+
+        See :meth:`deepset_cloud_sdk._service.deployment_service.DeploymentService.run` for details.
+        """
+        async with self._service() as service:
+            return await service.run(
+                target,
+                entrypoint=entrypoint,
+                inputs=inputs,
+                outputs=outputs,
+                io_resolver=io_resolver,
+                python_executable=python_executable,
+                query=query,
+                filters=filters,
+                extra_inputs=extra_inputs,
+                include_outputs_from=include_outputs_from,
             )
 
     async def get_service_status(self, service_name: str) -> Deployment:

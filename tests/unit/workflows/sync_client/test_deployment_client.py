@@ -47,6 +47,21 @@ def test_deploy_forwards_to_async_client(async_cls: Mock) -> None:
 
 
 @patch("deepset_cloud_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
+def test_run_forwards_to_async_client(async_cls: Mock) -> None:
+    async_instance = async_cls.return_value
+    async_instance.run = AsyncMock(return_value={"llm": {"replies": ["hi"]}})
+
+    client = DeploymentClient(api_key="k", workspace_name="ws", api_url="https://api")
+    result = client.run("pipeline.py", query="who?", extra_inputs={"retriever": {"top_k": 3}})
+
+    assert result == {"llm": {"replies": ["hi"]}}
+    async_instance.run.assert_awaited_once()
+    _, kwargs = async_instance.run.call_args
+    assert kwargs["query"] == "who?"
+    assert kwargs["extra_inputs"] == {"retriever": {"top_k": 3}}
+
+
+@patch("deepset_cloud_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
 def test_get_service_status_forwards(async_cls: Mock) -> None:
     async_instance = async_cls.return_value
     deployment = _result().deployment

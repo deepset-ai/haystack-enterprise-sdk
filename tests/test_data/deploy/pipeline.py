@@ -4,10 +4,9 @@ Exposes both a `Pipeline` instance (`pipeline`) and a zero-arg factory
 (`build_pipeline`) so the auto-detection logic can be exercised both ways.
 """
 
+from custom_nodes.greeter import Greeter
 from haystack import Pipeline
 from haystack.components.builders import PromptBuilder
-
-from custom_nodes.greeter import Greeter
 
 
 def build_pipeline() -> Pipeline:
