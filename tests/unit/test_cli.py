@@ -1,4 +1,5 @@
 import datetime
+import logging
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Generator, List
@@ -6,6 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from uuid import UUID
 
 import pytest
+import structlog
 from typer.testing import CliRunner
 
 __version__ = version("deepset-cloud-sdk")
@@ -18,7 +20,7 @@ from deepset_cloud_sdk._api.upload_sessions import (
     UploadSessionWriteModeEnum,
     WriteMode,
 )
-from deepset_cloud_sdk.cli import cli_app
+from deepset_cloud_sdk.cli import _configure_cli_logging, cli_app
 from deepset_cloud_sdk.models import UserInfo
 from deepset_cloud_sdk.workflows.sync_client.files import download as sync_download
 
@@ -471,3 +473,32 @@ class TestCLIUtils:
         result = runner.invoke(cli_app, ["--version"])
         assert result.exit_code == 0
         assert __version__ in result.stdout
+
+
+class TestCLILogging:
+    @pytest.fixture(autouse=True)
+    def _restore_logging(self) -> Generator[None, None, None]:
+        """Restore the library's default structlog config after each test."""
+        yield
+        _configure_cli_logging(False)
+        structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.INFO))
+
+    def test_quiet_by_default_suppresses_info(self, capsys: pytest.CaptureFixture) -> None:
+        _configure_cli_logging(False)
+        structlog.get_logger("test").info("should-not-appear")
+        assert "should-not-appear" not in capsys.readouterr().err
+
+    def test_quiet_still_shows_warning(self, capsys: pytest.CaptureFixture) -> None:
+        _configure_cli_logging(False)
+        structlog.get_logger("test").warning("should-appear")
+        captured = capsys.readouterr()
+        assert "should-appear" in (captured.out + captured.err)
+
+    def test_verbose_shows_info_and_debug(self, capsys: pytest.CaptureFixture) -> None:
+        _configure_cli_logging(True)
+        structlog.get_logger("test").info("info-line")
+        structlog.get_logger("test").debug("debug-line")
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "info-line" in combined
+        assert "debug-line" in combined

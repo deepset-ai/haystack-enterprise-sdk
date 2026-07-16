@@ -2,6 +2,7 @@
 
 import functools
 import json
+import logging
 import sys
 from importlib.metadata import version
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import List, Optional, Tuple
 from uuid import UUID
 
 import click
+import structlog
 import typer
 from tabulate import tabulate
 from yaspin import yaspin
@@ -48,6 +50,39 @@ from deepset_cloud_sdk.workflows.sync_client.files import (
 from deepset_cloud_sdk.workflows.sync_client.files import upload as sync_upload
 
 cli_app = typer.Typer(pretty_exceptions_show_locals=False)
+
+
+def _configure_cli_logging(verbose: bool) -> None:
+    """Set the log verbosity for a CLI run.
+
+    The SDK configures structlog at ``INFO`` on import (see ``deepset_cloud_sdk/__init__.py``),
+    which prints diagnostic log lines from the ``_service``/``_api``/``workflows`` layers over the
+    CLI's own output. For the CLI we want a clean console by default, so we override that here:
+    hide ``INFO``/``DEBUG`` unless ``--verbose`` is given (``WARNING``+ always shows).
+
+    Only the CLI entry path calls this, so the library default is left unchanged for SDK users.
+
+    :param verbose: When True, show ``INFO``/``DEBUG`` logs; otherwise only ``WARNING`` and above.
+    """
+    level = logging.DEBUG if verbose else logging.WARNING
+
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(level),
+        processors=[
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="%H:%M:%S"),
+            structlog.dev.ConsoleRenderer(),
+        ],
+    )
+
+    # Cover the one module that uses stdlib logging (``_service/pipeline_extract.py``). Without a
+    # handler its sub-WARNING records are dropped, so add one only in verbose mode.
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    if verbose and not any(getattr(h, "_deepset_cli", False) for h in root_logger.handlers):
+        handler = logging.StreamHandler()
+        handler._deepset_cli = True  # type: ignore[attr-defined]  # marker to avoid duplicate handlers
+        root_logger.addHandler(handler)
 
 
 # cli commands
@@ -904,6 +939,12 @@ def main(
         is_eager=True,
         help="Show the SDK version and exit.",
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show INFO/DEBUG logs from the SDK. By default only warnings and errors are shown.",
+    ),
 ) -> None:  # noqa
     """The CLI for the deepset SDK.
 
@@ -917,7 +958,10 @@ def main(
 
     Lists can be passed by using the same flag multiple times. For example, to scan only `.txt` and `.pdf` files,
     when uploading use `--use-type .txt --use-type .pdf`.
+
+    Pass `--verbose` (or `-v`) to any command to see the SDK's INFO/DEBUG logs.
     """
+    _configure_cli_logging(verbose)
 
 
 def run_packaged() -> None:
