@@ -1,4 +1,4 @@
-"""Pipeline importing service for deepset SDK."""
+"""Pipeline importing service for Haystack Enterprise Platform SDK."""
 
 # pylint: disable=unnecessary-ellipsis,import-outside-toplevel
 from __future__ import annotations
@@ -13,9 +13,9 @@ from httpx import Response
 from pydantic import BaseModel
 from ruamel.yaml import YAML
 
-from deepset_cloud_sdk._api.config import DEFAULT_WORKSPACE_NAME, CommonConfig
-from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
-from deepset_cloud_sdk.models import IndexConfig, PipelineConfig
+from haystack_enterprise_sdk._api.config import DEFAULT_WORKSPACE_NAME, CommonConfig
+from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
+from haystack_enterprise_sdk.models import IndexConfig, PipelineConfig
 
 logger = structlog.get_logger(__name__)
 
@@ -27,11 +27,11 @@ class ErrorDetail(BaseModel):
     message: str
 
 
-class DeepsetValidationError(Exception):
+class HaystackEnterpriseValidationError(Exception):
     """Raised when pipeline or index validation fails."""
 
     def __init__(self, message: str, errors: List[ErrorDetail], status_code: int) -> None:
-        """Initialize DeepsetValidationError.
+        """Initialize HaystackEnterpriseValidationError.
 
         :param message: Error message.
         :param errors: List of validation error details.
@@ -63,12 +63,12 @@ class PipelineProtocol(Protocol):
 
 
 class PipelineService:
-    """Handles the importing of Haystack pipelines and indexes into deepset AI platform."""
+    """Handles the importing of Haystack pipelines and indexes into Haystack Enterprise Platform."""
 
-    def __init__(self, api: DeepsetCloudAPI, workspace_name: Optional[str] = None) -> None:
+    def __init__(self, api: HaystackEnterpriseAPI, workspace_name: Optional[str] = None) -> None:
         """Initialize the pipeline service.
 
-        :param api: An initialized DeepsetCloudAPI instance.
+        :param api: An initialized HaystackEnterpriseAPI instance.
         :param workspace_name: Optional workspace name to use instead of environment variable.
         """
         self._api = api
@@ -84,11 +84,11 @@ class PipelineService:
         :param config: CommonConfig object.
         :param workspace_name: Optional workspace name to use instead of environment variable.
         """
-        async with DeepsetCloudAPI.factory(config) as api:
+        async with HaystackEnterpriseAPI.factory(config) as api:
             return cls(api, workspace_name)
 
     async def import_async(self, pipeline: PipelineProtocol, config: IndexConfig | PipelineConfig) -> None:
-        """Import a pipeline or an index into deepset AI platform.
+        """Import a pipeline or an index into Haystack Enterprise Platform.
 
         :param pipeline: The pipeline or index to import. Must be a Haystack Pipeline or AsyncPipeline.
         :param config: Configuration for importing, either `IndexConfig` or `PipelineConfig`.
@@ -98,7 +98,7 @@ class PipelineService:
         :raises TypeError: If the pipeline object isn't a Haystack Pipeline or AsyncPipeline.
         :raises ValueError: If no workspace is configured.
         :raises ImportError: If haystack-ai is not installed.
-        :raises DeepsetValidationError: If validation is enabled and the pipeline or index is invalid.
+        :raises HaystackEnterpriseValidationError: If validation is enabled and the pipeline or index is invalid.
         """
         logger.debug(f"Starting async importing for {config.name}")
 
@@ -121,7 +121,7 @@ class PipelineService:
         if not self._workspace_name:
             raise ValueError(
                 "The workspace to import into is not configured. "
-                "Run 'deepset-cloud login' and follow the instructions or configure the workspace name on the SDK instance."
+                "Run 'haystack-enterprise login' and follow the instructions or configure the workspace name on the SDK instance."
             )
 
         pipeline_yaml = self._from_haystack_pipeline(pipeline, config)
@@ -143,14 +143,14 @@ class PipelineService:
 
         :param config: Import configuration.
         :param pipeline_yaml: Pipeline YAML string to validate.
-        :raises DeepsetValidationError: If strict_validation is True and the pipeline YAML is invalid.
+        :raises HaystackEnterpriseValidationError: If strict_validation is True and the pipeline YAML is invalid.
         """
         try:
             if isinstance(config, IndexConfig):
                 await self._validate_index(config.name, pipeline_yaml, config)
                 return
             await self._validate_pipeline(config.name, pipeline_yaml, config)
-        except DeepsetValidationError as err:
+        except HaystackEnterpriseValidationError as err:
             if config.strict_validation:
                 # Re-raise the error to fail the import
                 raise
@@ -166,7 +166,7 @@ class PipelineService:
         :param name: Name of the index.
         :param indexing_yaml: YAML configuration for the index.
         :param config: Index configuration containing overwrite flag.
-        :raises DeepsetValidationError: If validation fails.
+        :raises HaystackEnterpriseValidationError: If validation fails.
         """
         logger.debug(f"Validating index {name}.")
 
@@ -192,7 +192,7 @@ class PipelineService:
         :param name: Name of the pipeline.
         :param query_yaml: YAML configuration for the pipeline.
         :param config: Pipeline configuration containing overwrite flag.
-        :raises DeepsetValidationError: If validation fails.
+        :raises HaystackEnterpriseValidationError: If validation fails.
         """
         logger.debug(f"Validating pipeline {name}.")
 
@@ -213,7 +213,7 @@ class PipelineService:
         logger.debug(f"Pipeline validation successful for {name}.")
 
     def _handle_validation_error(self, response: Response) -> None:
-        """Handle validation error response by extracting errors and raising DeepsetValidationError.
+        """Handle validation error response by extracting errors and raising HaystackEnterpriseValidationError.
 
         Supports multiple error response formats:
         1. "details" field with code/message objects (preferred format)
@@ -222,7 +222,7 @@ class PipelineService:
         4. Non-JSON responses (fallback to raw text)
 
         :param response: HTTP response object.
-        :raises DeepsetValidationError: Always raises with formatted error details.
+        :raises HaystackEnterpriseValidationError: Always raises with formatted error details.
         """
         response_json = (
             response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
@@ -248,12 +248,12 @@ class PipelineService:
         for error in error_details:
             error_messages.append(f"[{error.code}] {error.message}")
 
-        raise DeepsetValidationError(
+        raise HaystackEnterpriseValidationError(
             "Validation failed: " + "; ".join(error_messages), error_details, response.status_code
         )
 
     async def _import_index(self, config: IndexConfig, pipeline_yaml: str) -> None:
-        """Import an index into deepset AI Platform.
+        """Import an index into Haystack Enterprise Platform.
 
         :param config: Configuration for importing an index.
         :param pipeline_yaml: Pre-generated index YAML string.
@@ -268,7 +268,7 @@ class PipelineService:
         logger.info("Index successfully imported.")
 
     async def _import_pipeline(self, config: PipelineConfig, pipeline_yaml: str) -> None:
-        """Import a pipeline into deepset AI Platform.
+        """Import a pipeline into Haystack Enterprise Platform.
 
         :param config: Configuration for importing a pipeline.
         :param pipeline_yaml: Pre-generated pipeline YAML string.
@@ -332,7 +332,7 @@ class PipelineService:
     def _add_pipeline_output_type_if_set(self, pipeline_dict: dict, config: IndexConfig | PipelineConfig) -> None:
         """Add pipeline_output_type to the pipeline dict if set in PipelineConfig.
 
-        This helps the Playground in deepset AI Platform adjust its behavior to better support the pipeline's output.
+        This helps the Playground in Haystack Enterprise Platform adjust its behavior to better support the pipeline's output.
 
         :param pipeline_dict: The pipeline dictionary to modify.
         :param config: Configuration for importing. Only adds the field if config is PipelineConfig and pipeline_output_type is set.
@@ -341,7 +341,7 @@ class PipelineService:
             pipeline_dict["pipeline_output_type"] = config.pipeline_output_type.value
 
     async def _overwrite_index(self, name: str, pipeline_yaml: str) -> Response:
-        """Overwrite an index in deepset AI Platform.
+        """Overwrite an index in Haystack Enterprise Platform.
 
         If the index doesn't exist, it will be created instead.
 
@@ -362,7 +362,7 @@ class PipelineService:
         return response
 
     async def _create_index(self, name: str, pipeline_yaml: str) -> Response:
-        """Create an index in deepset AI Platform.
+        """Create an index in Haystack Enterprise Platform.
 
         :param name: Name of the index.
         :param pipeline_yaml: Generated index YAML string.
@@ -375,7 +375,7 @@ class PipelineService:
         )
 
     async def _overwrite_pipeline(self, name: str, pipeline_yaml: str) -> Response:
-        """Overwrite a pipeline in deepset AI Platform.
+        """Overwrite a pipeline in Haystack Enterprise Platform.
 
         Behavior:
         - First try to fetch the latest version.
@@ -420,7 +420,7 @@ class PipelineService:
         )
 
     async def _create_pipeline(self, name: str, pipeline_yaml: str) -> Response:
-        """Create a pipeline in deepset AI Platform.
+        """Create a pipeline in Haystack Enterprise Platform.
 
         :param name: Name of the pipeline.
         :param pipeline_yaml: Generated pipeline YAML string.

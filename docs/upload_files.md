@@ -2,7 +2,7 @@
 
 Uploading with SDK is the fastest way if you have many files. It uses sessions under the hood. That means, you create a session and then upload files to this session. Each session has an ID and you can check its status. The upload starts when you close a session. If you leave a session open, it expires after 24 hours.
 
-After your files are uploaded, it can take a while for them to be listed in deepset Cloud. This means that if you deployed a pipeline, you may need to wait a while for it to run on the newly uploaded files.
+After your files are uploaded, it can take a while for them to be listed in Haystack Enterprise Platform. This means that if you deployed a pipeline, you may need to wait a while for it to run on the newly uploaded files.
 
 You can use the CLI or the SDK Python methods to upload your files.
 
@@ -16,21 +16,21 @@ You don't need to follow any specific folder structure. If your folder contains 
 
 By default it is allowed to upload .txt and .pdf files. See below to upload different file types.
 
-1. Log in to the sdk: `deepset-cloud login` (MacOS and Linux) or `python -m deepset_cloud_sdk.cli login` (Windows).
-2. When prompted, paste your deepset Cloud API key.
-3. Type the name of the deepset Cloud workspace you want to set as default for all operations.
+1. Log in to the sdk: `haystack-enterprise login` (MacOS and Linux) or `python -m haystack_enterprise_sdk.cli login` (Windows).
+2. When prompted, paste your Haystack Enterprise Platform API key.
+3. Type the name of the Haystack Enterprise Platform workspace you want to set as default for all operations.
 4. Choose if you want to use the CLI or a Python script to upload:
-    - To upload files from a folder using CLI, run: `deepset-cloud upload <path to the upload folder>` (MacOS and Linux) or `python -m deepset_cloud_sdk.cli upload <path to the upload folder>` (On Windows)
+    - To upload files from a folder using CLI, run: `haystack-enterprise upload <path to the upload folder>` (MacOS and Linux) or `python -m haystack_enterprise_sdk.cli upload <path to the upload folder>` (On Windows)
     - To upload files from a folder using a Python script, create the script and run it. Here's an example you can use:
 
     ```python
     from pathlib import Path
-    from deepset_cloud_sdk.workflows.sync_client.files import upload
+    from haystack_enterprise_sdk.workflows.sync_client.files import upload
 
     ## Uploads all txt and pdf files from a given path
     upload(
     paths=[Path("<your_path_to_the_upload_folder>")],
-    blocking=True,  # waits until the files are displayed in deepset Cloud,
+    blocking=True,  # waits until the files are displayed in Haystack Enterprise Platform,
                     # this may take a couple of minutes
     timeout_s=300,  # the timeout for the `blocking` parameter in number of seconds
     show_progress=True,  # shows the progress bar
@@ -40,12 +40,12 @@ By default it is allowed to upload .txt and .pdf files. See below to upload diff
 
 ## Upload other file types
 
-Deepset Cloud currently supports uploading : .csv, .docx, .html, .json, .md, .txt, .pdf, .pptx, .xlsx and .xml.
+Haystack Enterprise Platform currently supports uploading : .csv, .docx, .html, .json, .md, .txt, .pdf, .pptx, .xlsx and .xml.
 
 
     ```python
     from pathlib import Path
-    from deepset_cloud_sdk.workflows.sync_client.files import upload
+    from haystack_enterprise_sdk.workflows.sync_client.files import upload
 
     ## Uploads supported files from a given path
     upload(

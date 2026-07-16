@@ -6,11 +6,11 @@ from typing import List
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
-from deepset_cloud_sdk._api.config import CommonConfig
-from deepset_cloud_sdk._api.files import File
-from deepset_cloud_sdk._api.upload_sessions import WriteMode
-from deepset_cloud_sdk._service.files_service import META_SUFFIX, FilesService
-from deepset_cloud_sdk.models import DeepsetCloudFile, DeepsetCloudFileBytes
+from haystack_enterprise_sdk._api.config import CommonConfig
+from haystack_enterprise_sdk._api.files import File
+from haystack_enterprise_sdk._api.upload_sessions import WriteMode
+from haystack_enterprise_sdk._service.files_service import META_SUFFIX, FilesService
+from haystack_enterprise_sdk.models import HaystackEnterpriseFile, HaystackEnterpriseFileBytes
 
 
 @pytest.mark.asyncio
@@ -98,7 +98,7 @@ class TestUploadsFileService:
     async def test_async_upload(
         self, integration_config: CommonConfig, workspace_name: str, monkeypatch: MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("deepset_cloud_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", 1)
+        monkeypatch.setattr("haystack_enterprise_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", 1)
         async with FilesService.factory(integration_config) as file_service:
             timeout = 120 if "dev.cloud.dpst.dev" in integration_config.api_url else 300
 
@@ -142,7 +142,7 @@ class TestUploadsFileService:
     async def test_async_upload_multiple_file_types(
         self, integration_config: CommonConfig, workspace_name: str, monkeypatch: MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("deepset_cloud_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", 1)
+        monkeypatch.setattr("haystack_enterprise_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", 1)
         async with FilesService.factory(integration_config) as file_service:
             timeout = 120 if "dev.cloud.dpst.dev" in integration_config.api_url else 300
 
@@ -206,12 +206,12 @@ class TestUploadsFileService:
 
         async with FilesService.factory(integration_config) as file_service:
             files = [
-                DeepsetCloudFile("file1", "file1.txt", {"which": 1}),
-                DeepsetCloudFile("file2", "file2.txt", {"which": 2}),
-                DeepsetCloudFile("file3", "file3.txt", {"which": 3}),
-                DeepsetCloudFile("file4", "file4.txt", {"which": 4}),
-                DeepsetCloudFile("file5", "file5.txt", {"which": 5}),
-                DeepsetCloudFileBytes(file_bytes=pdf_contents, name="file6.pdf", meta={"which": 6}),
+                HaystackEnterpriseFile("file1", "file1.txt", {"which": 1}),
+                HaystackEnterpriseFile("file2", "file2.txt", {"which": 2}),
+                HaystackEnterpriseFile("file3", "file3.txt", {"which": 3}),
+                HaystackEnterpriseFile("file4", "file4.txt", {"which": 4}),
+                HaystackEnterpriseFile("file5", "file5.txt", {"which": 5}),
+                HaystackEnterpriseFileBytes(file_bytes=pdf_contents, name="file6.pdf", meta={"which": 6}),
             ]
             result = await file_service.upload_in_memory(
                 workspace_name=workspace_name,
@@ -228,19 +228,19 @@ class TestUploadsFileService:
     async def test_upload_in_memory_less_than_session_threshold(
         self, integration_config: CommonConfig, workspace_name: str, monkeypatch: MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("deepset_cloud_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", -1)
+        monkeypatch.setattr("haystack_enterprise_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", -1)
 
         with open(Path("./tests/test_data/multiple_file_types/file08.pdf"), "rb") as f:
             pdf_contents = f.read()
 
         async with FilesService.factory(integration_config) as file_service:
             files = [
-                DeepsetCloudFile("file1", "file1.txt", {"which": 1}),
-                DeepsetCloudFile("file2", "file2.txt", {"which": 2}),
-                DeepsetCloudFile("file3", "file3.txt", {"which": 3}),
-                DeepsetCloudFile("file4", "file4.txt", {"which": 4}),
-                DeepsetCloudFile("file5", "file5.txt", {"which": 5}),
-                DeepsetCloudFileBytes(file_bytes=pdf_contents, name="file6.pdf", meta={"which": 6}),
+                HaystackEnterpriseFile("file1", "file1.txt", {"which": 1}),
+                HaystackEnterpriseFile("file2", "file2.txt", {"which": 2}),
+                HaystackEnterpriseFile("file3", "file3.txt", {"which": 3}),
+                HaystackEnterpriseFile("file4", "file4.txt", {"which": 4}),
+                HaystackEnterpriseFile("file5", "file5.txt", {"which": 5}),
+                HaystackEnterpriseFileBytes(file_bytes=pdf_contents, name="file6.pdf", meta={"which": 6}),
             ]
             result = await file_service.upload_in_memory(
                 workspace_name=workspace_name,

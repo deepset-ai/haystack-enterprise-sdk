@@ -3,9 +3,9 @@ from datetime import timedelta
 import pytest
 import tenacity
 
-from deepset_cloud_sdk._api.config import CommonConfig
-from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
-from deepset_cloud_sdk._api.files import FilesAPI
+from haystack_enterprise_sdk._api.config import CommonConfig
+from haystack_enterprise_sdk._api.files import FilesAPI
+from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
 
 
 @pytest.mark.asyncio
@@ -15,8 +15,8 @@ class TestListFiles:
         integration_config: CommonConfig,
         workspace_name: str,
     ) -> None:
-        async with DeepsetCloudAPI.factory(integration_config) as deepset_cloud_api:
-            files_api = FilesAPI(deepset_cloud_api)
+        async with HaystackEnterpriseAPI.factory(integration_config) as haystack_enterprise_api:
+            files_api = FilesAPI(haystack_enterprise_api)
 
             # We need to retry fetching this, because the file itself is available
             # immediately, but the search index might not be updated yet.

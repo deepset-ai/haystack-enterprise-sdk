@@ -4,9 +4,9 @@ from typing import Any, AsyncGenerator, List
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
-from deepset_cloud_sdk._api.config import DEFAULT_WORKSPACE_NAME
-from deepset_cloud_sdk._api.files import File
-from deepset_cloud_sdk._api.upload_sessions import (
+from haystack_enterprise_sdk._api.config import DEFAULT_WORKSPACE_NAME
+from haystack_enterprise_sdk._api.files import File
+from haystack_enterprise_sdk._api.upload_sessions import (
     UploadSessionDetail,
     UploadSessionIngestionStatus,
     UploadSessionStatus,
@@ -14,8 +14,8 @@ from deepset_cloud_sdk._api.upload_sessions import (
     UploadSessionWriteModeEnum,
     WriteMode,
 )
-from deepset_cloud_sdk.models import DeepsetCloudFile, UserInfo
-from deepset_cloud_sdk.workflows.sync_client.files import (
+from haystack_enterprise_sdk.models import HaystackEnterpriseFile, UserInfo
+from haystack_enterprise_sdk.workflows.sync_client.files import (
     download,
     get_upload_session,
     list_files,
@@ -25,7 +25,7 @@ from deepset_cloud_sdk.workflows.sync_client.files import (
 )
 
 
-@patch("deepset_cloud_sdk.workflows.sync_client.files.async_upload")
+@patch("haystack_enterprise_sdk.workflows.sync_client.files.async_upload")
 def test_upload_folder(async_upload_mock: AsyncMock) -> None:
     upload(paths=[Path("./tests/data/upload_folder")], enable_parallel_processing=True)
     async_upload_mock.assert_called_once_with(
@@ -44,7 +44,7 @@ def test_upload_folder(async_upload_mock: AsyncMock) -> None:
     )
 
 
-@patch("deepset_cloud_sdk.workflows.sync_client.files.async_upload")
+@patch("haystack_enterprise_sdk.workflows.sync_client.files.async_upload")
 def test_upload_folder_safe_mode(async_upload_mock: AsyncMock) -> None:
     upload(paths=[Path("./tests/data/upload_folder")], enable_parallel_processing=True, safe_mode=True)
     async_upload_mock.assert_called_once_with(
@@ -63,10 +63,10 @@ def test_upload_folder_safe_mode(async_upload_mock: AsyncMock) -> None:
     )
 
 
-@patch("deepset_cloud_sdk.workflows.sync_client.files.async_upload_texts")
+@patch("haystack_enterprise_sdk.workflows.sync_client.files.async_upload_texts")
 def test_upload_texts(async_upload_texts_mock: AsyncMock) -> None:
     files = [
-        DeepsetCloudFile(
+        HaystackEnterpriseFile(
             name="test_file.txt",
             text="test content",
             meta={"test": "test"},
@@ -86,10 +86,10 @@ def test_upload_texts(async_upload_texts_mock: AsyncMock) -> None:
     )
 
 
-@patch("deepset_cloud_sdk.workflows.sync_client.files.async_upload_texts")
+@patch("haystack_enterprise_sdk.workflows.sync_client.files.async_upload_texts")
 def test_upload_texts_with_timeout(async_upload_texts_mock: AsyncMock) -> None:
     files = [
-        DeepsetCloudFile(
+        HaystackEnterpriseFile(
             name="test_file.txt",
             text="test content",
             meta={"test": "test"},
@@ -122,7 +122,7 @@ def test_list_files() -> None:
             )
         ]
 
-    with patch("deepset_cloud_sdk.workflows.sync_client.files.async_list_files", new=mocked_async_list_files):
+    with patch("haystack_enterprise_sdk.workflows.sync_client.files.async_list_files", new=mocked_async_list_files):
         returned_files = list(
             list_files(
                 workspace_name="my_workspace",
@@ -147,7 +147,7 @@ def test_list_files() -> None:
 
 def test_download_files() -> None:
     mocked_async_download = AsyncMock()
-    with patch("deepset_cloud_sdk.workflows.sync_client.files.async_download", new=mocked_async_download):
+    with patch("haystack_enterprise_sdk.workflows.sync_client.files.async_download", new=mocked_async_download):
         download(
             workspace_name="my_workspace",
             name="test_file.txt",
@@ -190,7 +190,8 @@ def test_list_upload_sessions() -> None:
         ]
 
     with patch(
-        "deepset_cloud_sdk.workflows.sync_client.files.async_list_upload_sessions", new=mocked_async_upload_sessions
+        "haystack_enterprise_sdk.workflows.sync_client.files.async_list_upload_sessions",
+        new=mocked_async_upload_sessions,
     ):
         returned_files = list(
             list_upload_sessions(
@@ -232,7 +233,8 @@ def test_get_upload_session() -> None:
         return existing_upload_session
 
     with patch(
-        "deepset_cloud_sdk.workflows.sync_client.files.async_get_upload_session", new=mocked_async_get_upload_session
+        "haystack_enterprise_sdk.workflows.sync_client.files.async_get_upload_session",
+        new=mocked_async_get_upload_session,
     ):
         returned_upload_session = get_upload_session(
             workspace_name="my_workspace",

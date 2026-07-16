@@ -16,12 +16,12 @@ from pyrate_limiter import Duration, Limiter, Rate
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 from tqdm.asyncio import tqdm
 
-from deepset_cloud_sdk._api.config import ASYNC_CLIENT_TIMEOUT
-from deepset_cloud_sdk._api.upload_sessions import (
+from haystack_enterprise_sdk._api.config import ASYNC_CLIENT_TIMEOUT
+from haystack_enterprise_sdk._api.upload_sessions import (
     AWSPrefixedRequestConfig,
     UploadSession,
 )
-from deepset_cloud_sdk.models import DeepsetCloudFileBase
+from haystack_enterprise_sdk.models import HaystackEnterpriseFileBase
 
 logger = structlog.get_logger(__name__)
 
@@ -79,7 +79,7 @@ def make_safe_file_name(file_name: str) -> str:
 
 
 class S3:
-    """Client for S3 operations related to deepset AI Platform uploads."""
+    """Client for S3 operations related to Haystack Enterprise Platform uploads."""
 
     def __init__(
         self,
@@ -250,7 +250,7 @@ class S3:
                 except Exception as exception:  # pylint: disable=broad-exception-caught
                     reason = str(exception) or str(exception.__class__)
                     logger.error(
-                        "Could not upload a file to deepset AI Platform",
+                        "Could not upload a file to Haystack Enterprise Platform",
                         file_name=file_name,
                         session_id=upload_session.session_id,
                         reason=reason,
@@ -282,7 +282,7 @@ class S3:
                 return S3UploadResult(file_name=file_name, success=True)
             except Exception as exception:  # pylint: disable=broad-exception-caught
                 logger.warning(
-                    "Could not upload a file to deepset AI Platform",
+                    "Could not upload a file to Haystack Enterprise Platform",
                     file_name=file_name,
                     session_id=upload_session.session_id,
                     reason=str(exception),
@@ -356,13 +356,13 @@ class S3:
     async def upload_in_memory(
         self,
         upload_session: UploadSession,
-        files: Sequence[DeepsetCloudFileBase],
+        files: Sequence[HaystackEnterpriseFileBase],
         show_progress: bool = True,
     ) -> S3UploadSummary:
         """Upload a set of files to the prefixed S3 namespace given a list of paths.
 
         :param upload_session: UploadSession to associate the upload with.
-        :param files: A list of DeepsetCloudFileBase to upload.
+        :param files: A list of HaystackEnterpriseFileBase to upload.
         :param show_progress: Whether to show a progress bar on the upload.
         :return: S3UploadSummary object.
         """

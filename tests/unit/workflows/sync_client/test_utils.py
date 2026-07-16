@@ -1,7 +1,7 @@
 import asyncio
 from typing import AsyncIterator
 
-from deepset_cloud_sdk.workflows.sync_client.utils import iter_over_async
+from haystack_enterprise_sdk.workflows.sync_client.utils import iter_over_async
 
 
 def test_iter_over_async() -> None:

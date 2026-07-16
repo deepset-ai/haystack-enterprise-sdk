@@ -1,10 +1,10 @@
-"""Workflows for deepset AI platform SDK."""
+"""Workflows for Haystack Enterprise Platform SDK."""
 
-from deepset_cloud_sdk._service.pipeline_service import (
-    DeepsetValidationError,
+from haystack_enterprise_sdk._service.pipeline_service import (
     ErrorDetail,
+    HaystackEnterpriseValidationError,
 )
-from deepset_cloud_sdk.models import (
+from haystack_enterprise_sdk.models import (
     BaseConfig,
     IndexConfig,
     IndexInputs,
@@ -14,10 +14,10 @@ from deepset_cloud_sdk.models import (
     PipelineOutputs,
     PipelineOutputType,
 )
-from deepset_cloud_sdk.workflows.async_client.async_pipeline_client import (
+from haystack_enterprise_sdk.workflows.async_client.async_pipeline_client import (
     AsyncPipelineClient,
 )
-from deepset_cloud_sdk.workflows.sync_client.pipeline_client import PipelineClient
+from haystack_enterprise_sdk.workflows.sync_client.pipeline_client import PipelineClient
 
 __all__ = [
     "AsyncPipelineClient",
@@ -30,6 +30,6 @@ __all__ = [
     "IndexConfig",
     "PipelineConfig",
     "PipelineClient",
-    "DeepsetValidationError",
+    "HaystackEnterpriseValidationError",
     "PipelineOutputType",
 ]

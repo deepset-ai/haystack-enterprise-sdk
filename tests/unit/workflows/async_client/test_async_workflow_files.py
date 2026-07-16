@@ -8,9 +8,9 @@ import pytest
 from _pytest.monkeypatch import MonkeyPatch
 from sniffio import AsyncLibraryNotFoundError
 
-from deepset_cloud_sdk._api.config import DEFAULT_WORKSPACE_NAME
-from deepset_cloud_sdk._api.files import File
-from deepset_cloud_sdk._api.upload_sessions import (
+from haystack_enterprise_sdk._api.config import DEFAULT_WORKSPACE_NAME
+from haystack_enterprise_sdk._api.files import File
+from haystack_enterprise_sdk._api.upload_sessions import (
     UploadSessionDetail,
     UploadSessionIngestionStatus,
     UploadSessionStatus,
@@ -18,9 +18,9 @@ from deepset_cloud_sdk._api.upload_sessions import (
     UploadSessionWriteModeEnum,
     WriteMode,
 )
-from deepset_cloud_sdk._service.files_service import FilesService
-from deepset_cloud_sdk.models import DeepsetCloudFile, UserInfo
-from deepset_cloud_sdk.workflows.async_client.files import (
+from haystack_enterprise_sdk._service.files_service import FilesService
+from haystack_enterprise_sdk.models import HaystackEnterpriseFile, UserInfo
+from haystack_enterprise_sdk.workflows.async_client.files import (
     download,
     get_upload_session,
     list_files,
@@ -94,7 +94,7 @@ class TestUploadFiles:
         mocked_upload_texts = AsyncMock(return_value=None)
         monkeypatch.setattr(FilesService, "upload_in_memory", mocked_upload_texts)
         files = [
-            DeepsetCloudFile(
+            HaystackEnterpriseFile(
                 name="test_file.txt",
                 text="test content",
                 meta={"test": "test"},

@@ -3,9 +3,9 @@ requires = ["uv_build>=0.9.13,<0.12.0"]
 build-backend = "uv_build"
 
 [project]
-name = "deepset-cloud-sdk"
-version = "1.0.2"
-description = 'deepset SDK'
+name = "haystack-enterprise-sdk"
+version = "1.0.0"
+description = 'Haystack Enterprise Platform SDK'
 readme = "README.md"
 requires-python = ">= 3.9"
 license = "Apache-2.0"
@@ -40,12 +40,12 @@ dependencies = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/deepset-ai/deepset-cloud-sdk#readme"
-Issues = "https://github.com/deepset-ai/deepset-cloud-sdk/issues"
-Source = "https://github.com/deepset-ai/deepset-cloud-sdk"
+Documentation = "https://github.com/deepset-ai/haystack-enterprise-sdk#readme"
+Issues = "https://github.com/deepset-ai/haystack-enterprise-sdk/issues"
+Source = "https://github.com/deepset-ai/haystack-enterprise-sdk"
 
 [project.scripts]
-deepset-cloud = "deepset_cloud_sdk.cli:run_packaged"
+haystack-enterprise = "haystack_enterprise_sdk.cli:run_packaged"
 
 [dependency-groups]
 test = [
@@ -64,7 +64,7 @@ code-quality = [
 ]
 
 [tool.uv.build-backend]
-module-name = "deepset_cloud_sdk"
+module-name = "haystack_enterprise_sdk"
 module-root = ""
 
 [tool.coverage.run]
@@ -100,7 +100,7 @@ fixable = [
 convention = "google"
 
 [tool.ruff.lint.isort]
-known-first-party = ["deepset_cloud_sdk"]
+known-first-party = ["haystack_enterprise_sdk"]
 
 [tool.mypy]
 python_version = "3.10"

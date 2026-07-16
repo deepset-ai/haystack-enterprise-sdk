@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from deepset_cloud_sdk.models import (
+from haystack_enterprise_sdk.models import (
     BaseConfig,
     IndexConfig,
     IndexInputs,

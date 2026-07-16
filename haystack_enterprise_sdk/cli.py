@@ -1,4 +1,4 @@
-"""The CLI for the deepset AI Platform SDK."""
+"""The CLI for the Haystack Enterprise Platform SDK."""
 
 import json
 from importlib.metadata import version
@@ -10,18 +10,18 @@ import click
 import typer
 from tabulate import tabulate
 
-__version__ = version("deepset-cloud-sdk")
-from deepset_cloud_sdk._api.config import DEFAULT_WORKSPACE_NAME, ENV_FILE_PATH
-from deepset_cloud_sdk._api.upload_sessions import WriteMode
-from deepset_cloud_sdk.workflows.sync_client.files import download as sync_download
-from deepset_cloud_sdk.workflows.sync_client.files import (
+__version__ = version("haystack-enterprise-sdk")
+from haystack_enterprise_sdk._api.config import DEFAULT_WORKSPACE_NAME, ENV_FILE_PATH
+from haystack_enterprise_sdk._api.upload_sessions import WriteMode
+from haystack_enterprise_sdk.workflows.sync_client.files import download as sync_download
+from haystack_enterprise_sdk.workflows.sync_client.files import (
     get_upload_session as sync_get_upload_session,
 )
-from deepset_cloud_sdk.workflows.sync_client.files import list_files as sync_list_files
-from deepset_cloud_sdk.workflows.sync_client.files import (
+from haystack_enterprise_sdk.workflows.sync_client.files import list_files as sync_list_files
+from haystack_enterprise_sdk.workflows.sync_client.files import (
     list_upload_sessions as sync_list_upload_sessions,
 )
-from deepset_cloud_sdk.workflows.sync_client.files import upload as sync_upload
+from haystack_enterprise_sdk.workflows.sync_client.files import upload as sync_upload
 
 cli_app = typer.Typer(pretty_exceptions_show_locals=False)
 
@@ -42,7 +42,7 @@ def upload(  # pylint: disable=too-many-arguments
     enable_parallel_processing: bool = False,
     safe_mode: bool = False,
 ) -> None:
-    """Upload a folder to deepset AI Platform.
+    """Upload a folder to Haystack Enterprise Platform.
 
     :param paths: Path to the folder to upload. If the folder contains unsupported file types, they're skipped.
     deepset supports CSV, DOCX, HTML, JSON, MD, TXT, PDF, PPTX, XLSX, XML.
@@ -54,12 +54,12 @@ def upload(  # pylint: disable=too-many-arguments
     KEEP - uploads the file with the same name and keeps both files in the workspace.
     OVERWRITE - overwrites the file that is in the workspace.
     FAIL - fails to upload the file with the same name.
-    :param blocking: Whether to wait for the files to be uploaded and displayed in deepset AI Platform.
+    :param blocking: Whether to wait for the files to be uploaded and displayed in Haystack Enterprise Platform.
     :param timeout_s: Timeout in seconds for the `blocking` parameter.
     :param show_progress: Shows the upload progress.
     :param recursive: Uploads files from subfolders as well.
     :param use_type: A comma-separated string of allowed file types to upload.
-    :param enable_parallel_processing: If `True`, deepset AI Platform ingests the files in parallel.
+    :param enable_parallel_processing: If `True`, Haystack Enterprise Platform ingests the files in parallel.
         Use this to speed up the upload process. Make sure you are not running concurrent uploads for the same files.
     :param safe_mode: If `True`, disables ingesting files in parallel.
     """
@@ -92,7 +92,7 @@ def download(  # pylint: disable=too-many-arguments
     show_progress: bool = True,
     safe_mode: bool = False,
 ) -> None:
-    """Download files from deepset AI Platform to your local machine.
+    """Download files from Haystack Enterprise Platform to your local machine.
 
     :param workspace_name: Name of the workspace to download the files from. Uses the workspace from the .ENV file by default.
     :param file_dir: Path to the folder where you want to download the files.
@@ -121,22 +121,22 @@ def download(  # pylint: disable=too-many-arguments
 
 @cli_app.command()
 def login() -> None:
-    """Log in to deepset AI Platform.
+    """Log in to Haystack Enterprise Platform.
 
-    Run `deepset-cloud login` before performing any tasks in deepset AI platform using the SDK or CLI,
+    Run `haystack-enterprise login` before performing any tasks in Haystack Enterprise Platform using the SDK or CLI,
     unless you already created the .ENV file.
 
-    This command guides you through creating a global .env file at ~/.deepset-cloud/.env with your
-    deepset AI Platform `API_KEY`, `API_URL` and `DEFAULT_WORKSPACE_NAME` used for all operations.
+    This command guides you through creating a global .env file at ~/.haystack-enterprise/.env with your
+    Haystack Enterprise Platform `API_KEY`, `API_URL` and `DEFAULT_WORKSPACE_NAME` used for all operations.
 
     The SDK uses a cascading configuration model with the following precedence:
     1. Explicit parameters (passed via code or CLI)
     2. Environment variables
     3. Local .env file in project root
-    4. Global ~/.deepset-cloud/.env file (supplements local .env)
+    4. Global ~/.haystack-enterprise/.env file (supplements local .env)
     5. Built-in defaults
     """
-    typer.echo("Log in to deepset AI Platform")
+    typer.echo("Log in to Haystack Enterprise Platform")
 
     # Check for local .env file in the current directory
     local_env = Path.cwd() / ".env"
@@ -155,10 +155,10 @@ def login() -> None:
     if environment.lower() == "eu":
         api_url = "https://api.cloud.deepset.ai/api/v1"
     elif environment.lower() == "us":
-        api_url = "http://api.us.deepset.ai/api/v1"
+        api_url = "https://api.us.deepset.ai/api/v1"
     else:
         api_url = typer.prompt("Enter custom API URL")
-    passed_api_key = typer.prompt("Your deepset AI Platform API_KEY", hide_input=True)
+    passed_api_key = typer.prompt("Your Haystack Enterprise Platform API_KEY", hide_input=True)
     passed_default_workspace_name = typer.prompt("Your DEFAULT_WORKSPACE_NAME", default="default")
 
     env_content = f"API_KEY={passed_api_key}\nAPI_URL={api_url}\nDEFAULT_WORKSPACE_NAME={passed_default_workspace_name}"
@@ -171,12 +171,12 @@ def login() -> None:
 
 @cli_app.command()
 def logout() -> None:
-    """Log out of deepset AI Platform. This command deletes the .ENV file created during login.
+    """Log out of Haystack Enterprise Platform. This command deletes the .ENV file created during login.
 
     Example:
-    `deepset-cloud logout`
+    `haystack-enterprise logout`
     """
-    typer.echo("Log out of deepset AI Platform.")
+    typer.echo("Log out of Haystack Enterprise Platform.")
     if not ENV_FILE_PATH.exists():
         typer.echo("No global configuration file found. Nothing to do!")
         return
@@ -205,10 +205,10 @@ def list_files(
     :param timeout_s: The timeout for this request, in seconds.
 
     Example:
-    `deepset-cloud list-files --batch-size 10`
+    `haystack-enterprise list-files --batch-size 10`
 
     Example using an odata filter to show only files whose category is "news":
-    `deepset-cloud list-files --odata-filter 'category eq "news"'`
+    `haystack-enterprise list-files --odata-filter 'category eq "news"'`
     """
     try:
         headers = [
@@ -249,7 +249,7 @@ def list_upload_sessions(
     :param timeout_s: Timeout in seconds for the API requests.
 
     Example:
-    `deepset-cloud list-upload-sessions --workspace-name default`
+    `haystack-enterprise list-upload-sessions --workspace-name default`
     """
     headers: List[str] = [
         "session_id",
@@ -299,7 +299,7 @@ def get_upload_session(
     api_url: Optional[str] = None,
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
 ) -> None:  # noqa: D400, D205
-    """Fetch an upload session from deepset AI Platform. This method is useful for checking
+    """Fetch an upload session from Haystack Enterprise Platform. This method is useful for checking
     the status of an upload session after uploading files to deepset.
 
     :param session_id: ID of the upload session whose status you want to check.
@@ -308,7 +308,7 @@ def get_upload_session(
     :param workspace_name: Name of the workspace where you upload your files. Uses the workspace from the .ENV file by default.
 
     Example:
-    `deepset-cloud get-upload-session --workspace-name default`
+    `haystack-enterprise get-upload-session --workspace-name default`
     """
     session = sync_get_upload_session(
         session_id=session_id,
@@ -338,10 +338,10 @@ def version_callback(value: bool) -> None:
     :param value: Value of the version option.
 
     Example:
-    `deepset-cloud --version`
+    `haystack-enterprise --version`
     """
     if value:
-        typer.echo(f"deepset SDK version: {__version__}")
+        typer.echo(f"Haystack Enterprise Platform SDK version: {__version__}")
         raise typer.Exit()
 
 
@@ -355,12 +355,12 @@ def main(
         help="Show the SDK version and exit.",
     ),
 ) -> None:  # noqa
-    """The CLI for the deepset SDK.
+    """The CLI for the Haystack Enterprise Platform SDK.
 
     This documentation uses Python type hints to provide information about the arguments and return values.
     Typer turns these type hints into a CLI interface. To see how these arguments are used in the CLI, check the
     Typer documentation: https://typer.tiangolo.com/tutorial/arguments/optional or run
-    `deepset-cloud <command> --help` to see the arguments for a specific command.
+    `haystack-enterprise <command> --help` to see the arguments for a specific command.
 
     Boolean values are converted to `-no-<variable>` or `-<variable>` flags in the CLI. For example, to disable
     the progress bar, use `--no-show-progress`.
@@ -376,7 +376,7 @@ def run_packaged() -> None:
     This is the entrypoint for the package to enable running the CLI using typer.
 
     Example:
-    `deepset cloud run-packaged`
+    `haystack-enterprise run-packaged`
     """
     cli_app()
 
