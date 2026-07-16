@@ -13,7 +13,11 @@ from deepset_cloud_sdk._api.config import (
     CommonConfig,
 )
 from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
-from deepset_cloud_sdk._api.deployments import Deployment, DeploymentStatus
+from deepset_cloud_sdk._api.deployments import (
+    Deployment,
+    DeploymentStatus,
+    PipelineValidationResult,
+)
 from deepset_cloud_sdk._api.shared_prototypes import SharedPrototype
 from deepset_cloud_sdk._service.deployment_service import (
     DEFAULT_ACTIVATION_TIMEOUT_S,
@@ -81,6 +85,7 @@ class AsyncDeploymentClient:
         outputs: Optional[dict] = None,
         io_resolver: Optional[IoResolver] = None,
         python_executable: Optional[str] = None,
+        validate: bool = True,
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         on_status: Optional[Callable[[DeploymentStatus], None]] = None,
@@ -101,9 +106,34 @@ class AsyncDeploymentClient:
                 outputs=outputs,
                 io_resolver=io_resolver,
                 python_executable=python_executable,
+                validate=validate,
                 timeout_s=timeout_s,
                 poll_interval_s=poll_interval_s,
                 on_status=on_status,
+            )
+
+    async def validate(
+        self,
+        target: Path,
+        *,
+        entrypoint: Optional[str] = None,
+        inputs: Optional[dict] = None,
+        outputs: Optional[dict] = None,
+        io_resolver: Optional[IoResolver] = None,
+        python_executable: Optional[str] = None,
+    ) -> PipelineValidationResult:
+        """Transform ``target`` and validate the generated YAML against the platform without deploying.
+
+        See :meth:`deepset_cloud_sdk._service.deployment_service.DeploymentService.validate` for details.
+        """
+        async with self._service() as service:
+            return await service.validate(
+                target,
+                entrypoint=entrypoint,
+                inputs=inputs,
+                outputs=outputs,
+                io_resolver=io_resolver,
+                python_executable=python_executable,
             )
 
     async def get_service_status(self, service_name: str) -> Deployment:

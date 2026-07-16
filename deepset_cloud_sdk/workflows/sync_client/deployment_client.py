@@ -6,7 +6,11 @@ from typing import Awaitable, Callable, Optional, TypeVar
 
 import structlog
 
-from deepset_cloud_sdk._api.deployments import Deployment, DeploymentStatus
+from deepset_cloud_sdk._api.deployments import (
+    Deployment,
+    DeploymentStatus,
+    PipelineValidationResult,
+)
 from deepset_cloud_sdk._api.shared_prototypes import SharedPrototype
 from deepset_cloud_sdk._service.deployment_service import (
     DEFAULT_ACTIVATION_TIMEOUT_S,
@@ -81,6 +85,7 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
         outputs: Optional[dict] = None,
         io_resolver: Optional[IoResolver] = None,
         python_executable: Optional[str] = None,
+        validate: bool = True,
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         on_status: Optional[Callable[[DeploymentStatus], None]] = None,
@@ -98,9 +103,32 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
                 outputs=outputs,
                 io_resolver=io_resolver,
                 python_executable=python_executable,
+                validate=validate,
                 timeout_s=timeout_s,
                 poll_interval_s=poll_interval_s,
                 on_status=on_status,
+            )
+        )
+
+    def validate(
+        self,
+        target: Path,
+        *,
+        entrypoint: Optional[str] = None,
+        inputs: Optional[dict] = None,
+        outputs: Optional[dict] = None,
+        io_resolver: Optional[IoResolver] = None,
+        python_executable: Optional[str] = None,
+    ) -> PipelineValidationResult:
+        """Transform ``target`` and validate the generated YAML against the platform synchronously."""
+        return _run(
+            self._async_client.validate(
+                target,
+                entrypoint=entrypoint,
+                inputs=inputs,
+                outputs=outputs,
+                io_resolver=io_resolver,
+                python_executable=python_executable,
             )
         )
 

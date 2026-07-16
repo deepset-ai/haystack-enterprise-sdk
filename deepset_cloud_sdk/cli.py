@@ -15,7 +15,10 @@ from yaspin import yaspin
 
 __version__ = version("deepset-cloud-sdk")
 from deepset_cloud_sdk._api.config import DEFAULT_WORKSPACE_NAME, ENV_FILE_PATH
-from deepset_cloud_sdk._api.deployments import DeploymentServiceLevel
+from deepset_cloud_sdk._api.deployments import (
+    DeploymentServiceLevel,
+    PipelineValidationError,
+)
 from deepset_cloud_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from deepset_cloud_sdk._api.upload_sessions import WriteMode
 from deepset_cloud_sdk._service.deployment_service import (
@@ -370,6 +373,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     dry_run: bool = False,
     output: Optional[Path] = None,
     skip_io_validation: bool = False,
+    skip_validation: bool = False,
     share: Optional[bool] = typer.Option(None, "--share/--no-share"),
     share_expiration_days: int = 30,
     share_login_required: Optional[bool] = typer.Option(None, "--share-login-required/--no-share-login-required"),
@@ -407,6 +411,8 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param skip_io_validation: Deploy even if mandatory pipeline inputs aren't mapped to platform
         inputs; skips the interactive input/output prompt and deploys with whatever was inferred.
         Use for arbitrary pipelines you invoke directly rather than via the shared prototype chat UI.
+    :param skip_validation: Skip validating the generated YAML against the platform before deploying.
+        By default the YAML is validated and the deploy is aborted on blocking (ERROR) issues.
     :param share: Create a shareable prototype link (opens a chat UI) after deploying. Omit to be
         prompted on an interactive terminal; pass --share/--no-share to force the choice.
     :param share_expiration_days: Days until the shared prototype link expires (default 30).
@@ -475,6 +481,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     entrypoint=entrypoint,
                     io_resolver=io_resolver,
                     python_executable=python,
+                    validate=not skip_validation,
                     on_status=_on_status,
                 )
         else:
@@ -486,6 +493,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 entrypoint=entrypoint,
                 io_resolver=io_resolver,
                 python_executable=python,
+                validate=not skip_validation,
             )
     except KeyboardInterrupt:
         typer.echo(
@@ -493,7 +501,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             f"Check with `deepset-cloud service-status {service_name}`."
         )
         raise typer.Exit(0)  # noqa: B904
-    except (DeploymentFailedError, ServiceNotFoundError, PipelineTransformError) as err:
+    except (DeploymentFailedError, ServiceNotFoundError, PipelineTransformError, PipelineValidationError) as err:
         typer.echo(str(err))
         raise typer.Exit(1)  # noqa: B904
 
@@ -529,6 +537,52 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 typer.echo(f"Deployed, but could not create the shared prototype link: {err}")
             else:
                 typer.echo(f"Shared prototype link: {prototype.link}")
+
+
+@cli_app.command()
+def validate(
+    target: Path,
+    entrypoint: Optional[str] = None,
+    python: Optional[str] = None,
+    skip_io_validation: bool = False,
+    api_key: Optional[str] = None,
+    api_url: Optional[str] = None,
+    workspace_name: str = DEFAULT_WORKSPACE_NAME,
+) -> None:
+    """Validate the YAML generated from a local pipeline against the platform, without deploying.
+
+    Runs the same transform the deploy uses, then checks the result against the platform and reports
+    any issues. Exits non-zero if there are blocking (ERROR) issues.
+
+    :param target: Path to the Python file that defines the pipeline.
+    :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
+    :param python: Path to the Python interpreter used to load your pipeline (defaults to an
+        auto-detected virtualenv near the target file, else the current interpreter).
+    :param skip_io_validation: Skip the interactive input/output prompt and use whatever was inferred.
+    :param api_key: deepset API key to use for authentication.
+    :param api_url: API URL to use for authentication.
+    :param workspace_name: Workspace to validate against. Uses the workspace from the .ENV file by default.
+
+    Example:
+    `deepset-cloud validate pipeline.py`
+    """
+    client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
+    io_resolver = functools.partial(_resolve_io_for_share, skip_validation=skip_io_validation)
+    try:
+        result = client.validate(target, entrypoint=entrypoint, io_resolver=io_resolver, python_executable=python)
+    except PipelineTransformError as err:
+        typer.echo(str(err))
+        raise typer.Exit(1)  # noqa: B904
+
+    for issue in result.warnings:
+        typer.echo(str(issue))
+    for issue in result.errors:
+        typer.echo(str(issue))
+
+    if result.has_errors:
+        typer.echo(f"Pipeline is invalid: {len(result.errors)} error(s).")
+        raise typer.Exit(1)
+    typer.echo("Pipeline is valid.")
 
 
 def _deploy_dry_run(

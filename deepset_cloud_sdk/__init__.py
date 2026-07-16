@@ -4,6 +4,11 @@ import logging
 
 import structlog
 
+from deepset_cloud_sdk._api.deployments import (
+    PipelineValidationError,
+    PipelineValidationIssue,
+    PipelineValidationResult,
+)
 from deepset_cloud_sdk._api.shared_prototypes import (
     FailedToCreateSharedPrototypeError,
     SharedPrototype,
@@ -68,4 +73,7 @@ __all__ = [
     "ServiceNotFoundError",
     "FailedToCreateSharedPrototypeError",
     "PipelineTransformError",
+    "PipelineValidationError",
+    "PipelineValidationResult",
+    "PipelineValidationIssue",
 ]

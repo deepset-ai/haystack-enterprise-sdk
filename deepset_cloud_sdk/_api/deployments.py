@@ -120,6 +120,67 @@ class DeploymentRevision:
         )
 
 
+_ERROR_CATEGORY = "ERROR"
+_WARNING_CATEGORY = "WARNING"
+
+
+@dataclass
+class PipelineValidationIssue:
+    """A single issue reported by the pipeline validation endpoint."""
+
+    category: str
+    code: Optional[str]
+    json_pointer: Optional[str]
+    message: Optional[str]
+
+    @classmethod
+    def from_response(cls, body: Dict[str, Any]) -> "PipelineValidationIssue":
+        """Build a :class:`PipelineValidationIssue` from a raw ``error_details`` item.
+
+        Tolerant of key drift: the location may arrive as ``json_pointer``/``json_path``/``pointer``
+        and the text as ``message``/``msg`` (mirrors the UI's tolerant parser). Category defaults to
+        ``ERROR`` when absent, matching the platform default.
+        """
+        return cls(
+            category=str(body.get("category") or _ERROR_CATEGORY).upper(),
+            code=body.get("code"),
+            json_pointer=body.get("json_pointer") or body.get("json_path") or body.get("pointer"),
+            message=body.get("message") or body.get("msg"),
+        )
+
+    def __str__(self) -> str:
+        """Render as ``[CATEGORY] json_pointer: message`` for readable CLI output."""
+        location = f"{self.json_pointer}: " if self.json_pointer else ""
+        return f"[{self.category}] {location}{self.message or ''}".rstrip()
+
+
+@dataclass
+class PipelineValidationResult:
+    """The outcome of validating a pipeline YAML against the platform."""
+
+    issues: List[PipelineValidationIssue]
+
+    @property
+    def errors(self) -> List[PipelineValidationIssue]:
+        """Blocking issues (``category == ERROR``)."""
+        return [issue for issue in self.issues if issue.category == _ERROR_CATEGORY]
+
+    @property
+    def warnings(self) -> List[PipelineValidationIssue]:
+        """Non-blocking issues (``category == WARNING``)."""
+        return [issue for issue in self.issues if issue.category == _WARNING_CATEGORY]
+
+    @property
+    def has_errors(self) -> bool:
+        """Whether there is at least one blocking (ERROR) issue."""
+        return len(self.errors) > 0
+
+    @property
+    def is_valid(self) -> bool:
+        """Whether the pipeline has no blocking (ERROR) issues."""
+        return not self.has_errors
+
+
 class DeploymentNotFoundError(Exception):
     """Raised when a deployment cannot be found by name."""
 
@@ -136,10 +197,31 @@ class FailedToActivateRevisionError(Exception):
     """Raised when a deployment revision could not be activated."""
 
 
+class FailedToValidatePipelineError(Exception):
+    """Raised when the validation request itself failed (e.g. auth/5xx), not the pipeline config."""
+
+
+class PipelineValidationError(Exception):
+    """Raised when a pipeline YAML has blocking (ERROR) validation issues.
+
+    Carries the list of :class:`PipelineValidationIssue` errors so callers can inspect them; its
+    string form is a readable multi-line summary suitable for direct CLI output.
+    """
+
+    def __init__(self, errors: List[PipelineValidationIssue]) -> None:
+        """Create the error from the list of blocking validation issues."""
+        self.errors = errors
+        count = len(errors)
+        header = f"Pipeline validation failed with {count} error{'s' if count != 1 else ''}:"
+        super().__init__("\n".join([header, *(f"  - {issue}" for issue in errors)]))
+
+
 class DeploymentsAPI:
     """Service deployments API for deepset AI Platform."""
 
     _ENDPOINT = "deployments"
+    # Workspace-scoped validation endpoint (the base URL already includes /workspaces/{workspace}).
+    _VALIDATION_ENDPOINT = "pipeline_validations"
     # Revisions pushed by this SDK send self-contained inline YAML with no platform pipeline version
     # behind them, so their source is EXTERNAL_PIPELINE rather than the default PLATFORM_PIPELINE.
     _SOURCE_TYPE = DeploymentSourceType.EXTERNAL_PIPELINE.value
@@ -312,6 +394,54 @@ class DeploymentsAPI:
         )
         return Deployment.from_response(response.json())
 
+    async def validate_pipeline(
+        self,
+        workspace_name: str,
+        *,
+        query_yaml: Optional[str] = None,
+        indexing_yaml: Optional[str] = None,
+        pipeline_id: Optional[str] = None,
+        deepset_cloud_version: str = "v2",
+    ) -> PipelineValidationResult:
+        """Validate a pipeline YAML against the platform without deploying it.
+
+        Mirrors the check the UI runs before deploying: a ``204`` means the config is valid, a ``400``
+        carries the validation issues (which the caller inspects), and any other status is treated as
+        a request failure. Send only the YAML fields that apply (this SDK deploys query pipelines, so
+        it sends ``query_yaml``).
+
+        :param workspace_name: Name of the workspace.
+        :param query_yaml: Query-pipeline YAML to validate, if any.
+        :param indexing_yaml: Indexing-pipeline YAML to validate, if any.
+        :param pipeline_id: Optional pipeline id (used server-side for event tracking).
+        :param deepset_cloud_version: Platform config version (defaults to ``v2``).
+        :raises FailedToValidatePipelineError: If the validation request could not be completed.
+        :return: The validation result (issues split into errors/warnings).
+        """
+        payload: Dict[str, Any] = {"deepset_cloud_version": deepset_cloud_version}
+        for key, value in {
+            "query_yaml": query_yaml,
+            "indexing_yaml": indexing_yaml,
+            "pipeline_id": pipeline_id,
+        }.items():
+            if value is not None:
+                payload[key] = value
+
+        response = await self._deepset_cloud_api.post(
+            workspace_name=workspace_name,
+            endpoint=self._VALIDATION_ENDPOINT,
+            json=payload,
+        )
+        if response.status_code == codes.NO_CONTENT:
+            return PipelineValidationResult(issues=[])
+        raise_for_unexpected_status(
+            response,
+            (codes.NO_CONTENT, codes.BAD_REQUEST),
+            FailedToValidatePipelineError,
+            "Failed to validate the pipeline.",
+        )
+        return PipelineValidationResult(issues=_parse_validation_issues(response.json()))
+
     async def list_activity(self, workspace_name: str, deployment_id: UUID) -> List[Dict[str, Any]]:
         """Return the deployment's lifecycle activity events (creation/activation/deactivation).
 
@@ -336,6 +466,25 @@ class PaginatedDeployments:
     data: List[Deployment]
     has_more: bool
     total: int
+
+
+def _parse_validation_issues(body: Any) -> List[PipelineValidationIssue]:
+    """Extract validation issues from a validation error body, tolerant of key drift.
+
+    Scans the known detail keys in the same order the UI does (``error_details`` first), and falls
+    back to a single issue built from a top-level ``message`` so a schema change degrades to surfacing
+    the message rather than losing it.
+    """
+    if not isinstance(body, dict):
+        return []
+    for key in ("error_details", "details", "detail", "errors"):
+        items = body.get(key)
+        if isinstance(items, list):
+            return [PipelineValidationIssue.from_response(item) for item in items if isinstance(item, dict)]
+    message = body.get("message")
+    if message:
+        return [PipelineValidationIssue(category=_ERROR_CATEGORY, code=None, json_pointer=None, message=str(message))]
+    return []
 
 
 def _optional_uuid(value: Optional[str]) -> Optional[UUID]:

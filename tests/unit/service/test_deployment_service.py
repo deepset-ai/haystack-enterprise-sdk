@@ -12,6 +12,9 @@ from deepset_cloud_sdk._api.deployments import (
     DeploymentRevisionStatus,
     DeploymentServiceLevel,
     DeploymentStatus,
+    PipelineValidationError,
+    PipelineValidationIssue,
+    PipelineValidationResult,
 )
 from deepset_cloud_sdk._service.deployment_service import (
     CreateOptions,
@@ -48,11 +51,17 @@ def service(monkeypatch: pytest.MonkeyPatch) -> DeploymentService:
     """A DeploymentService whose DeploymentsAPI is a fully mocked AsyncMock."""
     svc = DeploymentService(api=Mock(), workspace_name="ws")
     svc._deployments = AsyncMock()  # type: ignore[assignment]
+    # validation passes by default so deploy tests can focus on the rollout path
+    svc._deployments.validate_pipeline.return_value = PipelineValidationResult(issues=[])
     # short-circuit the transform so tests don't need Haystack/import machinery
     monkeypatch.setattr(
         "deepset_cloud_sdk._service.pipeline_transform.build_config_yaml", lambda *a, **k: "components: {}\n"
     )
     return svc
+
+
+def _issue(category: str, message: str = "msg") -> PipelineValidationIssue:
+    return PipelineValidationIssue(category=category, code=None, json_pointer=None, message=message)
 
 
 @pytest.mark.asyncio
@@ -92,6 +101,50 @@ class TestResolveAndPush:
         _, kwargs = service._deployments.create_deployment.call_args
         assert kwargs["service_level"] == DeploymentServiceLevel.PRODUCTION
         assert kwargs["cpu_limit"] == "2"
+
+
+@pytest.mark.asyncio
+class TestValidation:
+    async def test_error_blocks_deploy_before_push(self, service: DeploymentService) -> None:
+        service._deployments.find_by_name.return_value = _deployment()
+        service._deployments.validate_pipeline.return_value = PipelineValidationResult(issues=[_issue("ERROR")])
+
+        with pytest.raises(PipelineValidationError):
+            await service.deploy(FIXTURE, "svc")
+
+        service._deployments.validate_pipeline.assert_awaited_once_with("ws", query_yaml="components: {}\n")
+        service._deployments.find_by_name.assert_not_called()
+        service._deployments.push_revision.assert_not_called()
+
+    async def test_warning_only_proceeds(self, service: DeploymentService) -> None:
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+        service._deployments.validate_pipeline.return_value = PipelineValidationResult(issues=[_issue("WARNING")])
+
+        result = await service.deploy(FIXTURE, "svc")
+
+        assert result.activated is False
+        service._deployments.push_revision.assert_awaited_once()
+
+    async def test_skip_validation_does_not_call_endpoint(self, service: DeploymentService) -> None:
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+
+        await service.deploy(FIXTURE, "svc", validate=False)
+
+        service._deployments.validate_pipeline.assert_not_called()
+        service._deployments.push_revision.assert_awaited_once()
+
+    async def test_standalone_validate_returns_result(self, service: DeploymentService) -> None:
+        expected = PipelineValidationResult(issues=[_issue("ERROR")])
+        service._deployments.validate_pipeline.return_value = expected
+
+        result = await service.validate(FIXTURE)
+
+        assert result is expected
+        service._deployments.validate_pipeline.assert_awaited_once_with("ws", query_yaml="components: {}\n")
 
 
 @pytest.mark.asyncio

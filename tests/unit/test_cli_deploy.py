@@ -12,6 +12,9 @@ from deepset_cloud_sdk._api.deployments import (
     DeploymentRevisionStatus,
     DeploymentServiceLevel,
     DeploymentStatus,
+    PipelineValidationError,
+    PipelineValidationIssue,
+    PipelineValidationResult,
 )
 from deepset_cloud_sdk._api.shared_prototypes import (
     FailedToCreateSharedPrototypeError,
@@ -113,6 +116,30 @@ class TestDeployCommand:
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 1
         assert "no such service" in result.stdout
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_deploy_validates_by_default(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=True)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.deploy.call_args
+        assert kwargs["validate"] is True
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_deploy_skip_validation(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=True)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--skip-validation"])
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.deploy.call_args
+        assert kwargs["validate"] is False
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_deploy_validation_error_exits_1(self, client_cls: Mock) -> None:
+        errors = [PipelineValidationIssue(category="ERROR", code=None, json_pointer="/x", message="bad thing")]
+        client_cls.return_value.deploy.side_effect = PipelineValidationError(errors)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
+        assert result.exit_code == 1
+        assert "bad thing" in result.stdout
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
     def test_deploy_create_passes_options(self, client_cls: Mock) -> None:
@@ -367,6 +394,38 @@ class TestDryRun:
         inputs, outputs = _resolve_io_for_share(extraction, skip_validation=True)
         assert inputs == {"query": ["answer_builder.query"]}
         assert outputs == {"answers": "answer_builder.answers"}
+
+
+class TestValidateCommand:
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_validate_valid_exits_0(self, client_cls: Mock) -> None:
+        client_cls.return_value.validate.return_value = PipelineValidationResult(issues=[])
+        result = runner.invoke(cli_app, ["validate", FIXTURE])
+        assert result.exit_code == 0
+        assert "valid" in result.stdout.lower()
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_validate_error_exits_1(self, client_cls: Mock) -> None:
+        issues = [PipelineValidationIssue(category="ERROR", code=None, json_pointer="/c", message="broken")]
+        client_cls.return_value.validate.return_value = PipelineValidationResult(issues=issues)
+        result = runner.invoke(cli_app, ["validate", FIXTURE])
+        assert result.exit_code == 1
+        assert "broken" in result.stdout
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_validate_warning_only_exits_0(self, client_cls: Mock) -> None:
+        issues = [PipelineValidationIssue(category="WARNING", code=None, json_pointer=None, message="deprecated")]
+        client_cls.return_value.validate.return_value = PipelineValidationResult(issues=issues)
+        result = runner.invoke(cli_app, ["validate", FIXTURE])
+        assert result.exit_code == 0
+        assert "deprecated" in result.stdout
+
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_validate_transform_error_exits_1(self, client_cls: Mock) -> None:
+        client_cls.return_value.validate.side_effect = PipelineTransformError("cannot transform")
+        result = runner.invoke(cli_app, ["validate", FIXTURE])
+        assert result.exit_code == 1
+        assert "cannot transform" in result.stdout
 
 
 class TestServiceStatusCommand:

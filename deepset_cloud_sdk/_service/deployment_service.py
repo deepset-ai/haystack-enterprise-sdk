@@ -19,6 +19,8 @@ from deepset_cloud_sdk._api.deployments import (
     DeploymentsAPI,
     DeploymentServiceLevel,
     DeploymentStatus,
+    PipelineValidationError,
+    PipelineValidationResult,
 )
 from deepset_cloud_sdk._api.shared_prototypes import (
     SharedPrototype,
@@ -124,6 +126,7 @@ class DeploymentService:
         outputs: Optional[dict] = None,
         io_resolver: Optional[pipeline_transform.IoResolver] = None,
         python_executable: Optional[str] = None,
+        validate: bool = True,
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         on_status: Optional[Callable[[DeploymentStatus], None]] = None,
@@ -141,10 +144,13 @@ class DeploymentService:
         :param io_resolver: Optional callback consulted when input/output resolution is incomplete
             (see :func:`pipeline_transform.resolve_io`); returns ``(inputs, outputs)`` dicts to use.
         :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
+        :param validate: If True (default), validate the generated YAML against the platform and abort
+            on blocking (ERROR) issues before creating/pushing anything. Set False to skip the check.
         :param timeout_s: Max seconds to poll for activation before detaching.
         :param poll_interval_s: Seconds between activation polls.
         :param on_status: Optional callback invoked with the deployment status on each poll.
         :raises ServiceNotFoundError: If the service is missing and ``create`` is False.
+        :raises PipelineValidationError: If ``validate`` is set and the YAML has blocking issues.
         :raises DeploymentFailedError: If ``activate`` is set and the rollout fails.
         :return: A :class:`DeployResult`.
         """
@@ -156,6 +162,14 @@ class DeploymentService:
             io_resolver=io_resolver,
             python_executable=python_executable,
         )
+
+        if validate:
+            # Validate before resolving/creating the service so an invalid config never provisions one.
+            result = await self._deployments.validate_pipeline(self._workspace_name, query_yaml=config_yaml)
+            for issue in result.warnings:
+                logger.warning("Pipeline validation warning.", message=issue.message, pointer=issue.json_pointer)
+            if result.has_errors:
+                raise PipelineValidationError(result.errors)
 
         deployment = await self._resolve_or_create(service_name, create, create_options)
 
@@ -176,6 +190,39 @@ class DeploymentService:
             raise DeploymentFailedError(deployment, self._ui_hint(service_name))
 
         return DeployResult(deployment=deployment, revision=revision, activated=True, timed_out=timed_out)
+
+    async def validate(
+        self,
+        target: Path,
+        *,
+        entrypoint: Optional[str] = None,
+        inputs: Optional[dict] = None,
+        outputs: Optional[dict] = None,
+        io_resolver: Optional[pipeline_transform.IoResolver] = None,
+        python_executable: Optional[str] = None,
+    ) -> PipelineValidationResult:
+        """Transform ``target`` and validate the generated YAML against the platform without deploying.
+
+        Runs the exact same transform path as :meth:`deploy`, so the validated YAML matches what a
+        deploy would push. The result is returned as-is (no gating); the caller decides how to react.
+
+        :param target: Path to the pipeline ``.py`` file.
+        :param entrypoint: Name of the pipeline instance/factory when the file is ambiguous.
+        :param inputs: Optional explicit pipeline inputs (overrides inference).
+        :param outputs: Optional explicit pipeline outputs (overrides inference).
+        :param io_resolver: Optional callback consulted when input/output resolution is incomplete.
+        :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
+        :return: The validation result (issues split into errors/warnings).
+        """
+        config_yaml = pipeline_transform.build_config_yaml(
+            target,
+            entrypoint=entrypoint,
+            inputs=inputs,
+            outputs=outputs,
+            io_resolver=io_resolver,
+            python_executable=python_executable,
+        )
+        return await self._deployments.validate_pipeline(self._workspace_name, query_yaml=config_yaml)
 
     async def get_service_status(self, service_name: str) -> Deployment:
         """Return the current deployment (with live runtime status) for ``service_name``.

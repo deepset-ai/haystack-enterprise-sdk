@@ -17,6 +17,8 @@ from deepset_cloud_sdk._api.deployments import (
     FailedToActivateRevisionError,
     FailedToCreateDeploymentError,
     FailedToPushRevisionError,
+    FailedToValidatePipelineError,
+    PipelineValidationResult,
 )
 
 _REQUEST = Request("GET", "https://test.deepset.ai")
@@ -193,6 +195,90 @@ class TestRevisions:
         mocked_deepset_cloud_api.post.return_value = _resp(codes.CONFLICT, text="nope")
         with pytest.raises(FailedToActivateRevisionError):
             await deployments_api.activate_revision("ws", uuid4(), uuid4())
+
+
+@pytest.mark.asyncio
+class TestValidatePipeline:
+    async def test_valid_204(self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock) -> None:
+        mocked_deepset_cloud_api.post.return_value = _resp(codes.NO_CONTENT)
+        result = await deployments_api.validate_pipeline("ws", query_yaml="components: {}")
+        assert isinstance(result, PipelineValidationResult)
+        assert result.is_valid is True
+        assert result.issues == []
+        mocked_deepset_cloud_api.post.assert_called_once_with(
+            workspace_name="ws",
+            endpoint="pipeline_validations",
+            json={"deepset_cloud_version": "v2", "query_yaml": "components: {}"},
+        )
+
+    async def test_only_provided_yaml_fields_are_sent(
+        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+    ) -> None:
+        mocked_deepset_cloud_api.post.return_value = _resp(codes.NO_CONTENT)
+        await deployments_api.validate_pipeline("ws", indexing_yaml="components: {}", pipeline_id="pid")
+        _, kwargs = mocked_deepset_cloud_api.post.call_args
+        assert kwargs["json"] == {
+            "deepset_cloud_version": "v2",
+            "indexing_yaml": "components: {}",
+            "pipeline_id": "pid",
+        }
+
+    async def test_errors_parsed_from_400(
+        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+    ) -> None:
+        mocked_deepset_cloud_api.post.return_value = _resp(
+            codes.BAD_REQUEST,
+            json={
+                "error_details": [
+                    {"category": "ERROR", "code": "X", "json_pointer": "/components/0", "message": "bad"},
+                    {"category": "WARNING", "message": "meh"},
+                ]
+            },
+        )
+        result = await deployments_api.validate_pipeline("ws", query_yaml="y")
+        assert result.has_errors is True
+        assert len(result.errors) == 1
+        assert result.errors[0].json_pointer == "/components/0"
+        assert len(result.warnings) == 1
+
+    async def test_warning_only_400_is_valid(
+        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+    ) -> None:
+        mocked_deepset_cloud_api.post.return_value = _resp(
+            codes.BAD_REQUEST,
+            json={"error_details": [{"category": "WARNING", "message": "deprecated"}]},
+        )
+        result = await deployments_api.validate_pipeline("ws", query_yaml="y")
+        assert result.is_valid is True
+        assert result.has_errors is False
+        assert len(result.warnings) == 1
+
+    async def test_tolerates_alternate_detail_keys(
+        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+    ) -> None:
+        mocked_deepset_cloud_api.post.return_value = _resp(
+            codes.BAD_REQUEST,
+            json={"detail": [{"msg": "boom", "json_path": "/x"}]},  # no category -> defaults to ERROR
+        )
+        result = await deployments_api.validate_pipeline("ws", query_yaml="y")
+        assert result.has_errors is True
+        assert result.errors[0].message == "boom"
+        assert result.errors[0].json_pointer == "/x"
+
+    async def test_falls_back_to_top_level_message(
+        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+    ) -> None:
+        mocked_deepset_cloud_api.post.return_value = _resp(codes.BAD_REQUEST, json={"message": "invalid config"})
+        result = await deployments_api.validate_pipeline("ws", query_yaml="y")
+        assert result.has_errors is True
+        assert result.errors[0].message == "invalid config"
+
+    async def test_request_failure_raises(
+        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+    ) -> None:
+        mocked_deepset_cloud_api.post.return_value = _resp(codes.INTERNAL_SERVER_ERROR, text="boom")
+        with pytest.raises(FailedToValidatePipelineError):
+            await deployments_api.validate_pipeline("ws", query_yaml="y")
 
 
 @pytest.mark.asyncio
