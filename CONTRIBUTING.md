@@ -34,7 +34,7 @@ Code quality checks, unit tests, and integration tests (against prod) are perfor
 
 ## Deploy to test PyPi
 
-When you create a PR in the deepset-cloud-sdk repository, add the 'test-deploy' label to trigger deployment to the test PyPi repository.
+When you create a PR in the haystack-enterprise-sdk repository, add the 'test-deploy' label to trigger deployment to the test PyPi repository.
 
 ## Publishing to PyPi
 
@@ -43,4 +43,4 @@ To publish a new version of the SDK you will need to create and publish a new re
 
 ## Software design
 
-Have a look at this [README](/deepset_cloud_sdk/README.md) to get an overview of the software design.
+Have a look at this [README](/haystack_enterprise_sdk/README.md) to get an overview of the software design.

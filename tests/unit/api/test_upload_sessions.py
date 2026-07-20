@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 from httpx import Response, codes
 
-from deepset_cloud_sdk._api.upload_sessions import (
+from haystack_enterprise_sdk._api.upload_sessions import (
     FailedToSendUploadSessionRequest,
     UploadSession,
     UploadSessionDetailList,
@@ -16,18 +16,18 @@ from deepset_cloud_sdk._api.upload_sessions import (
 
 
 @pytest.fixture
-def upload_session_client(mocked_deepset_cloud_api: Mock) -> UploadSessionsAPI:
-    return UploadSessionsAPI(mocked_deepset_cloud_api)
+def upload_session_client(mocked_haystack_enterprise_api: Mock) -> UploadSessionsAPI:
+    return UploadSessionsAPI(mocked_haystack_enterprise_api)
 
 
 @pytest.mark.asyncio
 class TestCreateUploadSessions:
     async def test_create_session(
-        self, upload_session_client: UploadSessionsAPI, mocked_deepset_cloud_api: Mock
+        self, upload_session_client: UploadSessionsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         session_id = uuid4()
         expires_at = datetime.datetime.now()
-        mocked_deepset_cloud_api.post.return_value = Response(
+        mocked_haystack_enterprise_api.post.return_value = Response(
             status_code=codes.CREATED,
             json={
                 "session_id": str(session_id),
@@ -54,16 +54,16 @@ class TestCreateUploadSessions:
         )
         assert result.aws_prefixed_request_config.fields["key"] == "key"
 
-        mocked_deepset_cloud_api.post.assert_called_once_with(
+        mocked_haystack_enterprise_api.post.assert_called_once_with(
             workspace_name="sdk_read",
             endpoint="upload_sessions",
             json={"write_mode": "KEEP", "parallel_processing_enabled": True},
         )
 
     async def test_create_session_fails(
-        self, upload_session_client: UploadSessionsAPI, mocked_deepset_cloud_api: Mock
+        self, upload_session_client: UploadSessionsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = Response(status_code=codes.INTERNAL_SERVER_ERROR)
+        mocked_haystack_enterprise_api.post.return_value = Response(status_code=codes.INTERNAL_SERVER_ERROR)
         with pytest.raises(FailedToSendUploadSessionRequest):
             await upload_session_client.create(workspace_name="sdk_read")
 
@@ -71,23 +71,23 @@ class TestCreateUploadSessions:
 @pytest.mark.asyncio
 class TestCloseUploadSessions:
     async def test_close_session(
-        self, upload_session_client: UploadSessionsAPI, mocked_deepset_cloud_api: Mock
+        self, upload_session_client: UploadSessionsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         session_id = uuid4()
 
-        mocked_deepset_cloud_api.put.return_value = Response(status_code=codes.NO_CONTENT)
+        mocked_haystack_enterprise_api.put.return_value = Response(status_code=codes.NO_CONTENT)
 
         await upload_session_client.close(workspace_name="sdk_read", session_id=session_id)
-        mocked_deepset_cloud_api.put.assert_called_once_with(
+        mocked_haystack_enterprise_api.put.assert_called_once_with(
             workspace_name="sdk_read", endpoint=f"upload_sessions/{session_id}", data={"status": "CLOSED"}
         )
 
     async def test_close_session_failed(
-        self, upload_session_client: UploadSessionsAPI, mocked_deepset_cloud_api: Mock
+        self, upload_session_client: UploadSessionsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         session_id = uuid4()
 
-        mocked_deepset_cloud_api.put.return_value = Response(status_code=codes.INTERNAL_SERVER_ERROR)
+        mocked_haystack_enterprise_api.put.return_value = Response(status_code=codes.INTERNAL_SERVER_ERROR)
         with pytest.raises(FailedToSendUploadSessionRequest):
             await upload_session_client.close(workspace_name="sdk_read", session_id=session_id)
 
@@ -95,12 +95,12 @@ class TestCloseUploadSessions:
 @pytest.mark.asyncio
 class TestStatusUploadSessions:
     async def test_get_session_status(
-        self, upload_session_client: UploadSessionsAPI, mocked_deepset_cloud_api: Mock
+        self, upload_session_client: UploadSessionsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         session_id = uuid4()
         expires_at = datetime.datetime.now()
 
-        mocked_deepset_cloud_api.get.return_value = Response(
+        mocked_haystack_enterprise_api.get.return_value = Response(
             status_code=codes.OK,
             json={
                 "session_id": str(session_id),
@@ -117,18 +117,18 @@ class TestStatusUploadSessions:
         assert upload_session_status.ingestion_status.failed_files == 0
         assert upload_session_status.ingestion_status.finished_files == 0
 
-        mocked_deepset_cloud_api.get.assert_called_once_with(
+        mocked_haystack_enterprise_api.get.assert_called_once_with(
             workspace_name="sdk_read", endpoint=f"upload_sessions/{session_id}"
         )
 
     @pytest.mark.parametrize("first_status_code", [codes.BAD_GATEWAY, codes.INTERNAL_SERVER_ERROR])
     async def test_get_session_status_with_retry(
-        self, upload_session_client: UploadSessionsAPI, mocked_deepset_cloud_api: Mock, first_status_code: int
+        self, upload_session_client: UploadSessionsAPI, mocked_haystack_enterprise_api: Mock, first_status_code: int
     ) -> None:
         session_id = uuid4()
         expires_at = datetime.datetime.now()
 
-        mocked_deepset_cloud_api.get.side_effect = [
+        mocked_haystack_enterprise_api.get.side_effect = [
             Response(status_code=first_status_code),
             Response(
                 status_code=codes.OK,
@@ -149,11 +149,11 @@ class TestStatusUploadSessions:
         assert upload_session_status.ingestion_status.finished_files == 0
 
     async def test_get_session_status_failed(
-        self, upload_session_client: UploadSessionsAPI, mocked_deepset_cloud_api: Mock
+        self, upload_session_client: UploadSessionsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         session_id = uuid4()
 
-        mocked_deepset_cloud_api.get.return_value = Response(status_code=codes.INTERNAL_SERVER_ERROR)
+        mocked_haystack_enterprise_api.get.return_value = Response(status_code=codes.INTERNAL_SERVER_ERROR)
         with pytest.raises(FailedToSendUploadSessionRequest):
             await upload_session_client.status(workspace_name="sdk_read", session_id=session_id)
 
@@ -161,13 +161,13 @@ class TestStatusUploadSessions:
 @pytest.mark.asyncio
 class TestListUploadSessions:
     async def test_list_sessions(
-        self, upload_session_client: UploadSessionsAPI, mocked_deepset_cloud_api: Mock
+        self, upload_session_client: UploadSessionsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         session_id = uuid4()
         timestamp = datetime.datetime.now()
         user_id = uuid4()
 
-        mocked_deepset_cloud_api.get.return_value = Response(
+        mocked_haystack_enterprise_api.get.return_value = Response(
             status_code=codes.OK,
             json={
                 "data": [
@@ -204,13 +204,13 @@ class TestListUploadSessions:
         assert result.data[0].status == UploadSessionStatusEnum.OPEN
 
     async def test_list_sessions_with_z_timestamp(
-        self, upload_session_client: UploadSessionsAPI, mocked_deepset_cloud_api: Mock
+        self, upload_session_client: UploadSessionsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         session_id = uuid4()
         timestamp = datetime.datetime.now()
         user_id = uuid4()
 
-        mocked_deepset_cloud_api.get.return_value = Response(
+        mocked_haystack_enterprise_api.get.return_value = Response(
             status_code=codes.OK,
             json={
                 "data": [
@@ -248,13 +248,13 @@ class TestListUploadSessions:
 
     @pytest.mark.parametrize("first_status_code", [codes.BAD_GATEWAY, codes.INTERNAL_SERVER_ERROR])
     async def test_list_sessions_with_retry(
-        self, upload_session_client: UploadSessionsAPI, mocked_deepset_cloud_api: Mock, first_status_code: int
+        self, upload_session_client: UploadSessionsAPI, mocked_haystack_enterprise_api: Mock, first_status_code: int
     ) -> None:
         session_id = uuid4()
         timestamp = datetime.datetime.now()
         user_id = uuid4()
 
-        mocked_deepset_cloud_api.get.side_effect = [
+        mocked_haystack_enterprise_api.get.side_effect = [
             Response(status_code=first_status_code),
             Response(
                 status_code=codes.OK,
@@ -294,8 +294,8 @@ class TestListUploadSessions:
         assert result.data[0].status == UploadSessionStatusEnum.OPEN
 
     async def test_list_sessions_failed(
-        self, upload_session_client: UploadSessionsAPI, mocked_deepset_cloud_api: Mock
+        self, upload_session_client: UploadSessionsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.get.return_value = Response(status_code=codes.INTERNAL_SERVER_ERROR)
+        mocked_haystack_enterprise_api.get.return_value = Response(status_code=codes.INTERNAL_SERVER_ERROR)
         with pytest.raises(FailedToSendUploadSessionRequest):
             await upload_session_client.list(workspace_name="sdk_read")

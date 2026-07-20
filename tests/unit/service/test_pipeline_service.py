@@ -15,8 +15,8 @@ from haystack.components.routers import FileTypeRouter
 from httpx import Response
 from structlog.testing import capture_logs
 
-from deepset_cloud_sdk._service.pipeline_service import DeepsetValidationError, PipelineService
-from deepset_cloud_sdk.models import (
+from haystack_enterprise_sdk._service.pipeline_service import HaystackEnterpriseValidationError, PipelineService
+from haystack_enterprise_sdk.models import (
     IndexConfig,
     IndexInputs,
     IndexOutputs,
@@ -978,7 +978,7 @@ class TestValidatePipelineYaml:
             strict_validation=True,
         )
 
-        with pytest.raises(DeepsetValidationError) as exc_info:
+        with pytest.raises(HaystackEnterpriseValidationError) as exc_info:
             await pipeline_service.import_async(test_pipeline, config)
 
         error = exc_info.value
@@ -1019,10 +1019,10 @@ class TestValidatePipelineYaml:
             strict_validation=True,
         )
 
-        with pytest.raises(DeepsetValidationError) as exc_info:
+        with pytest.raises(HaystackEnterpriseValidationError) as exc_info:
             await pipeline_service.import_async(test_pipeline, config)
 
-        # Check that DeepsetValidationError contains the expected information
+        # Check that HaystackEnterpriseValidationError contains the expected information
         error = exc_info.value
         assert "Validation failed:" in str(error)
         assert len(error.errors) == 1
@@ -1136,10 +1136,10 @@ class TestValidatePipelineYaml:
             strict_validation=True,
         )
 
-        with pytest.raises(DeepsetValidationError) as exc_info:
+        with pytest.raises(HaystackEnterpriseValidationError) as exc_info:
             await pipeline_service.import_async(test_pipeline, config)
 
-        # Check that DeepsetValidationError contains fallback error information
+        # Check that HaystackEnterpriseValidationError contains fallback error information
         error = exc_info.value
         assert "Validation failed:" in str(error)
         assert len(error.errors) == 1
@@ -1169,10 +1169,10 @@ class TestValidatePipelineYaml:
             strict_validation=True,
         )
 
-        with pytest.raises(DeepsetValidationError) as exc_info:
+        with pytest.raises(HaystackEnterpriseValidationError) as exc_info:
             await pipeline_service.import_async(test_pipeline, config)
 
-        # Check that DeepsetValidationError contains the fallback error information from 'errors' field
+        # Check that HaystackEnterpriseValidationError contains the fallback error information from 'errors' field
         error = exc_info.value
         assert "Validation failed:" in str(error)
         assert len(error.errors) == 1
@@ -1211,10 +1211,10 @@ class TestValidatePipelineYaml:
             strict_validation=True,
         )
 
-        with pytest.raises(DeepsetValidationError) as exc_info:
+        with pytest.raises(HaystackEnterpriseValidationError) as exc_info:
             await pipeline_service.import_async(test_pipeline, config)
 
-        # Check that DeepsetValidationError contains the error information from object-based errors
+        # Check that HaystackEnterpriseValidationError contains the error information from object-based errors
         error = exc_info.value
         assert "Validation failed:" in str(error)
         assert len(error.errors) == 2
@@ -1259,10 +1259,10 @@ class TestValidatePipelineYaml:
             strict_validation=True,
         )
 
-        with pytest.raises(DeepsetValidationError) as exc_info:
+        with pytest.raises(HaystackEnterpriseValidationError) as exc_info:
             await pipeline_service.import_async(test_pipeline, config)
 
-        # Check that DeepsetValidationError falls back to string handling when objects are incomplete
+        # Check that HaystackEnterpriseValidationError falls back to string handling when objects are incomplete
         error = exc_info.value
         assert "Validation failed:" in str(error)
         assert len(error.errors) == 1

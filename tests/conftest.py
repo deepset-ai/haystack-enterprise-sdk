@@ -14,15 +14,15 @@ from dotenv import load_dotenv
 # from faker import Faker
 from tenacity import retry, stop_after_delay, wait_fixed
 
-from deepset_cloud_sdk._api.config import CommonConfig
-from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
-from deepset_cloud_sdk._api.files import FilesAPI
-from deepset_cloud_sdk._api.upload_sessions import (
+from haystack_enterprise_sdk._api.config import CommonConfig
+from haystack_enterprise_sdk._api.files import FilesAPI
+from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
+from haystack_enterprise_sdk._api.upload_sessions import (
     AWSPrefixedRequestConfig,
     UploadSession,
     UploadSessionsAPI,
 )
-from deepset_cloud_sdk._s3.upload import S3
+from haystack_enterprise_sdk._s3.upload import S3
 
 load_dotenv()
 
@@ -75,8 +75,8 @@ def mocked_client() -> Mock:
 
 
 @pytest.fixture
-def mocked_deepset_cloud_api() -> Mock:
-    return Mock(spec=DeepsetCloudAPI)
+def mocked_haystack_enterprise_api() -> Mock:
+    return Mock(spec=HaystackEnterpriseAPI)
 
 
 @pytest.fixture
@@ -96,8 +96,8 @@ def mocked_s3() -> Mock:
 
 
 @pytest.fixture
-def deepset_cloud_api(unit_config: CommonConfig, mocked_client: Mock) -> DeepsetCloudAPI:
-    return DeepsetCloudAPI(config=unit_config, client=mocked_client)
+def haystack_enterprise_api(unit_config: CommonConfig, mocked_client: Mock) -> HaystackEnterpriseAPI:
+    return HaystackEnterpriseAPI(config=unit_config, client=mocked_client)
 
 
 @pytest.fixture

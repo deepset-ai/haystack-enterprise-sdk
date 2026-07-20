@@ -1,6 +1,6 @@
 loaders:
   - type: python
-    search_path: [../../../deepset_cloud_sdk]
+    search_path: [../../../haystack_enterprise_sdk]
     modules: ["cli"]
     ignore_when_discovered: ["__init__"]
 processors:
@@ -13,9 +13,9 @@ processors:
   - type: crossref
 renderer:
   type: renderers.ReadmeRenderer
-  excerpt: A cli tool for the deepset API.
+  excerpt: A cli tool for the Haystack Enterprise Platform API.
   category_slug: sdk-10
-  title: deepset CLI
+  title: Haystack Enterprise Platform CLI
   slug: cli
   order: 0
   markdown:

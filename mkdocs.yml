@@ -1,10 +1,10 @@
-site_name: deepset Cloud SDK
-site_description: deepset Cloud SDK Documentation
-site_url: https://deepset-ai.github.io/deepset-cloud-sdk/
+site_name: Haystack Enterprise Platform SDK
+site_description: Haystack Enterprise Platform SDK Documentation
+site_url: https://deepset-ai.github.io/haystack-enterprise-sdk/
 
 # Repository
-repo_name: deepset-ai/deepset-cloud-sdk
-repo_url: https://github.com/deepset-ai/deepset-cloud-sdk
+repo_name: deepset-ai/haystack-enterprise-sdk
+repo_url: https://github.com/deepset-ai/haystack-enterprise-sdk
 edit_uri: ""
 
 theme:

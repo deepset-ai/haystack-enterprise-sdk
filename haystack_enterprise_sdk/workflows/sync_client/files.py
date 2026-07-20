@@ -7,33 +7,33 @@ from uuid import UUID
 
 import structlog
 
-from deepset_cloud_sdk._api.config import DEFAULT_WORKSPACE_NAME
-from deepset_cloud_sdk._api.files import File
-from deepset_cloud_sdk._api.upload_sessions import (
+from haystack_enterprise_sdk._api.config import DEFAULT_WORKSPACE_NAME
+from haystack_enterprise_sdk._api.files import File
+from haystack_enterprise_sdk._api.upload_sessions import (
     UploadSessionDetail,
     UploadSessionStatus,
     WriteMode,
 )
-from deepset_cloud_sdk._s3.upload import S3UploadSummary
-from deepset_cloud_sdk.models import DeepsetCloudFile, DeepsetCloudFileBytes
-from deepset_cloud_sdk.workflows.async_client.files import download as async_download
-from deepset_cloud_sdk.workflows.async_client.files import (
+from haystack_enterprise_sdk._s3.upload import S3UploadSummary
+from haystack_enterprise_sdk.models import HaystackEnterpriseFile, HaystackEnterpriseFileBytes
+from haystack_enterprise_sdk.workflows.async_client.files import download as async_download
+from haystack_enterprise_sdk.workflows.async_client.files import (
     get_upload_session as async_get_upload_session,
 )
-from deepset_cloud_sdk.workflows.async_client.files import (
+from haystack_enterprise_sdk.workflows.async_client.files import (
     list_files as async_list_files,
 )
-from deepset_cloud_sdk.workflows.async_client.files import (
+from haystack_enterprise_sdk.workflows.async_client.files import (
     list_upload_sessions as async_list_upload_sessions,
 )
-from deepset_cloud_sdk.workflows.async_client.files import upload as async_upload
-from deepset_cloud_sdk.workflows.async_client.files import (
+from haystack_enterprise_sdk.workflows.async_client.files import upload as async_upload
+from haystack_enterprise_sdk.workflows.async_client.files import (
     upload_bytes as async_upload_bytes,
 )
-from deepset_cloud_sdk.workflows.async_client.files import (
+from haystack_enterprise_sdk.workflows.async_client.files import (
     upload_texts as async_upload_texts,
 )
-from deepset_cloud_sdk.workflows.sync_client.utils import iter_over_async
+from haystack_enterprise_sdk.workflows.sync_client.utils import iter_over_async
 
 logger = structlog.get_logger(__name__)
 
@@ -52,10 +52,10 @@ def upload(  # pylint: disable=too-many-arguments
     enable_parallel_processing: bool = False,
     safe_mode: bool = False,
 ) -> S3UploadSummary:
-    """Upload a folder to deepset AI Platform.
+    """Upload a folder to Haystack Enterprise Platform.
 
     :param paths: Path to the folder to upload. If the folder contains unsupported file types, they're skipped.
-    deepset AI Platform supports csv, docx, html, json, md, txt, pdf, pptx, xlsx, xml.
+    Haystack Enterprise Platform supports csv, docx, html, json, md, txt, pdf, pptx, xlsx, xml.
     :param api_key: deepset API key to use for authentication.
     :param api_url: API URL to use for authentication.
     :param workspace_name: Name of the workspace to upload the files to. It uses the workspace from the .ENV file by default.
@@ -64,13 +64,13 @@ def upload(  # pylint: disable=too-many-arguments
     KEEP - uploads the file with the same name and keeps both files in the workspace.
     OVERWRITE - overwrites the file that is in the workspace.
     FAIL - fails to upload the file with the same name.
-    :param blocking: Whether to wait for the files to be uploaded and displayed in deepset AI Platform.
+    :param blocking: Whether to wait for the files to be uploaded and displayed in Haystack Enterprise Platform.
     :param timeout_s: Timeout in seconds for the `blocking` parameter.
     :param show_progress: Shows the upload progress.
     :param recursive: Uploads files from subfolders as well.
     :param desired_file_types: A list of allowed file types to upload. If not provided, all
         files are uploaded.
-    :param enable_parallel_processing: If `True`, deepset AI Platform ingests files in parallel.
+    :param enable_parallel_processing: If `True`, Haystack Enterprise Platform ingests files in parallel.
         Use this to speed up the upload process. Make sure you are not running concurrent uploads for the same files.
     :param safe_mode: If `True`, disables ingesting files in parallel.
     """
@@ -105,7 +105,7 @@ def download(  # pylint: disable=too-many-arguments
     timeout_s: Optional[int] = None,
     safe_mode: bool = False,
 ) -> None:
-    """Download a folder to deepset AI Platform.
+    """Download a folder to Haystack Enterprise Platform.
 
     Downloads all files from a workspace to a local folder.
 
@@ -139,7 +139,7 @@ def download(  # pylint: disable=too-many-arguments
 
 
 def upload_texts(
-    files: List[DeepsetCloudFile],
+    files: List[HaystackEnterpriseFile],
     api_key: Optional[str] = None,
     api_url: Optional[str] = None,
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
@@ -149,9 +149,9 @@ def upload_texts(
     show_progress: bool = True,
     enable_parallel_processing: bool = False,
 ) -> S3UploadSummary:
-    """Upload texts to deepset AI Platform.
+    """Upload texts to Haystack Enterprise Platform.
 
-    :param files: List of DeepsetCloudFiles to upload.
+    :param files: List of HaystackEnterpriseFiles to upload.
     :param api_key: deepset API key to use for authentication.
     :param api_url: API URL to use for authentication.
     :param workspace_name: Name of the workspace to upload the files to. It uses the workspace from the .ENV file by default.
@@ -160,21 +160,21 @@ def upload_texts(
     KEEP - uploads the file with the same name and keeps both files in the workspace.
     OVERWRITE - overwrites the file that is in the workspace.
     FAIL - fails to upload the file with the same name.
-    :param blocking: Whether to wait for the files to be uploaded and listed in deepset AI Platform.
+    :param blocking: Whether to wait for the files to be uploaded and listed in Haystack Enterprise Platform.
     :param timeout_s: Timeout in seconds for the `blocking` parameter.
     :param show_progress: Shows the upload progress.
-    :param enable_parallel_processing: If `True`, deepset AI Platform ingests files in parallel.
+    :param enable_parallel_processing: If `True`, Haystack Enterprise Platform ingests files in parallel.
         Use this to speed up the upload process. Make sure you are not running concurrent uploads for the same files.
 
     Example:
     ```python
-    from deepset_cloud_sdk.workflows.sync_client.files import upload_texts, DeepsetCloudFile
+    from haystack_enterprise_sdk.workflows.sync_client.files import upload_texts, HaystackEnterpriseFile
 
     upload_texts(
-        api_key="<deepsetCloud_API_key>",
+        api_key="<haystack_enterprise_API_key>",
         workspace_name="<default_workspace>", # optional, by default the environment variable "DEFAULT_WORKSPACE_NAME" is used
         files=[
-            DeepsetCloudFile(
+            HaystackEnterpriseFile(
                 name="example.txt",
                 text="this is text",
                 meta={"key": "value"},  # optional
@@ -201,7 +201,7 @@ def upload_texts(
 
 
 def upload_bytes(
-    files: List[DeepsetCloudFileBytes],
+    files: List[HaystackEnterpriseFileBytes],
     api_key: Optional[str] = None,
     api_url: Optional[str] = None,
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
@@ -211,9 +211,9 @@ def upload_bytes(
     show_progress: bool = True,
     enable_parallel_processing: bool = False,
 ) -> S3UploadSummary:
-    """Upload any supported file types to deepset AI Platform. These include .csv, .docx, .html, .json, .md, .txt, .pdf, .pptx, .xlsx and .xml.
+    """Upload any supported file types to Haystack Enterprise Platform. These include .csv, .docx, .html, .json, .md, .txt, .pdf, .pptx, .xlsx and .xml.
 
-    :param files: List of DeepsetCloudFilesBytes to upload.
+    :param files: List of HaystackEnterpriseFilesBytes to upload.
     :param api_key: deepset API key to use for authentication.
     :param api_url: API URL to use for authentication.
     :param workspace_name: Name of the workspace to upload the files to. It uses the workspace from the .ENV file by default.
@@ -222,10 +222,10 @@ def upload_bytes(
     KEEP - uploads the file with the same name and keeps both files in the workspace.
     OVERWRITE - overwrites the file that is in the workspace.
     FAIL - fails to upload the file with the same name.
-    :param blocking: Whether to wait for the files to be uploaded and listed in deepset AI Platform.
+    :param blocking: Whether to wait for the files to be uploaded and listed in Haystack Enterprise Platform.
     :param timeout_s: Timeout in seconds for the `blocking` parameter.
     :param show_progress: Shows the upload progress.
-    :param enable_parallel_processing: If `True`, deepset AI Platform ingests files in parallel.
+    :param enable_parallel_processing: If `True`, Haystack Enterprise Platform ingests files in parallel.
         Use this to speed up the upload process. Make sure you are not running concurrent uploads for the same files.
     """
     return asyncio.run(

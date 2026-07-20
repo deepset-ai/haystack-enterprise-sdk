@@ -1,7 +1,7 @@
 """
-File API for deepset AI Platform.
+File API for Haystack Enterprise Platform.
 
-This module takes care of all file-related API calls to deepset AI Platform, including uploading, downloading, listing, and
+This module takes care of all file-related API calls to Haystack Enterprise Platform, including uploading, downloading, listing, and
 deleting files.
 """
 
@@ -16,9 +16,9 @@ from uuid import UUID
 import structlog
 from httpx import codes
 
-from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
-from deepset_cloud_sdk._api.upload_sessions import WriteMode
-from deepset_cloud_sdk._utils.datetime import from_isoformat
+from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
+from haystack_enterprise_sdk._api.upload_sessions import WriteMode
+from haystack_enterprise_sdk._utils.datetime import from_isoformat
 
 logger = structlog.get_logger(__name__)
 
@@ -27,7 +27,7 @@ class NotMatchingFileTypeException(Exception):
     """Exception raised when a file is not matching the file type."""
 
 
-class FileNotFoundInDeepsetCloudException(Exception):
+class FileNotFoundInHaystackEnterpriseException(Exception):
     """Exception raised when a file is not found."""
 
 
@@ -37,7 +37,7 @@ class FailedToUploadFileException(Exception):
 
 @dataclass
 class File:
-    """File primitive from deepset AI Platform. This dataclass is used for all file-related operations that don't include the actual file content."""
+    """File primitive from Haystack Enterprise Platform. This dataclass is used for all file-related operations that don't include the actual file content."""
 
     file_id: UUID
     url: str
@@ -70,21 +70,21 @@ class FileList:
 
 
 class FilesAPI:
-    """File API for deepset AI Platform.
+    """File API for Haystack Enterprise Platform.
 
     This module takes care of all file-related API calls to deepset, including
     uploading, downloading, listing, and deleting files.
 
-    :param deepset_cloud_api: Instance of the DeepsetCloudAPI.
+    :param haystack_enterprise_api: Instance of the HaystackEnterpriseAPI.
     """
 
-    def __init__(self, deepset_cloud_api: DeepsetCloudAPI) -> None:
+    def __init__(self, haystack_enterprise_api: HaystackEnterpriseAPI) -> None:
         """
         Create FileAPI object.
 
-        :param deepset_cloud_api: Instance of the DeepsetCloudAPI.
+        :param haystack_enterprise_api: Instance of the HaystackEnterpriseAPI.
         """
-        self._deepset_cloud_api = deepset_cloud_api
+        self._haystack_enterprise_api = haystack_enterprise_api
 
     async def list_paginated(
         self,
@@ -120,7 +120,7 @@ class FilesAPI:
         if odata_filter:
             params["filter"] = odata_filter
 
-        response = await self._deepset_cloud_api.get(workspace_name, "files", params=params)
+        response = await self._haystack_enterprise_api.get(workspace_name, "files", params=params)
         assert response.status_code == codes.OK, f"Failed to list files: {response.text}"
         response_body = response.json()
         total = response_body["total"]
@@ -170,7 +170,7 @@ class FilesAPI:
         meta: Optional[Dict[str, Any]] = None,
         write_mode: WriteMode = WriteMode.KEEP,
     ) -> UUID:
-        """Directly upload a file to deepset AI Platform.
+        """Directly upload a file to Haystack Enterprise Platform.
 
         :param workspace_name: Name of the workspace to use.
         :param file_path: Path to the file to upload.
@@ -190,7 +190,7 @@ class FilesAPI:
             file_name = file_path.name
 
         with file_path.open("rb") as file:
-            response = await self._deepset_cloud_api.post(
+            response = await self._haystack_enterprise_api.post(
                 workspace_name,
                 "files",
                 files={"file": (file_name, file), "meta": (None, json.dumps(meta))},
@@ -211,7 +211,7 @@ class FilesAPI:
         meta: Optional[Dict[str, Any]] = None,
         write_mode: WriteMode = WriteMode.KEEP,
     ) -> UUID:
-        """Directly upload files to deepset AI Platform.
+        """Directly upload files to Haystack Enterprise Platform.
 
         :param workspace_name: Name of the workspace to use.
         :param content: File text to upload.
@@ -224,7 +224,7 @@ class FilesAPI:
         FAIL - fails to upload the file with the same name.
         :return: ID of the uploaded file.
         """
-        response = await self._deepset_cloud_api.post(
+        response = await self._haystack_enterprise_api.post(
             workspace_name,
             "files",
             files={"file": (file_name, content)},
@@ -262,9 +262,9 @@ class FilesAPI:
             # format dir to Path and take relative path into account
             file_dir = Path(file_dir).resolve()
 
-        response = await self._deepset_cloud_api.get(workspace_name, f"files/{file_id}")
+        response = await self._haystack_enterprise_api.get(workspace_name, f"files/{file_id}")
         if response.status_code == codes.NOT_FOUND:
-            raise FileNotFoundInDeepsetCloudException(f"Failed to download raw file: {response.text}")
+            raise FileNotFoundInHaystackEnterpriseException(f"Failed to download raw file: {response.text}")
         if response.status_code != codes.OK:
             raise Exception(f"Failed to download raw file: {response.text}")
         new_local_file_name: str = await self._save_to_disk(
@@ -272,9 +272,9 @@ class FilesAPI:
         )
 
         if include_meta:
-            response = await self._deepset_cloud_api.get(workspace_name, f"files/{file_id}/meta")
+            response = await self._haystack_enterprise_api.get(workspace_name, f"files/{file_id}/meta")
             if response.status_code == codes.NOT_FOUND:
-                raise FileNotFoundInDeepsetCloudException(f"Failed to download raw file: {response.text}")
+                raise FileNotFoundInHaystackEnterpriseException(f"Failed to download raw file: {response.text}")
             if response.status_code != codes.OK:
                 raise Exception(f"Failed to download raw file: {response.text}")
             await self._save_to_disk(

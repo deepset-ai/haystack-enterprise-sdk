@@ -1,11 +1,11 @@
 # deepset CLI
-The deepset CLI is a command-line interface tool that you can use to interact with the deepset SDK and perform various operations, such as uploading files and folders to your deepset workspace.
+The deepset CLI is a command-line interface tool that you can use to interact with the Haystack Enterprise Platform SDK and perform various operations, such as uploading files and folders to your deepset workspace.
 
 ## Installation
 To install the deepset CLI, use `pip`:
 
 ```shell
-pip install deepset-cloud-sdk
+pip install haystack-enterprise-sdk
 ```
 ## Configuration
 Before using the deepset CLI, log in and provide your credentials. You can do this by running the command:
@@ -13,15 +13,15 @@ Before using the deepset CLI, log in and provide your credentials. You can do th
 On MacOS and Linux:
 
 ```shell
-deepset-cloud login
+haystack-enterprise login
 ```
 On Windows:
 
 ```shell
-python -m deepset_cloud_sdk.cli login
+python -m haystack_enterprise_sdk.cli login
 ```
 
-This command prompts you to enter your API key and default workspace name. Once you provide these details, the CLI stores your credentials in the `~/.deepset-cloud/.env` file. This file is used as the default configuration for subsequent CLI commands.
+This command prompts you to enter your API key and default workspace name. Once you provide these details, the CLI stores your credentials in the `~/.haystack-enterprise/.env` file. This file is used as the default configuration for subsequent CLI commands.
 
 Alternatively, to use a different environment file for your configuration, you can create an `.env` file in the local directory. Additionally, you have the flexibility to provide the credentials directly as command-line arguments or set them programmatically in your code.
 
@@ -31,13 +31,13 @@ You can use the deepset CLI by running the following command:
 On MacOS and Linux:
 
 ```shell
-deepset-cloud <command>
+haystack-enterprise <command>
 ```
 
 On Windows:
 
 ```shell
-python -m deepset_cloud_sdk.cli <command>
+python -m haystack_enterprise_sdk.cli <command>
 ```
 
 Replace <command> with one of the supported commands. To list all available commands, use the `--help` flag.
@@ -52,13 +52,13 @@ This command uploads the file example.txt to your deepset workspace.
 On MacOS and Linux:
 
 ```shell
-deepset-cloud upload ./examples/data/example.txt
+haystack-enterprise upload ./examples/data/example.txt
 ```
 
 On Windows:
 
 ```shell
-python -m deepset_cloud_sdk.cli upload ./examples/data/example.txt
+python -m haystack_enterprise_sdk.cli upload ./examples/data/example.txt
 ```
 
 This command uploads all `.txt` and `.pdf` files from the folder located in the _examples_ directory to your deepset workspace. By default only `.txt` and `.pdf` files are uploaded. To upload different file types see below.
@@ -68,50 +68,50 @@ The paths in the examples are relative to the current working directory.
 On MacOS and Linux:
 
 ```shell
-deepset-cloud upload ./examples/data
+haystack-enterprise upload ./examples/data
 ```
 On Windows:
 ```shell
-python -m deepset_cloud_sdk.cli upload ./examples/data
+python -m haystack_enterprise_sdk.cli upload ./examples/data
 ```
 To overwrite existing files in your project, use the `--write-mode` flag. For example:
 
 On MacOS and Linux:
 ```shell
-deepset-cloud upload ./examples/data --write-mode OVERWRITE
+haystack-enterprise upload ./examples/data --write-mode OVERWRITE
 ```
 On Windows:
 ```shell
-python -m deepset_cloud_sdk.cli upload ./examples/data --write-mode OVERWRITE
+python -m haystack_enterprise_sdk.cli upload ./examples/data --write-mode OVERWRITE
 ```
 This syncs your local files with the files in your deepset workspace without having to manually delete the files in your workspace.
 
 ## Upload different file types
 
 To upload other file types than text, specify the desired file types using the flag `--use-type`.
-The command below uploads all file types from the ./example/data directory that are supported by deepset AI Platform.
+The command below uploads all file types from the ./example/data directory that are supported by Haystack Enterprise Platform.
 
 ```shell
-deepset-cloud upload ./examples/data --use-type .csv --use-type .docx --use-type .html --use-type .json --use-type .md --use-type .txt --use-type .pdf --use-type .pptx --use-type .xlsx --use-type .xml
+haystack-enterprise upload ./examples/data --use-type .csv --use-type .docx --use-type .html --use-type .json --use-type .md --use-type .txt --use-type .pdf --use-type .pptx --use-type .xlsx --use-type .xml
 
 ```
 On Windows:
 ```shell
-python -m deepset_cloud_sdk.cli upload ./examples/data --use-type .csv --use-type .docx --use-type .html --use-type .json --use-type .md --use-type .txt --use-type .pdf --use-type .pptx --use-type .xlsx --use-type .xml
+python -m haystack_enterprise_sdk.cli upload ./examples/data --use-type .csv --use-type .docx --use-type .html --use-type .json --use-type .md --use-type .txt --use-type .pdf --use-type .pptx --use-type .xlsx --use-type .xml
 ```
 
 
-### Downloading Files from deepset AI Platform
+### Downloading Files from Haystack Enterprise Platform
 This command downloads all files from a workspace to a local directory. For example:
 
 On MacOS and Linux:
 
 ```shell
-deepset-cloud download --workspace-name <your-workspace-name>
+haystack-enterprise download --workspace-name <your-workspace-name>
 ```
 On Windows:
 ```shell
-python -m deepset_cloud_sdk.cli download --workspace-name <your-workspace-name>
+python -m haystack_enterprise_sdk.cli download --workspace-name <your-workspace-name>
 ```
 
 To filter for specific files, use the same filters as for listing files.
@@ -122,11 +122,11 @@ You can run the `list-files` operation to search files in your deepset workspace
 
 On MacOS and Linux:
 ```shell
-deepset-cloud list-files
+haystack-enterprise list-files
 ```
 On Windows:
 ```shell
-python -m deepset_cloud_sdk.cli list-files
+python -m haystack_enterprise_sdk.cli list-files
 ```
 with optional arguments:
 

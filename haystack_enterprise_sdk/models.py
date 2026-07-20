@@ -1,4 +1,4 @@
-"""General data classes for deepset SDK."""
+"""General data classes for Haystack Enterprise Platform SDK."""
 
 import json
 from abc import abstractmethod
@@ -19,12 +19,12 @@ class UserInfo:
     family_name: str
 
 
-class DeepsetCloudFileBase:  # pylint: disable=too-few-public-methods
+class HaystackEnterpriseFileBase:  # pylint: disable=too-few-public-methods
     """Base class for deepset files."""
 
     def __init__(self, name: str, meta: Optional[Dict[str, Any]] = None):
         """
-        Initialize DeepsetCloudFileBase.
+        Initialize HaystackEnterpriseFileBase.
 
         :param name: The file name
         :param meta: The file's metadata
@@ -45,12 +45,12 @@ class DeepsetCloudFileBase:  # pylint: disable=too-few-public-methods
         return json.dumps({})
 
 
-class DeepsetCloudFile(DeepsetCloudFileBase):  # pylint: disable=too-few-public-methods
-    """Data class for text files in deepset AI Platform."""
+class HaystackEnterpriseFile(HaystackEnterpriseFileBase):  # pylint: disable=too-few-public-methods
+    """Data class for text files in Haystack Enterprise Platform."""
 
     def __init__(self, text: str, name: str, meta: Optional[Dict[str, Any]] = None):
         """
-        Initialize DeepsetCloudFileBase.
+        Initialize HaystackEnterpriseFileBase.
 
         :param name: The file name
         :param text: The text content of the file
@@ -68,17 +68,17 @@ class DeepsetCloudFile(DeepsetCloudFileBase):  # pylint: disable=too-few-public-
         return self.text
 
 
-# Didn't want to cause breaking changes in the DeepsetCloudFile class, though it
+# Didn't want to cause breaking changes in the HaystackEnterpriseFile class, though it
 # is technically the same as the below, the naming of the text field will be confusing
 # for users that are uploading anything other than text.
 
 
-class DeepsetCloudFileBytes(DeepsetCloudFileBase):  # pylint: disable=too-few-public-methods
-    """Data class for uploading files of any valid type in deepset AI Platform."""
+class HaystackEnterpriseFileBytes(HaystackEnterpriseFileBase):  # pylint: disable=too-few-public-methods
+    """Data class for uploading files of any valid type in Haystack Enterprise Platform."""
 
     def __init__(self, file_bytes: bytes, name: str, meta: Optional[Dict[str, Any]] = None):
         """
-        Initialize DeepsetCloudFileBase.
+        Initialize HaystackEnterpriseFileBase.
 
         :param name: The file name
         :param file_bytes: The content of the file represented in bytes
@@ -102,7 +102,7 @@ class DeepsetCloudFileBytes(DeepsetCloudFileBase):  # pylint: disable=too-few-pu
 class PipelineOutputType(str, Enum):
     """Enum for pipeline output types.
 
-    Different types help the Playground in deepset AI Platform adjust it's behavior to better support
+    Different types help the Playground in Haystack Enterprise Platform adjust it's behavior to better support
     your pipeline's output:
     - generative: For pipelines where an LLM generates new text as a response
     - chat: For conversational pipelines
@@ -231,11 +231,11 @@ class IndexOutputs(InputOutputBaseModel):
 
 
 class PipelineConfig(BaseConfig):
-    """Configuration required to import the pipeline into deepset AI Platform.
+    """Configuration required to import the pipeline into Haystack Enterprise Platform.
 
     :param inputs: Pipeline input configuration. Use `PipelineInputs` model to define the inputs.
     :param outputs: Pipeline output configuration. Use `PipelineOutputs` model to define the outputs.
-    :param pipeline_output_type: Optional pipeline output type to help the Playground in deepset AI Platform
+    :param pipeline_output_type: Optional pipeline output type to help the Playground in Haystack Enterprise Platform
         adjust its behavior. If not set, the platform will auto-detect the type.
     """
 
@@ -248,7 +248,7 @@ class PipelineConfig(BaseConfig):
     pipeline_output_type: PipelineOutputType | None = Field(
         default=None,
         description=(
-            "Optional pipeline output type to help the Playground in deepset AI Platform adjust its behavior. "
+            "Optional pipeline output type to help the Playground in Haystack Enterprise Platform adjust its behavior. "
             "Choose from: 'generative' (LLM generates new text), 'chat' (conversational), "
             "'extractive' (extracts answers from documents), or 'document' (returns full documents). "
             "If not set, the platform will auto-detect the type."
@@ -257,7 +257,7 @@ class PipelineConfig(BaseConfig):
 
 
 class IndexInputs(InputOutputBaseModel):
-    """Configuration required to import an index into deepset AI Platform.
+    """Configuration required to import an index into Haystack Enterprise Platform.
 
     Defines the index components that should receive the `Files` input.
 
@@ -277,7 +277,7 @@ class IndexInputs(InputOutputBaseModel):
 
 
 class IndexConfig(BaseConfig):
-    """Index configuration for importing an index to deepset AI platform.
+    """Index configuration for importing an index to Haystack Enterprise Platform.
 
     :param inputs: Index input configuration. Use `IndexInputs` model to define the inputs.
     :param outputs: Index output configuration. Optional. Use `IndexOutputs` model to define the outputs.

@@ -9,19 +9,19 @@ from uuid import UUID
 import httpx
 import pytest
 
-from deepset_cloud_sdk._api.files import (
+from haystack_enterprise_sdk._api.files import (
     FailedToUploadFileException,
     File,
     FileList,
-    FileNotFoundInDeepsetCloudException,
+    FileNotFoundInHaystackEnterpriseException,
     FilesAPI,
 )
-from deepset_cloud_sdk._api.upload_sessions import WriteMode
+from haystack_enterprise_sdk._api.upload_sessions import WriteMode
 
 
 @pytest.fixture
-def files_api(mocked_deepset_cloud_api: Mock) -> FilesAPI:
-    return FilesAPI(mocked_deepset_cloud_api)
+def files_api(mocked_haystack_enterprise_api: Mock) -> FilesAPI:
+    return FilesAPI(mocked_haystack_enterprise_api)
 
 
 @pytest.mark.asyncio
@@ -31,8 +31,8 @@ class TestUtilitiesFilesAPI:
 
 @pytest.mark.asyncio
 class TestListFiles:
-    async def test_list_paginated(self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock) -> None:
-        mocked_deepset_cloud_api.get.return_value = httpx.Response(
+    async def test_list_paginated(self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock) -> None:
+        mocked_haystack_enterprise_api.get.return_value = httpx.Response(
             status_code=httpx.codes.OK,
             json={
                 "total": 1,
@@ -71,7 +71,7 @@ class TestListFiles:
             ],
             has_more=False,
         )
-        mocked_deepset_cloud_api.get.assert_called_once_with(
+        mocked_haystack_enterprise_api.get.assert_called_once_with(
             "test_workspace",
             "files",
             params={
@@ -84,12 +84,12 @@ class TestListFiles:
 
 @pytest.mark.asyncio
 class TestDownloadFile:
-    async def test_download_file_not_found(self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock) -> None:
+    async def test_download_file_not_found(self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            mocked_deepset_cloud_api.get.return_value = httpx.Response(
+            mocked_haystack_enterprise_api.get.return_value = httpx.Response(
                 status_code=httpx.codes.NOT_FOUND,
             )
-            with pytest.raises(FileNotFoundInDeepsetCloudException):
+            with pytest.raises(FileNotFoundInHaystackEnterpriseException):
                 await files_api.download(
                     workspace_name="test_workspace",
                     file_id=UUID("cd16435f-f6eb-423f-bf6f-994dc8a36a10"),
@@ -99,10 +99,10 @@ class TestDownloadFile:
                 )
 
     async def test_download_file_with_unexpected_error(
-        self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock
+        self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            mocked_deepset_cloud_api.get.return_value = httpx.Response(
+            mocked_haystack_enterprise_api.get.return_value = httpx.Response(
                 status_code=httpx.codes.SERVICE_UNAVAILABLE,
             )
             with pytest.raises(Exception):
@@ -114,9 +114,9 @@ class TestDownloadFile:
                     file_dir=Path(tmp_dir),
                 )
 
-    async def test_download(self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock) -> None:
+    async def test_download(self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            mocked_deepset_cloud_api.get.return_value = httpx.Response(
+            mocked_haystack_enterprise_api.get.return_value = httpx.Response(
                 status_code=httpx.codes.OK,
                 content=b"some content",
             )
@@ -130,11 +130,11 @@ class TestDownloadFile:
             with Path.open(Path(tmp_dir + "/silly_things_1.txt"), encoding="UTF-8") as file:
                 assert file.read() == "some content"
 
-            mocked_deepset_cloud_api.get.assert_called_once_with(
+            mocked_haystack_enterprise_api.get.assert_called_once_with(
                 "test_workspace", "files/cd16435f-f6eb-423f-bf6f-994dc8a36a10"
             )
 
-    async def test_download_with_metadata(self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock) -> None:
+    async def test_download_with_metadata(self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
 
             def mock_response(*args: Any, **kwargs: Any) -> httpx.Response:
@@ -149,7 +149,7 @@ class TestDownloadFile:
                     json={"key": "value"},
                 )
 
-            mocked_deepset_cloud_api.get.side_effect = mock_response
+            mocked_haystack_enterprise_api.get.side_effect = mock_response
 
             await files_api.download(
                 workspace_name="test_workspace",
@@ -163,10 +163,10 @@ class TestDownloadFile:
 
             with Path.open(Path(tmp_dir + "/silly_things_1.txt.meta.json"), encoding="UTF-8") as file:
                 assert json.loads(file.read()) == {"key": "value"}
-            assert mocked_deepset_cloud_api.get.call_count == 2
+            assert mocked_haystack_enterprise_api.get.call_count == 2
 
     async def test_download_with_metadata_file_not_found(
-        self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock
+        self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
 
@@ -182,8 +182,8 @@ class TestDownloadFile:
                     json={"key": "value"},
                 )
 
-            mocked_deepset_cloud_api.get.side_effect = mock_response
-            with pytest.raises(FileNotFoundInDeepsetCloudException):
+            mocked_haystack_enterprise_api.get.side_effect = mock_response
+            with pytest.raises(FileNotFoundInHaystackEnterpriseException):
                 await files_api.download(
                     workspace_name="test_workspace",
                     file_id=UUID("cd16435f-f6eb-423f-bf6f-994dc8a36a10"),
@@ -193,7 +193,7 @@ class TestDownloadFile:
                 )
 
     async def test_download_with_metadata_unexpected_error(
-        self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock
+        self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
 
@@ -209,7 +209,7 @@ class TestDownloadFile:
                     json={"key": "value"},
                 )
 
-            mocked_deepset_cloud_api.get.side_effect = mock_response
+            mocked_haystack_enterprise_api.get.side_effect = mock_response
             with pytest.raises(Exception):
                 await files_api.download(
                     workspace_name="test_workspace",
@@ -220,7 +220,7 @@ class TestDownloadFile:
                 )
 
     async def test_download_file_with_name_collsion_for_raw_file(
-        self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock
+        self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             with Path.open(Path(tmp_dir) / "silly_things_1.txt", "wb") as file:
@@ -229,7 +229,7 @@ class TestDownloadFile:
             with Path.open(Path(tmp_dir) / "silly_things_1_1.txt", "wb") as file:
                 file.write("second content".encode("UTF-8"))
 
-            mocked_deepset_cloud_api.get.return_value = httpx.Response(
+            mocked_haystack_enterprise_api.get.return_value = httpx.Response(
                 status_code=httpx.codes.OK,
                 content=b"third content",
             )
@@ -252,7 +252,7 @@ class TestDownloadFile:
                 assert file.read() == "third content"
 
     async def test_download_file_with_name_collsion_matches_metadata(
-        self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock
+        self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             with Path.open(Path(tmp_dir) / "silly_things_1.txt", "wb") as file:
@@ -273,7 +273,7 @@ class TestDownloadFile:
                     json={"key": "value"},
                 )
 
-            mocked_deepset_cloud_api.get.side_effect = mock_response
+            mocked_haystack_enterprise_api.get.side_effect = mock_response
             await files_api.download(
                 workspace_name="test_workspace",
                 file_id=UUID("cd16435f-f6eb-423f-bf6f-994dc8a36a10"),
@@ -299,9 +299,9 @@ class TestDownloadFile:
 class TestDirectUploadFilePath:
     @pytest.mark.parametrize("error_code", [httpx.codes.NOT_FOUND, httpx.codes.SERVICE_UNAVAILABLE])
     async def test_direct_upload_file_failed(
-        self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock, error_code: int
+        self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock, error_code: int
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = httpx.Response(
+        mocked_haystack_enterprise_api.post.return_value = httpx.Response(
             status_code=error_code,
         )
         with pytest.raises(FailedToUploadFileException):
@@ -311,8 +311,8 @@ class TestDirectUploadFilePath:
                 meta={},
             )
 
-    async def test_direct_upload_file(self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock) -> None:
-        mocked_deepset_cloud_api.post.return_value = httpx.Response(
+    async def test_direct_upload_file(self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock) -> None:
+        mocked_haystack_enterprise_api.post.return_value = httpx.Response(
             status_code=httpx.codes.CREATED,
             json={"file_id": "cd16435f-f6eb-423f-bf6f-994dc8a36a10"},
         )
@@ -323,7 +323,7 @@ class TestDirectUploadFilePath:
             write_mode=WriteMode.OVERWRITE,
         )
         assert file_id == UUID("cd16435f-f6eb-423f-bf6f-994dc8a36a10")
-        mocked_deepset_cloud_api.post.assert_called_once_with(
+        mocked_haystack_enterprise_api.post.assert_called_once_with(
             "test_workspace",
             "files",
             files={"file": ("basic.txt", ANY), "meta": (None, '{"key": "value"}')},
@@ -332,8 +332,10 @@ class TestDirectUploadFilePath:
             },
         )
 
-    async def test_direct_upload_file_with_name(self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock) -> None:
-        mocked_deepset_cloud_api.post.return_value = httpx.Response(
+    async def test_direct_upload_file_with_name(
+        self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.post.return_value = httpx.Response(
             status_code=httpx.codes.CREATED,
             json={"file_id": "cd16435f-f6eb-423f-bf6f-994dc8a36a10"},
         )
@@ -345,15 +347,17 @@ class TestDirectUploadFilePath:
             write_mode=WriteMode.OVERWRITE,
         )
         assert file_id == UUID("cd16435f-f6eb-423f-bf6f-994dc8a36a10")
-        mocked_deepset_cloud_api.post.assert_called_once_with(
+        mocked_haystack_enterprise_api.post.assert_called_once_with(
             "test_workspace",
             "files",
             files={"file": ("my_file.txt", ANY), "meta": (None, '{"key": "value"}')},
             params={"write_mode": "OVERWRITE"},
         )
 
-    async def test_direct_upload_with_path_as_string(self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock) -> None:
-        mocked_deepset_cloud_api.post.return_value = httpx.Response(
+    async def test_direct_upload_with_path_as_string(
+        self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.post.return_value = httpx.Response(
             status_code=httpx.codes.CREATED,
             json={"file_id": "cd16435f-f6eb-423f-bf6f-994dc8a36a10"},
         )
@@ -365,7 +369,7 @@ class TestDirectUploadFilePath:
             write_mode=WriteMode.FAIL,
         )
         assert file_id == UUID("cd16435f-f6eb-423f-bf6f-994dc8a36a10")
-        mocked_deepset_cloud_api.post.assert_called_once_with(
+        mocked_haystack_enterprise_api.post.assert_called_once_with(
             "test_workspace",
             "files",
             files={"file": ("my_file.txt", ANY), "meta": (None, '{"key": "value"}')},
@@ -377,9 +381,9 @@ class TestDirectUploadFilePath:
 class TestDirectUploadText:
     @pytest.mark.parametrize("error_code", [httpx.codes.NOT_FOUND, httpx.codes.SERVICE_UNAVAILABLE])
     async def test_direct_upload_file_failed(
-        self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock, error_code: int
+        self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock, error_code: int
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = httpx.Response(
+        mocked_haystack_enterprise_api.post.return_value = httpx.Response(
             status_code=error_code,
         )
         with pytest.raises(FailedToUploadFileException):
@@ -390,8 +394,8 @@ class TestDirectUploadText:
                 meta={},
             )
 
-    async def test_direct_upload_file(self, files_api: FilesAPI, mocked_deepset_cloud_api: Mock) -> None:
-        mocked_deepset_cloud_api.post.return_value = httpx.Response(
+    async def test_direct_upload_file(self, files_api: FilesAPI, mocked_haystack_enterprise_api: Mock) -> None:
+        mocked_haystack_enterprise_api.post.return_value = httpx.Response(
             status_code=httpx.codes.CREATED,
             json={"file_id": "cd16435f-f6eb-423f-bf6f-994dc8a36a10"},
         )
@@ -403,7 +407,7 @@ class TestDirectUploadText:
             write_mode=WriteMode.OVERWRITE,
         )
         assert file_id == UUID("cd16435f-f6eb-423f-bf6f-994dc8a36a10")
-        mocked_deepset_cloud_api.post.assert_called_once_with(
+        mocked_haystack_enterprise_api.post.assert_called_once_with(
             "test_workspace",
             "files",
             files={"file": ("basic.txt", b"some text")},

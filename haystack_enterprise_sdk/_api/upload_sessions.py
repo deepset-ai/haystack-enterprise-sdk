@@ -1,4 +1,4 @@
-"""Upload sessions API for deepset AI Platform."""
+"""Upload sessions API for Haystack Enterprise Platform."""
 
 import datetime
 import enum
@@ -10,9 +10,9 @@ import structlog
 from httpx import codes
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
-from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
-from deepset_cloud_sdk._utils.datetime import from_isoformat
-from deepset_cloud_sdk.models import UserInfo
+from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
+from haystack_enterprise_sdk._utils.datetime import from_isoformat
+from haystack_enterprise_sdk.models import UserInfo
 
 logger = structlog.get_logger(__name__)
 
@@ -110,15 +110,15 @@ class FailedToSendUploadSessionRequest(Exception):
 
 
 class UploadSessionsAPI:
-    """Upload sessions API for deepset AI Platform."""
+    """Upload sessions API for Haystack Enterprise Platform."""
 
-    def __init__(self, deepset_cloud_api: DeepsetCloudAPI) -> None:
+    def __init__(self, haystack_enterprise_api: HaystackEnterpriseAPI) -> None:
         """
         Create FileAPI object.
 
-        :param deepset_cloud_api: Instance of the DeepsetCloudAPI.
+        :param haystack_enterprise_api: Instance of the HaystackEnterpriseAPI.
         """
-        self._deepset_cloud_api = deepset_cloud_api
+        self._haystack_enterprise_api = haystack_enterprise_api
 
     async def create(
         self,
@@ -144,7 +144,7 @@ class UploadSessionsAPI:
         :raises FailedToSendUploadSessionRequest: If the session could not be created.
         :return: UploadSession object.
         """
-        response = await self._deepset_cloud_api.post(
+        response = await self._haystack_enterprise_api.post(
             workspace_name=workspace_name,
             endpoint="upload_sessions",
             json={"write_mode": write_mode.value, "parallel_processing_enabled": enable_parallel_processing},
@@ -182,7 +182,7 @@ class UploadSessionsAPI:
         :raises FailedToSendUploadSessionRequest: If the session could not be closed.
         :raises FailedToSendUploadSessionRequest: If the status could not be fetched.
         """
-        response = await self._deepset_cloud_api.put(
+        response = await self._haystack_enterprise_api.put(
             workspace_name=workspace_name, endpoint=f"upload_sessions/{session_id}", data={"status": "CLOSED"}
         )
         if response.status_code != codes.NO_CONTENT:
@@ -211,7 +211,7 @@ class UploadSessionsAPI:
         :raises FailedToSendUploadSessionRequest: If the status could not be fetched.
         :return: UploadSessionStatus object.
         """
-        response = await self._deepset_cloud_api.get(
+        response = await self._haystack_enterprise_api.get(
             workspace_name=workspace_name, endpoint=f"upload_sessions/{session_id}"
         )
         if response.status_code != codes.OK:
@@ -257,7 +257,7 @@ class UploadSessionsAPI:
         if is_expired:
             params["is_expired"] = is_expired
 
-        response = await self._deepset_cloud_api.get(
+        response = await self._haystack_enterprise_api.get(
             workspace_name=workspace_name,
             endpoint="upload_sessions",
             params=params,

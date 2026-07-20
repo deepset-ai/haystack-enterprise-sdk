@@ -1,4 +1,4 @@
-"""DeepsetCloudAPI class."""
+"""HaystackEnterpriseAPI class."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import structlog
 from httpx import Response
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
-from deepset_cloud_sdk._api.config import CommonConfig
+from haystack_enterprise_sdk._api.config import CommonConfig
 
 logger = structlog.get_logger(__name__)
 
@@ -23,14 +23,14 @@ class WorkspaceNotDefinedError(Exception):
     """The workspace_name is not defined. Set an environment variable or pass the `workspace_name` argument."""
 
 
-class DeepsetCloudAPI:
-    """deepset AI Platform API client.
+class HaystackEnterpriseAPI:
+    """Haystack Enterprise Platform API client.
 
-    This class takes care of all API calls to deepset AI Platform and handles authentication and errors.
+    This class takes care of all API calls to Haystack Enterprise Platform and handles authentication and errors.
     """
 
     def __init__(self, config: CommonConfig, client: httpx.AsyncClient) -> None:
-        """Create a deepset AI Platform API client.
+        """Create a Haystack Enterprise Platform API client.
 
         Add a config for authentication and a HTTPX client for
         sending requests.
@@ -41,7 +41,7 @@ class DeepsetCloudAPI:
         self.headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {config.api_key}",
-            "X-Client-Source": "deepset-cloud-sdk",
+            "X-Client-Source": "haystack-enterprise-sdk",
         }
         self.base_url = lambda workspace_name: self._get_base_url(config.api_url)(workspace_name)
         self.client = client
@@ -66,7 +66,7 @@ class DeepsetCloudAPI:
 
     @classmethod
     @asynccontextmanager
-    async def factory(cls, config: CommonConfig) -> AsyncGenerator[DeepsetCloudAPI, None]:
+    async def factory(cls, config: CommonConfig) -> AsyncGenerator[HaystackEnterpriseAPI, None]:
         """Create a new instance of the API client.
 
         :param config: CommonConfig object.
@@ -83,7 +83,7 @@ class DeepsetCloudAPI:
     async def get(
         self, workspace_name: str, endpoint: str, params: Optional[Dict[str, Any]] = None, timeout_s: int = 20
     ) -> Response:
-        """Make a GET request to the deepset AI Platform API.
+        """Make a GET request to the Haystack Enterprise Platform API.
 
         :param workspace_name: Name of the workspace to use.
         :param endpoint: Endpoint to call.
@@ -113,7 +113,7 @@ class DeepsetCloudAPI:
             timeout=timeout_s,
         )
         logger.debug(
-            "Called deepset AI Platform API.",
+            "Called Haystack Enterprise Platform API.",
             method="GET",
             workspace=workspace_name,
             endpoint=endpoint,
@@ -132,7 +132,7 @@ class DeepsetCloudAPI:
         data: Optional[Dict[str, Any]] = None,
         timeout_s: int = 20,
     ) -> Response:
-        """Make a POST request to the deepset AI Platform API.
+        """Make a POST request to the Haystack Enterprise Platform API.
 
         :param workspace_name: Name of the workspace to use.
         :param endpoint: Endpoint to call.
@@ -153,7 +153,7 @@ class DeepsetCloudAPI:
             timeout=timeout_s,
         )
         logger.debug(
-            "Called deepset AI Platform API",
+            "Called Haystack Enterprise Platform API",
             method="POST",
             workspace=workspace_name,
             endpoint=endpoint,
@@ -167,7 +167,7 @@ class DeepsetCloudAPI:
         self, workspace_name: str, endpoint: str, params: Optional[Dict[str, Any]] = None, timeout_s: int = 20
     ) -> Response:
         """
-        Make a DELETE request to the deepset AI Platform API.
+        Make a DELETE request to the Haystack Enterprise Platform API.
 
         :param workspace_name: Name of the workspace to use.
         :param endpoint: Endpoint to call.
@@ -182,7 +182,7 @@ class DeepsetCloudAPI:
             timeout=timeout_s,
         )
         logger.debug(
-            "Called deepset AI Platform API",
+            "Called Haystack Enterprise Platform API",
             method="DELETE",
             workspace=workspace_name,
             endpoint=endpoint,
@@ -199,7 +199,7 @@ class DeepsetCloudAPI:
         data: Optional[Dict[str, Any]] = None,
         timeout_s: int = 20,
     ) -> Response:
-        """Make a PUT request to the deepset AI Platform API.
+        """Make a PUT request to the Haystack Enterprise Platform API.
 
         :param workspace_name: Name of the workspace to use.
         :param endpoint: Endpoint to call.
@@ -236,7 +236,7 @@ class DeepsetCloudAPI:
             timeout=timeout_s,
         )
         logger.debug(
-            "Called deepset AI Platform API",
+            "Called Haystack Enterprise Platform API",
             method="PUT",
             workspace=workspace_name,
             endpoint=endpoint,
@@ -254,7 +254,7 @@ class DeepsetCloudAPI:
         data: Optional[Dict[str, Any]] = None,
         timeout_s: int = 20,
     ) -> Response:
-        """Make a PATCH request to the deepset AI Platform API.
+        """Make a PATCH request to the Haystack Enterprise Platform API.
 
         :param workspace_name: Name of the workspace to use.
         :param endpoint: Endpoint to call.
@@ -273,7 +273,7 @@ class DeepsetCloudAPI:
             timeout=timeout_s,
         )
         logger.debug(
-            "Called deepset AI Platform API",
+            "Called Haystack Enterprise Platform API",
             method="PATCH",
             workspace=workspace_name,
             endpoint=endpoint,
@@ -284,11 +284,11 @@ class DeepsetCloudAPI:
         return response
 
 
-def get_deepset_cloud_api(config: CommonConfig, client: httpx.AsyncClient) -> DeepsetCloudAPI:  # noqa
-    """deepset AI Platform API factory. Return an instance of DeepsetCloudAPI.
+def get_haystack_enterprise_api(config: CommonConfig, client: httpx.AsyncClient) -> HaystackEnterpriseAPI:  # noqa
+    """Haystack Enterprise Platform API factory. Return an instance of HaystackEnterpriseAPI.
 
     :param config: CommonConfig object.
     :param client: httpx.AsyncClient object.
-    :return: DeepsetCloudAPI object.
+    :return: HaystackEnterpriseAPI object.
     """
-    return DeepsetCloudAPI(config=config, client=client)
+    return HaystackEnterpriseAPI(config=config, client=client)

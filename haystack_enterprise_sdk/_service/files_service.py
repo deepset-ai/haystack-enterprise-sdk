@@ -17,22 +17,22 @@ from tqdm import tqdm
 from yaspin import yaspin
 from yaspin.spinners import Spinners
 
-from deepset_cloud_sdk._api.config import CommonConfig
-from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
-from deepset_cloud_sdk._api.files import (
+from haystack_enterprise_sdk._api.config import CommonConfig
+from haystack_enterprise_sdk._api.files import (
     File,
-    FileNotFoundInDeepsetCloudException,
+    FileNotFoundInHaystackEnterpriseException,
     FilesAPI,
 )
-from deepset_cloud_sdk._api.upload_sessions import (
+from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
+from haystack_enterprise_sdk._api.upload_sessions import (
     UploadSession,
     UploadSessionDetail,
     UploadSessionsAPI,
     UploadSessionStatus,
     WriteMode,
 )
-from deepset_cloud_sdk._s3.upload import S3, S3UploadResult, S3UploadSummary
-from deepset_cloud_sdk.models import DeepsetCloudFileBase
+from haystack_enterprise_sdk._s3.upload import S3, S3UploadResult, S3UploadSummary
+from haystack_enterprise_sdk.models import HaystackEnterpriseFileBase
 
 logger = structlog.get_logger(__name__)
 
@@ -85,9 +85,9 @@ class FilesService:
         :param config: CommonConfig object.
         :return: New instance of the service.
         """
-        async with DeepsetCloudAPI.factory(config) as deepset_cloud_api:
-            files_api = FilesAPI(deepset_cloud_api)
-            upload_sessions_api = UploadSessionsAPI(deepset_cloud_api)
+        async with HaystackEnterpriseAPI.factory(config) as haystack_enterprise_api:
+            files_api = FilesAPI(haystack_enterprise_api)
+            upload_sessions_api = UploadSessionsAPI(haystack_enterprise_api)
             concurrency = _resolve_s3_concurrency(config.safe_mode)
             max_attempts = SAFE_MODE_MAX_ATTEMPTS if config.safe_mode else DEFAULT_MAX_ATTEMPTS
             if not config.safe_mode and _http_proxy_configured():
@@ -154,7 +154,7 @@ class FilesService:
         """Create a new upload session.
 
         :param workspace_name: Name of the workspace to create the upload session for.
-        :param enable_parallel_processing: If `True`, the deepset AI Platform ingests the files in parallel.
+        :param enable_parallel_processing: If `True`, the Haystack Enterprise Platform ingests the files in parallel.
             Use this to speed up the upload process and if you are not running concurrent uploads for the same files.
         :return: Upload session ID.
         """
@@ -217,8 +217,8 @@ class FilesService:
     ) -> S3UploadSummary:
         """Upload a list of files to a workspace.
 
-        Upload a list of files to a selected workspace using upload sessions. It first uploads the files to S3 and then lists them in deepset AI Platform.
-        Listing the files in deepset may take a couple of minutes. Use the `blocking` parameter to control if you want to wait until the files are listed and displayed in deepset AI Platform.
+        Upload a list of files to a selected workspace using upload sessions. It first uploads the files to S3 and then lists them in Haystack Enterprise Platform.
+        Listing the files in deepset may take a couple of minutes. Use the `blocking` parameter to control if you want to wait until the files are listed and displayed in Haystack Enterprise Platform.
         If blocking is set to `True`, the function waits until all files are visible in deepset. If blocking is set to `False`, the function returns immediately after
         the upload of the files to S3 is completed and doesn't wait until the files are shown in deepset.
 
@@ -238,7 +238,7 @@ class FilesService:
         :raises TimeoutError: If blocking is True and the ingestion takes longer than timeout_s.
         """
         if len(file_paths) <= DIRECT_UPLOAD_THRESHOLD:
-            logger.info("Uploading files to deepset AI Platform.", file_paths=file_paths)
+            logger.info("Uploading files to Haystack Enterprise Platform.", file_paths=file_paths)
             _coroutines = []
             _raw_files = [path for path in file_paths if not path.name.endswith(META_SUFFIX)]
             for file_path in _raw_files:
@@ -419,7 +419,7 @@ class FilesService:
     ) -> S3UploadSummary:
         """Upload a list of file or folder paths to a workspace.
 
-        Upload files to a selected workspace using upload sessions. It first uploads the files to S3 and then lists them in deepset AI Platform.
+        Upload files to a selected workspace using upload sessions. It first uploads the files to S3 and then lists them in Haystack Enterprise Platform.
         Listing the files in deepset may take a couple of minutes. Use the `blocking` parameter to control if you want to wait until the files are listed and displayed in deepset.
         If blocking is set to `True`, the function waits until all files are visible in deepset. If blocking is set to `False`, the function returns immediately after
         the upload of the files to S3 is completed and doesn't wait until the files are shown in deepset.
@@ -431,13 +431,13 @@ class FilesService:
         KEEP - uploads the file with the same name and keeps both files in the workspace.
         OVERWRITE - overwrites the file that is in the workspace.
         FAIL - fails to upload the file with the same name.
-        :param blocking: If True, waits until the ingestion to S3 is finished and the files are visible in deepset AI Platform.
+        :param blocking: If True, waits until the ingestion to S3 is finished and the files are visible in Haystack Enterprise Platform.
         :param timeout_s: Timeout in seconds for the `blocking` parameter.
         :param show_progress If True, shows a progress bar for S3 uploads.
         :param recursive: If True, recursively uploads all files in the folder.
         :param desired_file_types: A list of allowed file types to upload, defaults to
         `[".txt", ".pdf", ".docx", ".pptx", ".xlsx", ".xml", ".csv", ".html", ".md", ".json"]`
-        :param enable_parallel_processing: If `True`, the deepset AI Platform ingests the files in parallel.
+        :param enable_parallel_processing: If `True`, the Haystack Enterprise Platform ingests the files in parallel.
             Use this to speed up the upload process and if you are not running concurrent uploads for the same files.
         :raises TimeoutError: If blocking is True and the ingestion takes longer than timeout_s.
         """
@@ -478,9 +478,9 @@ class FilesService:
                 file_dir=file_dir,
                 include_meta=include_meta,
             )
-        except FileNotFoundInDeepsetCloudException as e:
+        except FileNotFoundInHaystackEnterpriseException as e:
             logger.error(
-                "File was listed in deepset AI Platform but could not be downloaded.", file_id=file_id, error=e
+                "File was listed in Haystack Enterprise Platform but could not be downloaded.", file_id=file_id, error=e
             )
         except Exception as e:
             logger.error("Failed to download file.", file_id=file_id, error=e)
@@ -496,7 +496,7 @@ class FilesService:
         timeout_s: Optional[int] = None,
         show_progress: bool = True,
     ) -> None:
-        """Download files from deepset AI Platform to a folder.
+        """Download files from Haystack Enterprise Platform to a folder.
 
         :param workspace_name: Name of the workspace to upload the files to. It uses the workspace from the .ENV file by default.
         :param file_dir: Path to the folder to download. If None, the current working directory is used.
@@ -566,7 +566,7 @@ class FilesService:
     async def upload_in_memory(
         self,
         workspace_name: str,
-        files: Sequence[DeepsetCloudFileBase],
+        files: Sequence[HaystackEnterpriseFileBase],
         write_mode: WriteMode = WriteMode.KEEP,
         blocking: bool = True,
         timeout_s: Optional[int] = None,
@@ -574,30 +574,30 @@ class FilesService:
         enable_parallel_processing: bool = False,
     ) -> S3UploadSummary:  # noqa
         """
-        Upload a list of raw texts to a workspace using upload sessions. This method accepts a list of DeepsetCloudFiles
+        Upload a list of raw texts to a workspace using upload sessions. This method accepts a list of HaystackEnterpriseFiles
         which contain raw text, file name, and optional metadata.
 
-        It first uploads the files to S3 and then lists them in deepset AI Platform.
+        It first uploads the files to S3 and then lists them in Haystack Enterprise Platform.
         Listing the files in deepset may take a couple of minutes. Use the `blocking` parameter to control if you want to wait until the files are listed and displayed in deepset.
         If blocking is set to `True`, the function waits until all files are visible in deepset. If blocking is set to `False`, the function returns immediately after
         the upload of the files to S3 is completed and doesn't wait until the files are shown in deepset.
 
         :param workspace_name: Name of the workspace to upload the files to.
-        :param files: List of DeepsetCloudFiles to upload.
+        :param files: List of HaystackEnterpriseFiles to upload.
         :param write_mode: Specifies what to do when a file with the same name already exists in the workspace.
         Possible options are:
         KEEP - uploads the file with the same name and keeps both files in the workspace.
         OVERWRITE - overwrites the file that is in the workspace.
         FAIL - fails to upload the file with the same name.
-        :param enable_parallel_processing: If `True`, the deepset AI Platform ingests the files in parallel.
+        :param enable_parallel_processing: If `True`, the Haystack Enterprise Platform ingests the files in parallel.
             Use this to speed up the upload process and if you are not running concurrent uploads for the same files.
-        :param blocking: If True, waits until the ingestion to S3 is finished and the files are displayed in deepset AI Platform.
+        :param blocking: If True, waits until the ingestion to S3 is finished and the files are displayed in Haystack Enterprise Platform.
         :param timeout_s: Timeout in seconds for the `blocking` parameter.
         :param show_progress If True, shows a progress bar for S3 uploads.
         :raises TimeoutError: If blocking is True and the ingestion takes longer than timeout_s.
         """
         if len(files) <= DIRECT_UPLOAD_THRESHOLD:
-            logger.info("Uploading files to deepset AI Platform.", total_text_files=len(files))
+            logger.info("Uploading files to Haystack Enterprise Platform.", total_text_files=len(files))
             _coroutines = []
             for file in files:
                 _coroutines.append(

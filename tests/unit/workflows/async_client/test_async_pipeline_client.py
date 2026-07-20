@@ -5,17 +5,17 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from haystack import AsyncPipeline, Pipeline
 
-from deepset_cloud_sdk._api.config import CommonConfig
-from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
-from deepset_cloud_sdk._service.pipeline_service import PipelineService
-from deepset_cloud_sdk.models import (
+from haystack_enterprise_sdk._api.config import CommonConfig
+from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
+from haystack_enterprise_sdk._service.pipeline_service import PipelineService
+from haystack_enterprise_sdk.models import (
     IndexConfig,
     IndexInputs,
     PipelineConfig,
     PipelineInputs,
     PipelineOutputs,
 )
-from deepset_cloud_sdk.workflows.async_client.async_pipeline_client import (
+from haystack_enterprise_sdk.workflows.async_client.async_pipeline_client import (
     AsyncPipelineClient,
 )
 
@@ -25,12 +25,15 @@ class TestAsyncPipelineClientInit:
 
     def test_init_with_env_vars_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test successful client initialization with environment variables."""
-        monkeypatch.setattr("deepset_cloud_sdk.workflows.async_client.async_pipeline_client.API_KEY", "env-api-key")
         monkeypatch.setattr(
-            "deepset_cloud_sdk.workflows.async_client.async_pipeline_client.API_URL", "https://env-api-url.com"
+            "haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.API_KEY", "env-api-key"
         )
         monkeypatch.setattr(
-            "deepset_cloud_sdk.workflows.async_client.async_pipeline_client.DEFAULT_WORKSPACE_NAME", "test-workspace"
+            "haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.API_URL", "https://env-api-url.com"
+        )
+        monkeypatch.setattr(
+            "haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.DEFAULT_WORKSPACE_NAME",
+            "test-workspace",
         )
         pc = AsyncPipelineClient()
 
@@ -55,10 +58,11 @@ class TestAsyncPipelineClientInit:
     def test_init_with_mixed_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test client initialization with partial explicit configuration."""
         monkeypatch.setattr(
-            "deepset_cloud_sdk.workflows.async_client.async_pipeline_client.API_URL", "https://env-api-url.com"
+            "haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.API_URL", "https://env-api-url.com"
         )
         monkeypatch.setattr(
-            "deepset_cloud_sdk.workflows.async_client.async_pipeline_client.DEFAULT_WORKSPACE_NAME", "test-workspace"
+            "haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.DEFAULT_WORKSPACE_NAME",
+            "test-workspace",
         )
 
         pc = AsyncPipelineClient(
@@ -73,7 +77,7 @@ class TestAsyncPipelineClientInit:
     def test_init_with_missing_api_key_raises_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Remove both environment variable and global variable that was loaded at import time
         monkeypatch.delenv("API_KEY", raising=False)
-        monkeypatch.setattr("deepset_cloud_sdk.workflows.async_client.async_pipeline_client.API_KEY", "")
+        monkeypatch.setattr("haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.API_KEY", "")
 
         with pytest.raises(ValueError):
             AsyncPipelineClient(
@@ -81,14 +85,16 @@ class TestAsyncPipelineClientInit:
             )  # Empty API key should raise ValueError
 
     def test_init_with_missing_api_url_uses_default_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("deepset_cloud_sdk.workflows.async_client.async_pipeline_client.API_URL", "")
+        monkeypatch.setattr("haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.API_URL", "")
 
         pc = AsyncPipelineClient(api_key="hello", api_url="", workspace_name="test-workspace")
 
         assert pc._api_config.api_url == "https://api.cloud.deepset.ai/api/v1"
 
     def test_init_with_missing_workspace_raises_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("deepset_cloud_sdk.workflows.async_client.async_pipeline_client.DEFAULT_WORKSPACE_NAME", "")
+        monkeypatch.setattr(
+            "haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.DEFAULT_WORKSPACE_NAME", ""
+        )
 
         with pytest.raises(ValueError):
             AsyncPipelineClient(
@@ -102,7 +108,7 @@ class TestAsyncPipelineClientImport:
     @pytest.fixture
     def mock_api_service_setup(self, monkeypatch: pytest.MonkeyPatch) -> dict:
         """Fixture to set up mocked API and service components."""
-        mock_api = Mock(spec=DeepsetCloudAPI)
+        mock_api = Mock(spec=HaystackEnterpriseAPI)
         mock_service = Mock(spec=PipelineService)
         mock_service.import_async = AsyncMock()
 
@@ -115,10 +121,12 @@ class TestAsyncPipelineClientImport:
         mock_pipeline_service = Mock(return_value=mock_service)
 
         monkeypatch.setattr(
-            "deepset_cloud_sdk.workflows.async_client.async_pipeline_client.DeepsetCloudAPI.factory", mock_api_factory
+            "haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.HaystackEnterpriseAPI.factory",
+            mock_api_factory,
         )
         monkeypatch.setattr(
-            "deepset_cloud_sdk.workflows.async_client.async_pipeline_client.PipelineService", mock_pipeline_service
+            "haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.PipelineService",
+            mock_pipeline_service,
         )
 
         return {
@@ -152,7 +160,7 @@ class TestAsyncPipelineClientImport:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("pipeline_type", [Pipeline, AsyncPipeline])
-    async def test_import_into_deepset_async_and_index_config_success(
+    async def test_import_into_platform_async_and_index_config_success(
         self,
         pipeline_type: Pipeline | AsyncPipeline,
         mock_api_service_setup: dict,
@@ -162,7 +170,7 @@ class TestAsyncPipelineClientImport:
         """Test successful async import of pipeline with IndexConfig."""
         mock_pipeline = Mock(spec=pipeline_type)
 
-        await client_with_explicit_config.import_into_deepset(mock_pipeline, index_config)
+        await client_with_explicit_config.import_into_platform(mock_pipeline, index_config)
 
         mock_api_service_setup["api_factory"].assert_called_once_with(client_with_explicit_config._api_config)
         mock_api_service_setup["pipeline_service"].assert_called_once_with(
@@ -172,7 +180,7 @@ class TestAsyncPipelineClientImport:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("pipeline_type", [Pipeline, AsyncPipeline])
-    async def test_import_into_deepset_async_and_pipeline_config_success(
+    async def test_import_into_platform_async_and_pipeline_config_success(
         self,
         pipeline_type: Pipeline | AsyncPipeline,
         mock_api_service_setup: dict,
@@ -182,7 +190,7 @@ class TestAsyncPipelineClientImport:
         """Test successful async import of pipeline with PipelineConfig."""
         mock_pipeline = Mock(spec=pipeline_type)
 
-        await client_with_explicit_config.import_into_deepset(mock_pipeline, pipeline_config)
+        await client_with_explicit_config.import_into_platform(mock_pipeline, pipeline_config)
 
         mock_api_service_setup["api_factory"].assert_called_once_with(client_with_explicit_config._api_config)
         mock_api_service_setup["pipeline_service"].assert_called_once_with(
