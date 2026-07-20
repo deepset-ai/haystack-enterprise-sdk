@@ -360,6 +360,15 @@ class TestInputsOutputsAndDeps:
         bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, project_root=tmp_path))
         assert set(bundle.available_inputs["searcher"]) == {"query", "filters"}
         assert set(bundle.available_outputs["searcher"]) == {"answers", "documents"}
+        # Each socket carries display metadata: a stringified type and its mandatory flag.
+        query_socket = bundle.available_inputs["searcher"]["query"]
+        assert query_socket["type"] == "str"
+        assert query_socket["is_mandatory"] is True
+
+    def test_bundle_normalizes_legacy_available_socket_lists(self) -> None:
+        # A stale extractor emitting the old list shape must still parse into the typed shape.
+        bundle = ExtractionBundle.from_dict({"available_inputs": {"retriever": ["query"]}})
+        assert bundle.available_inputs == {"retriever": {"query": {"type": None, "is_mandatory": False}}}
 
     def _prompt_builder_project(self, tmp_path: Path) -> Path:
         """A summarization-style pipeline whose only open input is a ``question`` prompt variable."""
@@ -506,7 +515,7 @@ class TestSubprocessExtraction:
 
 
 class TestBuildConfigYaml:
-    """The ``io_resolver`` is consulted only when resolution is incomplete."""
+    """The ``io_resolver`` always gets the final say; empty returns keep the resolved mappings."""
 
     def _bundle(self, inferred_inputs: dict, inferred_outputs: dict, mandatory_inputs: dict = None) -> ExtractionBundle:
         return ExtractionBundle.from_dict(
@@ -534,16 +543,23 @@ class TestBuildConfigYaml:
         assert "retriever.query" in yaml
         assert "reader.answers" in yaml
 
-    def test_resolver_not_invoked_when_io_inferred(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_resolver_called_with_inferred_io_and_empty_return_keeps_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The resolver is always consulted (it decides whether to interact); returning empty dicts
+        # keeps the inferred mappings untouched.
         from deepset_cloud_sdk._service import pipeline_transform
 
         bundle = self._bundle({"query": ["retriever.query"]}, {"answers": "reader.answers"})
         monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: bundle)
         resolver = Mock(return_value=({}, {}))
 
-        build_config_yaml(FIXTURE_DIR / "pipeline.py", io_resolver=resolver)
+        yaml = build_config_yaml(FIXTURE_DIR / "pipeline.py", io_resolver=resolver)
 
-        resolver.assert_not_called()
+        resolver.assert_called_once()
+        _, current_inputs, current_outputs = resolver.call_args.args
+        assert current_inputs == {"query": ["retriever.query"]}
+        assert current_outputs == {"answers": "reader.answers"}
+        assert "retriever.query" in yaml
+        assert "reader.answers" in yaml
 
     def test_resolver_invoked_when_only_outputs_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from deepset_cloud_sdk._service import pipeline_transform

@@ -28,6 +28,8 @@ from ruamel.yaml import YAML
 # Re-export the extractor's public surface so existing imports keep working.
 from deepset_cloud_sdk._service.pipeline_extract import (
     CODE_COMPONENT_TYPE,
+    STANDARD_INPUT_KEYS,
+    STANDARD_OUTPUT_KEYS,
     PipelineTransformError,
     classify_module,
     extract_from_file,
@@ -51,6 +53,10 @@ __all__ = [
     "flatten_sockets",
     "load_pipeline_from_file",
     "render_config_yaml",
+    "SocketOption",
+    "socket_options",
+    "STANDARD_INPUT_KEYS",
+    "STANDARD_OUTPUT_KEYS",
     "resolve_io",
     "unmapped_mandatory_inputs",
     "unmapped_mandatory_warning",
@@ -72,8 +78,9 @@ class ExtractionBundle:
     dict; this class is the single place that dict's keys are interpreted on the SDK side.
 
     Input mappings are ``{input_key: ["component.socket", ...]}``; output mappings are
-    ``{output_key: "component.socket"}``. ``available_*`` and ``mandatory_inputs`` are
-    ``{component_name: [socket_name, ...]}``.
+    ``{output_key: "component.socket"}``. ``available_*`` are
+    ``{component_name: {socket_name: {"type": str | None, "is_mandatory": bool}}}`` (see
+    :func:`socket_options`); ``mandatory_inputs`` is ``{component_name: [socket_name, ...]}``.
     """
 
     pipeline: dict = field(default_factory=dict)
@@ -93,16 +100,36 @@ class ExtractionBundle:
             async_enabled=bool(raw.get("async_enabled")),
             inferred_inputs=raw.get("inferred_inputs") or {},
             inferred_outputs=raw.get("inferred_outputs") or {},
-            available_inputs=raw.get("available_inputs") or {},
-            available_outputs=raw.get("available_outputs") or {},
+            available_inputs=_normalize_available(raw.get("available_inputs") or {}),
+            available_outputs=_normalize_available(raw.get("available_outputs") or {}),
             mandatory_inputs=raw.get("mandatory_inputs") or {},
             dependencies=raw.get("dependencies") or [],
         )
 
 
-# Callback that receives the bundle when inputs/outputs need resolving and returns the
-# ``(inputs, outputs)`` dicts to use (empty means "leave unset").
-IoResolver = Callable[[ExtractionBundle], Tuple[dict, dict]]
+def _normalize_available(available: dict) -> dict:
+    """Normalize ``available_*`` to the typed shape, tolerating a stale extractor's list shape.
+
+    Old extractors emitted ``{component: [socket_name, ...]}``; the current shape is
+    ``{component: {socket_name: {"type": ..., "is_mandatory": ...}}}``.
+    """
+    normalized: dict = {}
+    for comp_name, sockets in available.items():
+        if isinstance(sockets, dict):
+            normalized[comp_name] = {
+                name: (info if isinstance(info, dict) else {"type": None, "is_mandatory": False})
+                for name, info in sockets.items()
+            }
+        else:
+            normalized[comp_name] = {name: {"type": None, "is_mandatory": False} for name in sockets}
+    return normalized
+
+
+# Callback consulted to finalize inputs/outputs. Receives the bundle plus the already-resolved
+# ``(inputs, outputs)`` and returns the ``(inputs, outputs)`` dicts to use (empty means "leave
+# unset"). Whether/how it interacts (review the full mapping, fill only gaps, or return unchanged)
+# is the resolver's own policy — see the CLI's ``_resolve_io_interactive``.
+IoResolver = Callable[[ExtractionBundle, dict, dict], Tuple[dict, dict]]
 
 
 def build_config_yaml(
@@ -111,6 +138,7 @@ def build_config_yaml(
     entrypoint: Optional[str] = None,
     inputs: Optional[dict] = None,
     outputs: Optional[dict] = None,
+    pipeline_output_type: Optional[str] = None,
     io_resolver: Optional[IoResolver] = None,
     python_executable: Optional[str] = None,
 ) -> str:
@@ -120,12 +148,14 @@ def build_config_yaml(
     so this environment does not need the pipeline's dependencies installed. No API calls are made;
     the deploy flow and the CLI's ``--dry-run`` both go through here.
 
-    Explicit ``inputs``/``outputs`` win; otherwise inferred values are used. See :func:`resolve_io`
-    for when ``io_resolver`` is consulted.
+    Explicit ``inputs``/``outputs`` win; otherwise inferred values are used, and ``io_resolver`` (when
+    given) gets the final say — see :func:`resolve_io`.
     """
     bundle = extract_via_subprocess(target, entrypoint, python_executable)
     resolved_inputs, resolved_outputs = resolve_io(bundle, inputs, outputs, io_resolver)
-    return render_config_yaml(bundle, inputs=resolved_inputs, outputs=resolved_outputs)
+    return render_config_yaml(
+        bundle, inputs=resolved_inputs, outputs=resolved_outputs, pipeline_output_type=pipeline_output_type
+    )
 
 
 def resolve_io(
@@ -136,19 +166,16 @@ def resolve_io(
 ) -> Tuple[dict, dict]:
     """Resolve the platform inputs/outputs to deploy with.
 
-    Explicit ``inputs``/``outputs`` win; otherwise the bundle's inferred values are used. When
-    ``io_resolver`` is provided it is consulted only if resolution is incomplete: a side is still
-    empty, or a mandatory input socket is not mapped (which would fail at query time).
+    Explicit ``inputs``/``outputs`` args win (each replaces its side wholesale); otherwise name-based
+    inference provides the starting point. When an ``io_resolver`` is given it is always called with
+    the resolved mappings and gets the final say — the resolver itself decides whether to interact
+    (review the mapping, prompt for gaps) or pass the mappings through unchanged.
     """
-    resolved_inputs = inputs if inputs is not None else bundle.inferred_inputs
-    resolved_outputs = outputs if outputs is not None else bundle.inferred_outputs
-    incomplete = (
-        not resolved_inputs
-        or not resolved_outputs
-        or unmapped_mandatory_inputs(bundle.mandatory_inputs, resolved_inputs)
-    )
-    if io_resolver is not None and incomplete:
-        new_inputs, new_outputs = io_resolver(bundle)
+    resolved_inputs = inputs if inputs is not None else dict(bundle.inferred_inputs)
+    resolved_outputs = outputs if outputs is not None else dict(bundle.inferred_outputs)
+
+    if io_resolver is not None:
+        new_inputs, new_outputs = io_resolver(bundle, resolved_inputs, resolved_outputs)
         if new_inputs:
             resolved_inputs = new_inputs
         if new_outputs:
@@ -160,12 +187,15 @@ def render_config_yaml(
     bundle: ExtractionBundle,
     inputs: Optional[dict] = None,
     outputs: Optional[dict] = None,
+    pipeline_output_type: Optional[str] = None,
 ) -> str:
     """Render deployable YAML from an extraction bundle and the final inputs/outputs.
 
     :param bundle: The extraction bundle.
     :param inputs: The resolved inputs mapping to embed; ``None``/empty omits the ``inputs`` section.
     :param outputs: The resolved outputs mapping to embed; ``None``/empty omits the ``outputs`` section.
+    :param pipeline_output_type: Optional platform ``pipeline_output_type`` hint (``generative``,
+        ``chat``, ``extractive``, ``document``); omitted from the YAML when ``None``.
     :return: The platform-ready ``config_yaml`` string.
     """
     pipeline_dict = bundle.pipeline
@@ -183,6 +213,9 @@ def render_config_yaml(
     unmapped = unmapped_mandatory_inputs(bundle.mandatory_inputs, inputs or {})
     if unmapped:
         logger.warning(unmapped_mandatory_warning(unmapped))
+
+    if pipeline_output_type:
+        pipeline_dict["pipeline_output_type"] = pipeline_output_type
 
     if bundle.async_enabled:
         pipeline_dict["async_enabled"] = True
@@ -225,9 +258,34 @@ def unmapped_mandatory_warning(unmapped: List[str]) -> str:
     )
 
 
-def flatten_sockets(sockets_by_component: Dict[str, List[str]]) -> List[str]:
-    """Flatten ``{component: [socket, ...]}`` into sorted ``"component.socket"`` paths."""
-    return sorted(f"{comp}.{socket}" for comp, sockets in sockets_by_component.items() for socket in sockets)
+@dataclass(frozen=True)
+class SocketOption:
+    """One selectable socket for interactive mapping: its path plus display metadata."""
+
+    path: str  # "retriever.query"
+    type_str: Optional[str] = None  # e.g. "str", "List[Document]"; None when unknown
+    is_mandatory: bool = False
+
+
+def socket_options(sockets_by_component: Dict[str, dict]) -> List[SocketOption]:
+    """Flatten a bundle's typed ``available_*`` mapping into sorted :class:`SocketOption` entries."""
+    options = []
+    for comp, sockets in sockets_by_component.items():
+        for socket, info in sockets.items():
+            info = info if isinstance(info, dict) else {}
+            options.append(
+                SocketOption(
+                    path=f"{comp}.{socket}",
+                    type_str=info.get("type"),
+                    is_mandatory=bool(info.get("is_mandatory")),
+                )
+            )
+    return sorted(options, key=lambda option: option.path)
+
+
+def flatten_sockets(sockets_by_component: Dict[str, dict]) -> List[str]:
+    """Flatten a bundle's ``available_*`` mapping into sorted ``"component.socket"`` paths."""
+    return [option.path for option in socket_options(sockets_by_component)]
 
 
 def extract_via_subprocess(

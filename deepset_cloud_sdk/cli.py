@@ -6,7 +6,7 @@ import logging
 import sys
 from importlib.metadata import version
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple, Union
 from uuid import UUID
 
 import click
@@ -30,14 +30,23 @@ from deepset_cloud_sdk._service.deployment_service import (
     ServiceNotFoundError,
     ShareOptions,
 )
+from deepset_cloud_sdk._service.io_spec import (
+    PLATFORM_SERVING_SPEC,
+    IntegrationIoSpec,
+    render_io_config,
+)
 from deepset_cloud_sdk._service.pipeline_transform import (
+    STANDARD_INPUT_KEYS,
+    STANDARD_OUTPUT_KEYS,
     ExtractionBundle,
     PipelineTransformError,
+    SocketOption,
     build_config_yaml,
-    flatten_sockets,
+    socket_options,
     unmapped_mandatory_inputs,
     unmapped_mandatory_warning,
 )
+from deepset_cloud_sdk.models import PipelineOutputType
 from deepset_cloud_sdk.workflows.sync_client.deployment_client import DeploymentClient
 from deepset_cloud_sdk.workflows.sync_client.files import download as sync_download
 from deepset_cloud_sdk.workflows.sync_client.files import (
@@ -408,6 +417,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     python: Optional[str] = None,
     dry_run: bool = False,
     output: Optional[Path] = None,
+    io_config: Optional[Path] = None,
     skip_io_validation: bool = False,
     skip_validation: bool = False,
     share: Optional[bool] = typer.Option(None, "--share/--no-share"),
@@ -444,9 +454,14 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param dry_run: Transform the pipeline and print/write the resulting YAML without deploying. No
         API credentials are needed.
     :param output: With --dry-run, write the transformed YAML to this file instead of stdout.
+    :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections (and an
+        optional `pipeline_output_type`) that replace inference and skip the interactive mapping
+        review. Defaults to `<target>.io.yaml` next to the pipeline file when that exists (the file
+        the interactive review offers to save).
     :param skip_io_validation: Deploy even if mandatory pipeline inputs aren't mapped to platform
-        inputs; skips the interactive input/output prompt and deploys with whatever was inferred.
-        Use for arbitrary pipelines you invoke directly rather than via the shared prototype chat UI.
+        inputs; skips the interactive input/output mapping review and deploys with whatever was
+        inferred. Use for arbitrary pipelines you invoke directly rather than via the Playground or
+        shared prototype chat UI.
     :param skip_validation: Skip validating the generated YAML against the platform before deploying.
         By default the YAML is validated and the deploy is aborted on blocking (ERROR) issues.
     :param share: Create a shareable prototype link (opens a chat UI) after deploying. Omit to be
@@ -467,8 +482,13 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     Preview the transformed YAML without deploying:
     `deepset-cloud deploy pipeline.py my-service --dry-run --output out.yaml`
     """
+    io_config_path = _resolve_io_config_path(target, io_config)
+    io_inputs, io_outputs, io_output_type = (
+        _load_io_config(io_config_path) if io_config_path is not None else (None, None, None)
+    )
+
     if dry_run:
-        _deploy_dry_run(target, entrypoint, python, output, skip_io_validation)
+        _deploy_dry_run(target, entrypoint, python, output, skip_io_validation, io_inputs, io_outputs, io_output_type)
         return
 
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
@@ -488,9 +508,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
 
     activate = not skip_activation
 
-    # A shared prototype requires the service to be deployed, so it is only offered when we
-    # activate. Deciding this up front also drives whether we resolve the pipeline inputs/outputs
-    # (needed for the chat UI) into the deployed YAML.
+    # A shared prototype requires the service to be deployed, so it is only offered when we activate.
     if skip_activation:
         if share:
             typer.echo("--share requires activation; drop --skip-activation to share a prototype.")
@@ -498,7 +516,18 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         do_share = False
     else:
         do_share = share if share is not None else _prompt_share()
-    io_resolver = functools.partial(_resolve_io_for_share, skip_validation=skip_io_validation) if do_share else None
+
+    # The I/O mapping is reviewed interactively on every deploy — unless an io-config (explicit or
+    # auto-detected) already pins it, which bypasses the review entirely.
+    if io_inputs is not None or io_outputs is not None:
+        io_resolver = None
+    else:
+        io_resolver = functools.partial(
+            _resolve_io_interactive,
+            skip_validation=skip_io_validation,
+            mode="review",
+            save_path=Path(target).with_suffix(".io.yaml"),
+        )
 
     try:
         if activate:
@@ -515,6 +544,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     create=create,
                     create_options=create_options,
                     entrypoint=entrypoint,
+                    inputs=io_inputs,
+                    outputs=io_outputs,
+                    pipeline_output_type=io_output_type,
                     io_resolver=io_resolver,
                     python_executable=python,
                     validate=not skip_validation,
@@ -527,6 +559,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 create=create,
                 create_options=create_options,
                 entrypoint=entrypoint,
+                inputs=io_inputs,
+                outputs=io_outputs,
+                pipeline_output_type=io_output_type,
                 io_resolver=io_resolver,
                 python_executable=python,
                 validate=not skip_validation,
@@ -580,6 +615,7 @@ def validate(
     target: Path,
     entrypoint: Optional[str] = None,
     python: Optional[str] = None,
+    io_config: Optional[Path] = None,
     skip_io_validation: bool = False,
     api_key: Optional[str] = None,
     api_url: Optional[str] = None,
@@ -594,6 +630,9 @@ def validate(
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
     :param python: Path to the Python interpreter used to load your pipeline (defaults to an
         auto-detected virtualenv near the target file, else the current interpreter).
+    :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections (and an
+        optional `pipeline_output_type`) that replace inference and skip the interactive mapping
+        prompt. Defaults to `<target>.io.yaml` next to the pipeline file when that exists.
     :param skip_io_validation: Skip the interactive input/output prompt and use whatever was inferred.
     :param api_key: deepset API key to use for authentication.
     :param api_url: API URL to use for authentication.
@@ -602,10 +641,22 @@ def validate(
     Example:
     `deepset-cloud validate pipeline.py`
     """
+    io_config_path = _resolve_io_config_path(target, io_config)
+    io_inputs, io_outputs, io_output_type = (
+        _load_io_config(io_config_path) if io_config_path is not None else (None, None, None)
+    )
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
-    io_resolver = functools.partial(_resolve_io_for_share, skip_validation=skip_io_validation)
+    io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation)
     try:
-        result = client.validate(target, entrypoint=entrypoint, io_resolver=io_resolver, python_executable=python)
+        result = client.validate(
+            target,
+            entrypoint=entrypoint,
+            inputs=io_inputs,
+            outputs=io_outputs,
+            pipeline_output_type=io_output_type,
+            io_resolver=io_resolver,
+            python_executable=python,
+        )
     except PipelineTransformError as err:
         typer.echo(str(err))
         raise typer.Exit(1)  # noqa: B904
@@ -629,6 +680,7 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
     include_outputs_from: Optional[List[str]] = None,
     entrypoint: Optional[str] = None,
     python: Optional[str] = None,
+    io_config: Optional[Path] = None,
     skip_io_validation: bool = False,
     output: Optional[Path] = None,
     api_key: Optional[str] = None,
@@ -657,6 +709,9 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
     :param python: Path to the Python interpreter used to load your pipeline (defaults to an
         auto-detected virtualenv near the target file, else the current interpreter).
+    :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections that
+        replace inference and skip the interactive mapping prompt. Defaults to `<target>.io.yaml`
+        next to the pipeline file when that exists.
     :param skip_io_validation: Skip the interactive input/output prompt and use whatever was inferred.
     :param output: Write the pipeline output JSON to this file instead of printing it to stdout.
     :param api_key: deepset API key to use for authentication.
@@ -670,16 +725,20 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
     `deepset-cloud run pipeline.py --inputs @inputs.json`
     """
     extra_inputs = _parse_inputs_option(inputs)
+    io_config_path = _resolve_io_config_path(target, io_config)
+    io_inputs, io_outputs, _ = _load_io_config(io_config_path) if io_config_path is not None else (None, None, None)
 
     if query is None and extra_inputs is None and _stdin_is_tty():
         query = typer.prompt("Query")
 
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
-    io_resolver = functools.partial(_resolve_io_for_share, skip_validation=skip_io_validation)
+    io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation)
     try:
         result = client.run(
             target,
             entrypoint=entrypoint,
+            inputs=io_inputs,
+            outputs=io_outputs,
             io_resolver=io_resolver,
             python_executable=python,
             query=query,
@@ -731,16 +790,23 @@ def _deploy_dry_run(
     python: Optional[str],
     output: Optional[Path],
     skip_io_validation: bool = False,
+    inputs: Optional[dict] = None,
+    outputs: Optional[dict] = None,
+    pipeline_output_type: Optional[str] = None,
 ) -> None:
     """Transform the pipeline and print/write the YAML without contacting the API.
 
     Uses the same extract → resolve → render path as the real deploy (:func:`build_config_yaml`).
+    Prompts only for mapping gaps (``mode="gaps"``) so scripted dry runs stay quiet.
     """
-    io_resolver = functools.partial(_resolve_io_for_share, skip_validation=skip_io_validation)
+    io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation)
     try:
         config_yaml = build_config_yaml(
             target,
             entrypoint=entrypoint,
+            inputs=inputs,
+            outputs=outputs,
+            pipeline_output_type=pipeline_output_type,
             io_resolver=io_resolver,
             python_executable=python,
         )
@@ -774,83 +840,309 @@ def _prompt_login_required() -> bool:
     return typer.confirm("Require login to open the shared link?", default=True)
 
 
-def _resolve_io_for_share(extraction: ExtractionBundle, *, skip_validation: bool = False) -> Tuple[dict, dict]:
-    """Resolve the pipeline inputs/outputs the shared prototype (chat UI) needs.
+# Sentinel returned by _select_socket when the user keeps the current mapping (Enter in edit mode).
+_KEEP_CURRENT = object()
 
-    Used as the ``io_resolver`` for the deploy flow when the user chose to share (and in --dry-run);
-    :func:`resolve_io` only calls it when resolution is incomplete. It returns the ``(inputs, outputs)``
-    dicts to use. On an interactive TTY it prompts the user to map the query/filters and
-    answers/documents sockets — including any *mandatory* socket inference missed, which would
-    otherwise crash the shared prototype at query time. Off a TTY it returns whatever was inferred,
-    warning loudly about unmapped mandatory sockets.
+
+def _resolve_io_interactive(
+    extraction: ExtractionBundle,
+    current_inputs: dict,
+    current_outputs: dict,
+    *,
+    skip_validation: bool = False,
+    mode: str = "gaps",
+    save_path: Optional[Path] = None,
+) -> Tuple[dict, dict]:
+    """Interactively resolve the pipeline's platform input/output mapping.
+
+    Used as the ``io_resolver`` for the deploy/validate/run flows (:func:`resolve_io` always calls it
+    when set). It receives the already-resolved ``current_inputs``/``current_outputs`` and, depending
+    on ``mode``:
+
+    - ``"review"`` (the real deploy): always shows the full mapping with per-key descriptions; Enter
+      accepts, ``e`` edits key by key.
+    - ``"gaps"`` (validate/run/dry-run): silent when the mapping is complete; prompts only for the
+      standard keys still missing.
+
+    In both modes, any *mandatory* socket left unmapped is prompted for afterwards — it would crash
+    the pipeline at query time. Off a TTY it returns the current mappings unchanged, warning loudly
+    about unmapped mandatory sockets, so CI never blocks.
 
     :param skip_validation: When True (``--skip-io-validation``), skip all prompting and mandatory-input
-        enforcement and return whatever inference produced. For arbitrary pipelines invoked directly
-        rather than via the shared prototype chat UI.
+        enforcement and return the current mappings.
+    :param mode: ``"review"`` or ``"gaps"`` (see above).
+    :param save_path: When set (review mode), offer to save the confirmed mapping to this io-config
+        file so future deploys pick it up automatically.
     """
-    inferred_inputs = extraction.inferred_inputs
-    inferred_outputs = extraction.inferred_outputs
+    spec = PLATFORM_SERVING_SPEC
+    inputs = {key: list(sockets) for key, sockets in current_inputs.items()}
+    outputs = dict(current_outputs)
     if skip_validation:
-        return inferred_inputs, inferred_outputs
-    unmapped = unmapped_mandatory_inputs(extraction.mandatory_inputs, inferred_inputs)
+        return inputs, outputs
+    unmapped = unmapped_mandatory_inputs(extraction.mandatory_inputs, inputs)
 
     if not _stdin_is_tty():
         if unmapped:
             typer.echo(f"Warning: {unmapped_mandatory_warning(unmapped)}")
-        return inferred_inputs, inferred_outputs
+        return inputs, outputs
 
-    typer.echo(
-        "\nCould not fully infer the pipeline inputs/outputs required for the shared prototype "
-        "(the chat UI). Please select them."
-    )
+    if mode == "review":
+        inputs, outputs = _review_io_mapping(spec, extraction, inputs, outputs)
+    else:
+        if not (not inputs or not outputs or unmapped):
+            return inputs, outputs
+        inputs, outputs = _fill_io_gaps(spec, extraction, inputs, outputs)
 
-    inputs = {key: list(sockets) for key, sockets in inferred_inputs.items()}
-    input_sockets = flatten_sockets(extraction.available_inputs)
-    if not inputs.get("query"):
-        query = _select_socket(input_sockets, "Which socket is the 'query' input?", required=True)
-        if query:
-            inputs.setdefault("query", []).append(query)
-    if not inputs.get("filters"):
-        filters = _select_socket(input_sockets, "Which socket is the 'filters' input?", required=False)
-        if filters:
-            inputs.setdefault("filters", []).append(filters)
-
-    # Any mandatory socket still unmapped would crash the prototype at query time — map each one.
+    # Any mandatory socket still unmapped would crash the pipeline at query time — map each one.
     for socket in unmapped_mandatory_inputs(extraction.mandatory_inputs, inputs):
         key = _select_input_key_for_socket(socket)
         if socket not in inputs.setdefault(key, []):
             inputs[key].append(socket)
+        typer.echo(f"  Mapped mandatory input '{socket}' to '{key}'.")
 
-    outputs = dict(inferred_outputs)
-    if not outputs:
-        output_sockets = flatten_sockets(extraction.available_outputs)
-        answers = _select_socket(output_sockets, "Which socket is the 'answers' output?", required=False)
-        if answers:
-            outputs["answers"] = answers
-        documents = _select_socket(output_sockets, "Which socket is the 'documents' output?", required=False)
-        if documents:
-            outputs["documents"] = documents
+    if mode == "review" and save_path is not None:
+        _offer_io_config_save(spec, save_path, inputs, outputs)
 
     return inputs, outputs
 
 
-def _select_socket(sockets: List[str], prompt: str, *, required: bool) -> Optional[str]:
+def _review_io_mapping(
+    spec: IntegrationIoSpec, extraction: ExtractionBundle, inputs: dict, outputs: dict
+) -> Tuple[dict, dict]:
+    """Show the resolved I/O mapping summary and let the user accept it or edit it key by key."""
+    _echo_io_summary(spec, inputs, outputs)
+    while True:
+        choice = typer.prompt("Press Enter to accept, or 'e' to edit", default="accept", show_default=False)
+        normalized = choice.strip().lower()
+        if normalized in ("", "accept", "a", "y", "yes"):
+            return inputs, outputs
+        if normalized in ("e", "edit"):
+            inputs, outputs = _edit_io_mapping(spec, extraction, inputs, outputs)
+            _echo_io_summary(spec, inputs, outputs)
+            continue
+        typer.echo("  Press Enter to accept, or type 'e' to edit.")
+
+
+def _echo_io_summary(spec: IntegrationIoSpec, inputs: dict, outputs: dict) -> None:
+    """Print the I/O mapping summary: every platform key, its mapped sockets, and its description."""
+    width = max(len(key.name) for key in (*spec.inputs, *spec.outputs))
+    typer.echo("\nI/O mapping (how the platform talks to your pipeline):")
+    typer.echo("\n  Inputs")
+    for key in spec.inputs:
+        sockets = inputs.get(key.name) or []
+        mapped = ", ".join(sockets) if sockets else "(not mapped)"
+        typer.echo(f"    {key.name:<{width}}  →  {mapped}")
+        typer.echo(f"    {'':<{width}}     {key.description} ({key.type_hint})")
+    typer.echo("\n  Outputs")
+    for key in spec.outputs:
+        socket = outputs.get(key.name)
+        typer.echo(f"    {key.name:<{width}}  →  {socket or '(not mapped)'}")
+        typer.echo(f"    {'':<{width}}     {key.description} ({key.type_hint})")
+    typer.echo("")
+
+
+def _edit_io_mapping(
+    spec: IntegrationIoSpec, extraction: ExtractionBundle, inputs: dict, outputs: dict
+) -> Tuple[dict, dict]:
+    """Walk every platform key, letting the user remap, keep, or unmap it."""
+    input_options = socket_options(extraction.available_inputs)
+    output_options = socket_options(extraction.available_outputs)
+    for key in spec.inputs:
+        current = inputs.get(key.name) or []
+        choice = _select_socket(
+            input_options,
+            f"{key.name} — {key.description} ({key.type_hint})",
+            required=False,
+            current=current,
+        )
+        if choice is _KEEP_CURRENT:
+            continue
+        if choice is None:
+            inputs.pop(key.name, None)
+        else:
+            inputs[key.name] = [choice]
+    for key in spec.outputs:
+        current_socket = outputs.get(key.name)
+        choice = _select_socket(
+            output_options,
+            f"{key.name} — {key.description} ({key.type_hint})",
+            required=False,
+            current=[current_socket] if current_socket else [],
+        )
+        if choice is _KEEP_CURRENT:
+            continue
+        if choice is None:
+            outputs.pop(key.name, None)
+        else:
+            outputs[key.name] = choice
+    return inputs, outputs
+
+
+def _fill_io_gaps(
+    spec: IntegrationIoSpec, extraction: ExtractionBundle, inputs: dict, outputs: dict
+) -> Tuple[dict, dict]:
+    """Prompt only for the standard platform keys that are still unmapped."""
+    typer.echo(
+        "\nCould not fully determine the pipeline inputs/outputs (needed for the Playground and "
+        "shared prototype). Please select them:"
+    )
+    input_options = socket_options(extraction.available_inputs)
+    for key in spec.inputs:
+        if inputs.get(key.name):
+            continue
+        socket = _select_socket(
+            input_options, f"Which socket is the '{key.name}' input? ({key.description})", required=False
+        )
+        if socket:
+            inputs.setdefault(key.name, []).append(socket)
+    output_options = socket_options(extraction.available_outputs)
+    for key in spec.outputs:
+        if outputs.get(key.name):
+            continue
+        socket = _select_socket(
+            output_options, f"Which socket is the '{key.name}' output? ({key.description})", required=False
+        )
+        if socket:
+            outputs[key.name] = socket
+    return inputs, outputs
+
+
+def _offer_io_config_save(spec: IntegrationIoSpec, save_path: Path, inputs: dict, outputs: dict) -> None:
+    """Offer to persist the confirmed mapping as an io-config file next to the pipeline."""
+    if not typer.confirm(
+        f"Save this mapping to {save_path.name} so future deploys use it automatically?", default=True
+    ):
+        return
+    try:
+        save_path.write_text(render_io_config(spec, inputs, outputs), encoding="utf-8")
+    except OSError as err:
+        typer.echo(f"Could not write {save_path}: {err}")
+        return
+    typer.echo(f"Saved {save_path}. Edit it freely, or delete it to map interactively again.")
+
+
+def _resolve_io_config_path(target: Path, io_config: Optional[Path]) -> Optional[Path]:
+    """Pick the io-config file to use: an explicit ``--io-config`` wins, else ``<target>.io.yaml``.
+
+    Announces the auto-detected file so a saved mapping never changes behavior silently.
+    """
+    if io_config is not None:
+        return io_config
+    candidate = Path(target).with_suffix(".io.yaml")
+    if candidate.is_file():
+        typer.echo(f"Using I/O mapping from {candidate} (pass --io-config to override, or delete the file to re-map).")
+        return candidate
+    return None
+
+
+def _load_io_config(path: Path) -> Tuple[Optional[dict], Optional[dict], Optional[str]]:
+    """Load an explicit pipeline I/O mapping from a YAML or JSON io-config file.
+
+    The file may contain optional ``inputs:``, ``outputs:``, and ``pipeline_output_type:`` sections.
+    Input values may be a string or a list of strings (coerced to a list); output values are single
+    ``"component.socket"`` strings. Keys beyond the standard platform keys are passed through with a
+    note. Returns ``(inputs, outputs, pipeline_output_type)`` with ``None`` for absent sections (a
+    section that is present but empty — e.g. fully commented out — also counts as absent).
+
+    :raises typer.Exit: On a missing/unreadable file, invalid YAML/JSON, or a bad shape.
+    """
+    from ruamel.yaml import YAML  # local import to keep CLI startup light
+    from ruamel.yaml.error import YAMLError
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as err:
+        typer.echo(f"Could not read --io-config file '{path}': {err}")
+        raise typer.Exit(1)  # noqa: B904
+    try:
+        data = YAML(typ="safe").load(raw)
+    except YAMLError as err:
+        typer.echo(f"--io-config is not valid YAML/JSON: {err}")
+        raise typer.Exit(1)  # noqa: B904
+    if not isinstance(data, dict):
+        typer.echo("--io-config must be a mapping with optional 'inputs' and 'outputs' sections.")
+        raise typer.Exit(1)
+
+    inputs: Optional[dict] = None
+    outputs: Optional[dict] = None
+    if data.get("inputs"):
+        if not isinstance(data["inputs"], dict):
+            typer.echo("--io-config 'inputs' must be a mapping of input keys to socket paths.")
+            raise typer.Exit(1)
+        inputs = {}
+        for key, value in dict(data["inputs"]).items():
+            sockets = [value] if isinstance(value, str) else value
+            if not isinstance(sockets, list) or not all(isinstance(socket, str) for socket in sockets):
+                typer.echo(f"--io-config 'inputs.{key}' must be a socket path or a list of socket paths.")
+                raise typer.Exit(1)
+            if key not in STANDARD_INPUT_KEYS:
+                typer.echo(f"Note: '{key}' is not a standard platform input; passing it through as-is.")
+            inputs[key] = sockets
+    if data.get("outputs"):
+        if not isinstance(data["outputs"], dict):
+            typer.echo("--io-config 'outputs' must be a mapping of output keys to socket paths.")
+            raise typer.Exit(1)
+        outputs = {}
+        for key, value in dict(data["outputs"]).items():
+            if not isinstance(value, str):
+                typer.echo(f"--io-config 'outputs.{key}' must be a single socket path string.")
+                raise typer.Exit(1)
+            if key not in STANDARD_OUTPUT_KEYS:
+                typer.echo(f"Note: '{key}' is not a standard platform output; passing it through as-is.")
+            outputs[key] = value
+
+    output_type: Optional[str] = data.get("pipeline_output_type")
+    if output_type is not None:
+        valid = [item.value for item in PipelineOutputType]
+        if output_type not in valid:
+            typer.echo(f"--io-config 'pipeline_output_type' must be one of: {', '.join(valid)}.")
+            raise typer.Exit(1)
+    return inputs, outputs, output_type
+
+
+def _socket_menu_label(option: Union[str, SocketOption]) -> str:
+    """Render one menu entry: the socket path plus its type and mandatory flag when known."""
+    if isinstance(option, str):
+        return option
+    details = [detail for detail in (option.type_str, "mandatory" if option.is_mandatory else None) if detail]
+    return f"{option.path} ({', '.join(details)})" if details else option.path
+
+
+def _select_socket(
+    options: Sequence[Union[str, SocketOption]],
+    prompt: str,
+    *,
+    required: bool,
+    current: Optional[List[str]] = None,
+) -> Any:
     """Prompt the user to pick one socket from a numbered menu.
 
-    :param sockets: The available ``"component.socket"`` paths.
+    :param options: The available sockets (plain paths or :class:`SocketOption` with display metadata).
     :param prompt: The question to show above the menu.
-    :param required: If True the user must pick one; if False a ``0`` skips (returns None).
-    :return: The chosen socket path, or None if skipped or there is nothing to choose from.
+    :param required: If True the user must pick one; if False a ``0`` unmaps/skips (returns None).
+    :param current: The currently mapped socket path(s), marked in the menu. When set, Enter keeps
+        them and :data:`_KEEP_CURRENT` is returned.
+    :return: The chosen socket path; None if skipped/unmapped; :data:`_KEEP_CURRENT` if kept.
     """
-    if not sockets:
-        return None
+    if not options:
+        return _KEEP_CURRENT if current else None
+    values = [option if isinstance(option, str) else option.path for option in options]
     typer.echo(prompt)
-    for index, socket in enumerate(sockets, start=1):
-        typer.echo(f"  {index}. {socket}")
-    default = "1" if required else "0"
-    hint = "enter a number" if required else "enter a number, or 0 to skip"
+    for index, option in enumerate(options, start=1):
+        marker = "   [current]" if current and values[index - 1] in current else ""
+        typer.echo(f"  {index}. {_socket_menu_label(option)}{marker}")
+    if not required:
+        typer.echo("  0. not mapped")
+    if current:
+        default = "keep"
+        hint = "enter a number, Enter keeps current" if required else "enter a number, 0 to unmap, Enter keeps current"
+    else:
+        default = "1" if required else "0"
+        hint = "enter a number" if required else "enter a number, or 0 to skip"
     while True:
-        choice = typer.prompt(f"  Choice ({hint})", default=default)
+        choice = typer.prompt(f"  Choice ({hint})", default=default, show_default=False)
+        if current and choice.strip().lower() in ("", "keep"):
+            return _KEEP_CURRENT
         try:
             number = int(choice)
         except ValueError:
@@ -858,23 +1150,23 @@ def _select_socket(sockets: List[str], prompt: str, *, required: bool) -> Option
             continue
         if number == 0 and not required:
             return None
-        if 1 <= number <= len(sockets):
-            return sockets[number - 1]
+        if 1 <= number <= len(values):
+            return values[number - 1]
         typer.echo("  Out of range.")
 
 
 def _select_input_key_for_socket(socket: str) -> str:
     """Ask which platform input should feed an otherwise-unmapped mandatory socket.
 
-    Returns the chosen input key (``"query"`` or ``"filters"``); defaults to ``"query"`` since the
-    shared prototype's chat box sends the user text under ``query``.
+    Returns the chosen input key (one of the standard inputs); defaults to ``"query"`` since the
+    Playground's chat box sends the user text under ``query``.
     """
     typer.echo(
         f"Mandatory input '{socket}' is not mapped to any platform input; "
-        "the shared prototype would fail at query time without it."
+        "the pipeline would fail at query time without it."
     )
-    choice = _select_socket(["query", "filters"], f"  Which input feeds '{socket}'?", required=True)
-    return choice or "query"
+    choice = _select_socket(list(STANDARD_INPUT_KEYS), f"  Which input feeds '{socket}'?", required=True)
+    return choice if isinstance(choice, str) else "query"
 
 
 @cli_app.command()

@@ -126,6 +126,7 @@ class DeploymentService:
         entrypoint: Optional[str] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
+        pipeline_output_type: Optional[str] = None,
         io_resolver: Optional[pipeline_transform.IoResolver] = None,
         python_executable: Optional[str] = None,
         validate: bool = True,
@@ -143,7 +144,8 @@ class DeploymentService:
         :param entrypoint: Name of the pipeline instance/factory when the file is ambiguous.
         :param inputs: Optional explicit pipeline inputs (overrides inference).
         :param outputs: Optional explicit pipeline outputs (overrides inference).
-        :param io_resolver: Optional callback consulted when input/output resolution is incomplete
+        :param pipeline_output_type: Optional platform ``pipeline_output_type`` hint for the YAML.
+        :param io_resolver: Optional callback that gets the final say on the resolved inputs/outputs
             (see :func:`pipeline_transform.resolve_io`); returns ``(inputs, outputs)`` dicts to use.
         :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
         :param validate: If True (default), validate the generated YAML against the platform and abort
@@ -161,6 +163,7 @@ class DeploymentService:
             entrypoint=entrypoint,
             inputs=inputs,
             outputs=outputs,
+            pipeline_output_type=pipeline_output_type,
             io_resolver=io_resolver,
             python_executable=python_executable,
         )
@@ -200,6 +203,7 @@ class DeploymentService:
         entrypoint: Optional[str] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
+        pipeline_output_type: Optional[str] = None,
         io_resolver: Optional[pipeline_transform.IoResolver] = None,
         python_executable: Optional[str] = None,
     ) -> PipelineValidationResult:
@@ -212,7 +216,8 @@ class DeploymentService:
         :param entrypoint: Name of the pipeline instance/factory when the file is ambiguous.
         :param inputs: Optional explicit pipeline inputs (overrides inference).
         :param outputs: Optional explicit pipeline outputs (overrides inference).
-        :param io_resolver: Optional callback consulted when input/output resolution is incomplete.
+        :param pipeline_output_type: Optional platform ``pipeline_output_type`` hint for the YAML.
+        :param io_resolver: Optional callback that gets the final say on the resolved inputs/outputs.
         :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
         :return: The validation result (issues split into errors/warnings).
         """
@@ -221,6 +226,7 @@ class DeploymentService:
             entrypoint=entrypoint,
             inputs=inputs,
             outputs=outputs,
+            pipeline_output_type=pipeline_output_type,
             io_resolver=io_resolver,
             python_executable=python_executable,
         )

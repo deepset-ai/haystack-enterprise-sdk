@@ -529,7 +529,13 @@ def _class_scope_load_names(class_node: ast.ClassDef) -> list[str]:
             for default in (*stmt.args.defaults, *stmt.args.kw_defaults):
                 if default is not None:
                     collect(default)
-            for arg in (*stmt.args.posonlyargs, *stmt.args.args, *stmt.args.kwonlyargs, stmt.args.vararg, stmt.args.kwarg):
+            for arg in (
+                *stmt.args.posonlyargs,
+                *stmt.args.args,
+                *stmt.args.kwonlyargs,
+                stmt.args.vararg,
+                stmt.args.kwarg,
+            ):
                 if arg is not None and arg.annotation is not None:
                     collect(arg.annotation)
             if stmt.returns is not None:
@@ -806,14 +812,29 @@ def _reject_required_init_params(comp_name: str, class_node: ast.ClassDef) -> No
 # --------------------------------------------------------------------------- #
 # Inputs / outputs inference
 # --------------------------------------------------------------------------- #
-# Open input sockets are mapped to platform inputs by name. Several socket names are
-# conventional synonyms for the same platform input — most importantly ``question``, which is
-# the variable Haystack's own ``PromptBuilder`` templates use for the user query. Mapping these
-# synonyms is what lets the shared prototype (which only ever sends ``query``) reach them.
-_QUERY_SOCKET_NAMES = frozenset({"query", "question"})
-_FILTERS_SOCKET_NAMES = frozenset({"filters"})
-# Open output sockets with these exact names are mapped to the platform output of the same name.
-_OUTPUT_SOCKET_NAMES = ("answers", "documents")
+# Name-based inference: open sockets are mapped to platform I/O keys by name. Several socket names
+# are conventional synonyms for the same platform key — most importantly ``question``, the variable Haystack's own ``PromptBuilder``
+# templates use for the user query. Mapping these synonyms is what lets the shared prototype (which
+# only ever sends ``query``) reach them. Ordered so rendering is deterministic.
+_INPUT_SOCKET_KEYS = {
+    "query": "query",
+    "question": "query",
+    "filters": "filters",
+    "files": "files",
+    "sources": "files",
+    "messages": "messages",
+}
+_OUTPUT_SOCKET_KEYS = {
+    "answers": "answers",
+    "documents": "documents",
+    "replies": "messages",
+    "messages": "messages",
+}
+# Canonical platform key ordering, reused by the CLI's interactive mapping. Kept here (not in
+# io_spec) because this module runs standalone in the pipeline's own interpreter; a test asserts it
+# stays in sync with the SDK-side PLATFORM_SERVING_SPEC.
+STANDARD_INPUT_KEYS = ("query", "filters", "files", "messages")
+STANDARD_OUTPUT_KEYS = ("answers", "documents", "messages")
 
 
 def _open_sockets(pipeline: Any, direction: str) -> dict:
@@ -828,24 +849,18 @@ def _open_sockets(pipeline: Any, direction: str) -> dict:
 
 
 def infer_inputs(pipeline: Any) -> dict:
-    """Heuristically map open input sockets to platform ``query``/``filters`` inputs.
+    """Heuristically map open input sockets to platform inputs by socket name.
 
-    Sockets named ``query`` or its synonyms (see :data:`_QUERY_SOCKET_NAMES`, e.g. ``question``)
-    are routed to the platform ``query`` input; ``filters`` sockets to ``filters``.
+    Sockets named ``query`` or its synonym ``question`` route to the platform ``query`` input;
+    ``filters`` to ``filters``; ``files``/``sources`` to ``files``; ``messages`` to ``messages``
+    (see :data:`_INPUT_SOCKET_KEYS`).
     """
-    query: list[str] = []
-    filters: list[str] = []
-    for comp_name, sockets in _open_sockets(pipeline, "inputs").items():
-        for socket_name in sockets:
-            if socket_name in _QUERY_SOCKET_NAMES:
-                query.append(f"{comp_name}.{socket_name}")
-            elif socket_name in _FILTERS_SOCKET_NAMES:
-                filters.append(f"{comp_name}.{socket_name}")
     result: dict[str, list[str]] = {}
-    if query:
-        result["query"] = query
-    if filters:
-        result["filters"] = filters
+    for key in STANDARD_INPUT_KEYS:
+        for comp_name, sockets in _open_sockets(pipeline, "inputs").items():
+            for socket_name in sockets:
+                if _INPUT_SOCKET_KEYS.get(socket_name) == key:
+                    result.setdefault(key, []).append(f"{comp_name}.{socket_name}")
     return result
 
 
@@ -871,31 +886,75 @@ def mandatory_inputs(pipeline: Any) -> dict:
 
 
 def infer_outputs(pipeline: Any) -> dict:
-    """Heuristically map open output sockets named ``answers``/``documents`` to platform outputs."""
+    """Heuristically map open output sockets to platform outputs by socket name.
+
+    Sockets named ``answers``/``documents`` map to the platform output of the same name; ``replies``
+    or ``messages`` map to ``messages`` (see :data:`_OUTPUT_SOCKET_KEYS`). First match per key wins.
+    """
     result: dict[str, str] = {}
     for comp_name, sockets in _open_sockets(pipeline, "outputs").items():
         for socket_name in sockets:
-            if socket_name in _OUTPUT_SOCKET_NAMES and socket_name not in result:
-                result[socket_name] = f"{comp_name}.{socket_name}"
+            key = _OUTPUT_SOCKET_KEYS.get(socket_name)
+            if key is not None and key not in result:
+                result[key] = f"{comp_name}.{socket_name}"
     return result
 
 
-def _available_sockets(pipeline: Any, direction: str) -> dict:
-    """Return every open socket in ``direction`` as ``{component_name: [socket_name, ...]}``.
+def _type_display(type_: Any) -> Optional[str]:
+    """Best-effort human-readable name for a socket type, e.g. ``List[GeneratedAnswer]``.
 
-    Unlike inference, this does not filter by socket name — it exposes all open sockets so a caller
-    (e.g. the CLI) can offer them for interactive mapping when inference finds nothing.
+    Runs in the pipeline's interpreter where the type objects are live. Never raises — type display
+    is cosmetic, so any failure just drops the annotation.
     """
-    return {comp_name: list(sockets) for comp_name, sockets in _open_sockets(pipeline, direction).items() if sockets}
+    try:
+        try:
+            from haystack.utils.type_serialization import serialize_type
+
+            name = serialize_type(type_)
+        except Exception:  # noqa: BLE001 - serialize_type may not exist or may choke on exotic generics
+            name = getattr(type_, "__name__", None) or str(type_)
+        # Shorten dotted module paths everywhere they appear (also inside generics):
+        # "typing.List[haystack.dataclasses.answer.GeneratedAnswer]" -> "List[GeneratedAnswer]".
+        import re
+
+        return re.sub(
+            r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+", lambda m: m.group(0).rsplit(".", 1)[-1], name
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _available_sockets(pipeline: Any, direction: str) -> dict:
+    """Return every open socket in ``direction`` with display metadata.
+
+    Shape: ``{component_name: {socket_name: {"type": "str"|None, "is_mandatory": bool}}}``. Unlike
+    inference, this does not filter by socket name — it exposes all open sockets so a caller (e.g.
+    the CLI) can offer them for interactive mapping. Types are stringified here because the bundle
+    crosses a subprocess JSON boundary.
+    """
+    result: dict[str, dict] = {}
+    for comp_name, sockets in _open_sockets(pipeline, direction).items():
+        if not sockets:
+            continue
+        entry: dict[str, dict] = {}
+        for socket_name in sockets:
+            info = sockets.get(socket_name) if isinstance(sockets, dict) else None
+            info = info if isinstance(info, dict) else {}
+            entry[socket_name] = {
+                "type": _type_display(info["type"]) if "type" in info else None,
+                "is_mandatory": bool(info.get("is_mandatory")),
+            }
+        result[comp_name] = entry
+    return result
 
 
 def available_inputs(pipeline: Any) -> dict:
-    """Return every open input socket as ``{component_name: [socket_name, ...]}`` (see :func:`_available_sockets`)."""
+    """Return every open input socket with display metadata (see :func:`_available_sockets`)."""
     return _available_sockets(pipeline, "inputs")
 
 
 def available_outputs(pipeline: Any) -> dict:
-    """Return every open output socket as ``{component_name: [socket_name, ...]}`` (see :func:`_available_sockets`)."""
+    """Return every open output socket with display metadata (see :func:`_available_sockets`)."""
     return _available_sockets(pipeline, "outputs")
 
 

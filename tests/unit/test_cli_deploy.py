@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
+import pytest
 from typer.testing import CliRunner
 
 from deepset_cloud_sdk._api.deployments import (
@@ -168,27 +169,27 @@ class TestDeployCommand:
         assert options.max_query_replica_count == 3
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
-    def test_deploy_no_share_omits_io_resolver(self, client_cls: Mock) -> None:
-        # Default (non-interactive, no --share): deploy as-is, no io_resolver, no prototype.
+    def test_deploy_forwards_review_io_resolver(self, client_cls: Mock) -> None:
+        # Every deploy gets the interactive resolver in review mode (no longer coupled to --share).
+        from deepset_cloud_sdk.cli import _resolve_io_interactive
+
         client_cls.return_value.deploy.return_value = _result(activated=False)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 0
         _, kwargs = client_cls.return_value.deploy.call_args
-        assert kwargs["io_resolver"] is None
+        resolver = kwargs["io_resolver"]
+        assert resolver.func is _resolve_io_interactive
+        assert resolver.keywords["mode"] == "review"
+        assert resolver.keywords["skip_validation"] is False
+        assert resolver.keywords["save_path"] == Path(FIXTURE).with_suffix(".io.yaml")
         client_cls.return_value.create_shared_prototype.assert_not_called()
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
-    def test_deploy_share_forwards_io_resolver_and_creates_prototype(self, client_cls: Mock) -> None:
-        from deepset_cloud_sdk.cli import _resolve_io_for_share
-
+    def test_deploy_share_creates_prototype(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=True)
         client_cls.return_value.create_shared_prototype.return_value = _prototype()
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--share"])
         assert result.exit_code == 0
-        _, kwargs = client_cls.return_value.deploy.call_args
-        resolver = kwargs["io_resolver"]
-        assert resolver.func is _resolve_io_for_share
-        assert resolver.keywords == {"skip_validation": False}
         assert "https://app.example/shared_prototypes?share_token=tok" in result.stdout
         service_name, options = client_cls.return_value.create_shared_prototype.call_args.args
         assert service_name == "svc"
@@ -197,7 +198,7 @@ class TestDeployCommand:
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
     def test_skip_io_validation_forwards_flag_true(self, client_cls: Mock) -> None:
-        from deepset_cloud_sdk.cli import _resolve_io_for_share
+        from deepset_cloud_sdk.cli import _resolve_io_interactive
 
         client_cls.return_value.deploy.return_value = _result(activated=True)
         client_cls.return_value.create_shared_prototype.return_value = _prototype()
@@ -205,8 +206,8 @@ class TestDeployCommand:
         assert result.exit_code == 0
         _, kwargs = client_cls.return_value.deploy.call_args
         resolver = kwargs["io_resolver"]
-        assert resolver.func is _resolve_io_for_share
-        assert resolver.keywords == {"skip_validation": True}
+        assert resolver.func is _resolve_io_interactive
+        assert resolver.keywords["skip_validation"] is True
 
     @patch("deepset_cloud_sdk.cli.DeploymentClient")
     def test_deploy_share_flags_forward_to_options(self, client_cls: Mock) -> None:
@@ -312,11 +313,11 @@ class TestDryRun:
             available_inputs={"retriever": ["query"]},
             available_outputs={"reader": ["answers", "documents"]},
         )
-        # query=1, filters=skip(0), answers=1, documents=skip(0) — no confirm step anymore
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"], input="1\n0\n1\n0\n")
+        # inputs: query=1, filters/files/messages=skip(0); outputs: answers=1, documents/messages=skip(0)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"], input="1\n0\n0\n0\n1\n0\n0\n")
         assert result.exit_code == 0
-        assert "retriever.query" in result.stdout
-        assert "reader.answers" in result.stdout
+        assert "- retriever.query" in result.stdout  # rendered YAML, not just the menu text
+        assert "answers: reader.answers" in result.stdout
 
     @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
     @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
@@ -346,10 +347,12 @@ class TestDryRun:
             available_outputs={"answer_builder": ["answers"]},
             mandatory_inputs={"prompt_builder": ["passage"]},
         )
-        # filters=skip(0); then map mandatory 'prompt_builder.passage' -> query (choice 1)
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"], input="0\n1\n")
+        # skip filters/files/messages inputs and documents/messages outputs (0); then map the
+        # mandatory 'prompt_builder.passage' to 'query' (choice 1).
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"], input="0\n0\n0\n0\n0\n1\n")
         assert result.exit_code == 0
-        assert "prompt_builder.passage" in result.stdout
+        assert "- prompt_builder.passage" in result.stdout  # rendered into the inputs YAML
+        assert "Mapped mandatory input 'prompt_builder.passage' to 'query'." in result.stdout
 
     @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=False)
     @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
@@ -385,14 +388,20 @@ class TestDryRun:
         assert "answer_builder.query" in result.stdout
 
     def test_resolve_io_skip_validation_returns_inferred(self) -> None:
-        from deepset_cloud_sdk.cli import _resolve_io_for_share
+        from deepset_cloud_sdk.cli import _resolve_io_interactive
 
         extraction = _bundle(
             inferred_inputs={"query": ["answer_builder.query"]},
             inferred_outputs={"answers": "answer_builder.answers"},
             mandatory_inputs={"prompt_builder": ["passage"]},  # unmapped, but validation skipped
         )
-        inputs, outputs = _resolve_io_for_share(extraction, skip_validation=True)
+        # The resolver now receives the already-resolved mappings and, with skip_validation, echoes them.
+        inputs, outputs = _resolve_io_interactive(
+            extraction,
+            {"query": ["answer_builder.query"]},
+            {"answers": "answer_builder.answers"},
+            skip_validation=True,
+        )
         assert inputs == {"query": ["answer_builder.query"]}
         assert outputs == {"answers": "answer_builder.answers"}
 
@@ -504,3 +513,215 @@ class TestRunCommand:
         result = runner.invoke(cli_app, ["run", FIXTURE, "--query", "q"])
         assert result.exit_code == 1
         assert "missing secret" in result.stdout
+
+
+def _typed_bundle() -> ExtractionBundle:
+    """A bundle with typed available sockets and a fully inferred mapping, for review-flow tests."""
+    return _bundle(
+        inferred_inputs={"query": ["retriever.query"]},
+        inferred_outputs={"answers": "reader.answers"},
+        available_inputs={
+            "retriever": {"query": {"type": "str", "is_mandatory": True}},
+            "prompt_builder": {"question": {"type": "str", "is_mandatory": False}},
+        },
+        available_outputs={"reader": {"answers": {"type": "List[GeneratedAnswer]", "is_mandatory": False}}},
+        mandatory_inputs={"retriever": ["query"]},
+    )
+
+
+class TestDeployReviewFlow:
+    """The always-on I/O mapping review on deploy (review mode of _resolve_io_interactive)."""
+
+    def _invoke_with_resolver(self, client_cls: Mock, args: list, input_: str) -> tuple:
+        """Invoke deploy with a client mock that exercises the io_resolver like the real service."""
+        captured = {}
+
+        def fake_deploy(target, service_name, **kwargs):  # type: ignore[no-untyped-def]
+            resolver = kwargs["io_resolver"]
+            if resolver is not None:
+                captured["io"] = resolver(
+                    _typed_bundle(), {"query": ["retriever.query"]}, {"answers": "reader.answers"}
+                )
+            else:
+                captured["io"] = (kwargs["inputs"], kwargs["outputs"])
+            return _result(activated=True)
+
+        client_cls.return_value.deploy.side_effect = fake_deploy
+        result = runner.invoke(cli_app, args, input=input_)
+        return result, captured.get("io")
+
+    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_review_shows_summary_and_enter_accepts(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
+        target = tmp_path / "pipeline.py"
+        target.write_text("# stub\n", encoding="utf-8")
+        # Enter accepts the mapping; 'n' declines saving it.
+        result, io = self._invoke_with_resolver(client_cls, ["deploy", str(target), "svc", "--no-share"], "\nn\n")
+        assert result.exit_code == 0
+        assert "I/O mapping (how the platform talks to your pipeline)" in result.stdout
+        assert "The user's question/text sent by the Playground and chat UI (str)" in result.stdout
+        assert "(not mapped)" in result.stdout  # unmapped keys are listed too
+        assert io == ({"query": ["retriever.query"]}, {"answers": "reader.answers"})
+        assert not (tmp_path / "pipeline.io.yaml").exists()
+
+    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_review_edit_remaps_with_typed_menu(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
+        target = tmp_path / "pipeline.py"
+        target.write_text("# stub\n", encoding="utf-8")
+        # 'e' edits; remap query to option 1 (prompt_builder.question, sorted first), keep/skip the
+        # rest (Enter), accept the re-rendered summary, decline save. The mandatory retriever.query
+        # socket is then unmapped, so the mandatory gate prompts (1 = feed it from 'query').
+        edit_input = "e\n" + "1\n" + "\n" * 3 + "\n" * 3 + "\n" + "1\n" + "n\n"
+        result, io = self._invoke_with_resolver(client_cls, ["deploy", str(target), "svc", "--no-share"], edit_input)
+        assert result.exit_code == 0
+        assert "retriever.query (str, mandatory)" in result.stdout  # typed menu labels
+        assert "[current]" in result.stdout
+        inputs, outputs = io
+        assert "prompt_builder.question" in inputs["query"]
+        assert "retriever.query" in inputs["query"]  # re-added by the mandatory gate
+        assert outputs == {"answers": "reader.answers"}
+
+    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_review_save_writes_io_config(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
+        target = tmp_path / "pipeline.py"
+        target.write_text("# stub\n", encoding="utf-8")
+        result, _ = self._invoke_with_resolver(client_cls, ["deploy", str(target), "svc", "--no-share"], "\ny\n")
+        assert result.exit_code == 0
+        saved = tmp_path / "pipeline.io.yaml"
+        assert saved.is_file()
+        content = saved.read_text(encoding="utf-8")
+        assert "- retriever.query" in content
+        assert "answers: reader.answers" in content
+        assert "# The user's question/text sent by the Playground and chat UI (str)" in content
+
+    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_saved_io_config_auto_detected_and_skips_review(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
+        target = tmp_path / "pipeline.py"
+        target.write_text("# stub\n", encoding="utf-8")
+        (tmp_path / "pipeline.io.yaml").write_text(
+            "inputs:\n  query:\n    - retriever.query\noutputs:\n  answers: reader.answers\n", encoding="utf-8"
+        )
+        result, io = self._invoke_with_resolver(client_cls, ["deploy", str(target), "svc", "--no-share"], "")
+        assert result.exit_code == 0
+        assert "Using I/O mapping from" in result.stdout
+        assert "I/O mapping (how the platform talks to your pipeline)" not in result.stdout  # no review
+        assert io == ({"query": ["retriever.query"]}, {"answers": "reader.answers"})
+
+    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_explicit_io_config_beats_auto_detected(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
+        target = tmp_path / "pipeline.py"
+        target.write_text("# stub\n", encoding="utf-8")
+        (tmp_path / "pipeline.io.yaml").write_text("inputs:\n  query:\n    - wrong.socket\n", encoding="utf-8")
+        other = tmp_path / "other.yaml"
+        other.write_text("inputs:\n  query:\n    - right.socket\n", encoding="utf-8")
+        result, io = self._invoke_with_resolver(
+            client_cls, ["deploy", str(target), "svc", "--no-share", "--io-config", str(other)], ""
+        )
+        assert result.exit_code == 0
+        assert "Using I/O mapping from" not in result.stdout
+        assert io[0] == {"query": ["right.socket"]}
+
+    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=False)
+    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    def test_non_tty_deploy_never_prompts(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
+        target = tmp_path / "pipeline.py"
+        target.write_text("# stub\n", encoding="utf-8")
+        result, io = self._invoke_with_resolver(client_cls, ["deploy", str(target), "svc", "--no-share"], "")
+        assert result.exit_code == 0
+        assert "I/O mapping (how the platform talks to your pipeline)" not in result.stdout
+        assert io == ({"query": ["retriever.query"]}, {"answers": "reader.answers"})
+
+
+class TestLoadIoConfig:
+    def test_loads_yaml_inputs_and_outputs(self, tmp_path: Path) -> None:
+        from deepset_cloud_sdk.cli import _load_io_config
+
+        cfg = tmp_path / "io.yaml"
+        cfg.write_text(
+            "inputs:\n"
+            "  query:\n"
+            "    - retriever.query\n"
+            "  filters: retriever.filters\n"  # scalar coerced to a list
+            "outputs:\n"
+            "  documents: retriever.documents\n",
+            encoding="utf-8",
+        )
+        inputs, outputs, output_type = _load_io_config(cfg)
+        assert inputs == {"query": ["retriever.query"], "filters": ["retriever.filters"]}
+        assert outputs == {"documents": "retriever.documents"}
+        assert output_type is None
+
+    def test_loads_json(self, tmp_path: Path) -> None:
+        from deepset_cloud_sdk.cli import _load_io_config
+
+        cfg = tmp_path / "io.json"
+        cfg.write_text('{"inputs": {"query": ["r.query"]}, "outputs": {"answers": "r.answers"}}', encoding="utf-8")
+        inputs, outputs, _ = _load_io_config(cfg)
+        assert inputs == {"query": ["r.query"]}
+        assert outputs == {"answers": "r.answers"}
+
+    def test_absent_sections_return_none(self, tmp_path: Path) -> None:
+        from deepset_cloud_sdk.cli import _load_io_config
+
+        cfg = tmp_path / "io.yaml"
+        cfg.write_text("outputs:\n  answers: r.answers\n", encoding="utf-8")
+        inputs, outputs, _ = _load_io_config(cfg)
+        assert inputs is None
+        assert outputs == {"answers": "r.answers"}
+
+    def test_invalid_shape_exits(self, tmp_path: Path) -> None:
+        import typer
+
+        from deepset_cloud_sdk.cli import _load_io_config
+
+        cfg = tmp_path / "io.yaml"
+        cfg.write_text("- just\n- a\n- list\n", encoding="utf-8")
+        with pytest.raises(typer.Exit):
+            _load_io_config(cfg)
+
+    def test_pipeline_output_type_validated(self, tmp_path: Path) -> None:
+        import typer
+
+        from deepset_cloud_sdk.cli import _load_io_config
+
+        cfg = tmp_path / "io.yaml"
+        cfg.write_text("outputs:\n  answers: r.answers\npipeline_output_type: generative\n", encoding="utf-8")
+        _, _, output_type = _load_io_config(cfg)
+        assert output_type == "generative"
+
+        cfg.write_text("outputs:\n  answers: r.answers\npipeline_output_type: bogus\n", encoding="utf-8")
+        with pytest.raises(typer.Exit):
+            _load_io_config(cfg)
+
+    def test_messages_only_outputs_load(self, tmp_path: Path) -> None:
+        # A chat pipeline mapping only `messages` must load (no answers/documents requirement).
+        from deepset_cloud_sdk.cli import _load_io_config
+
+        cfg = tmp_path / "io.yaml"
+        cfg.write_text("outputs:\n  messages: llm.replies\n", encoding="utf-8")
+        _, outputs, _ = _load_io_config(cfg)
+        assert outputs == {"messages": "llm.replies"}
+
+    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    def test_dry_run_io_config_overrides_inference(self, extract_mock: Mock, tmp_path: Path) -> None:
+        extract_mock.return_value = _bundle(
+            inferred_inputs={"query": ["retriever.query"]},
+            inferred_outputs={"answers": "reader.answers"},
+        )
+        cfg = tmp_path / "io.yaml"
+        cfg.write_text(
+            "inputs:\n  query:\n    - prompt_builder.query\noutputs:\n  answers: prompt_builder.prompt\n"
+            "pipeline_output_type: generative\n",
+            encoding="utf-8",
+        )
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run", "--io-config", str(cfg)])
+        assert result.exit_code == 0
+        assert "prompt_builder.query" in result.stdout
+        # The io-config outputs replace the inferred ones wholesale, and the output type is rendered.
+        assert "answers: prompt_builder.prompt" in result.stdout
+        assert "reader.answers" not in result.stdout
+        assert "pipeline_output_type: generative" in result.stdout
