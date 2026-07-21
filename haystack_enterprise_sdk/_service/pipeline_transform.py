@@ -65,10 +65,6 @@ __all__ = [
 # Interpreter names to look for inside a discovered virtual environment.
 _VENV_PYTHONS = ("bin/python", "bin/python3", "Scripts/python.exe")
 
-# Haystack version pinning is temporarily disabled: the ``dependencies`` block is rendered commented
-# out so it has no effect on deployments. Flip to True to emit an active block again.
-_EMIT_ACTIVE_DEPENDENCY_BLOCK = False
-
 
 @dataclass(frozen=True)
 class ExtractionBundle:
@@ -341,20 +337,14 @@ def detect_project_python(target: Path) -> str:
 
 
 def _build_dependency_block(dependencies: list) -> str:
-    """Build the ``dependencies`` YAML block pinning the Haystack version.
+    """Build the ``dependencies`` YAML block pinning the Haystack version, e.g.::
 
-    While :data:`_EMIT_ACTIVE_DEPENDENCY_BLOCK` is False the block is emitted commented out, e.g.::
+        dependencies:
+          - haystack-ai==2.30.2
 
-        # dependencies:
-        #   - haystack-ai==2.30.2
-
-    so it does not affect deployment; users can uncomment it to pin the listed dependencies.
     Returns an empty string when there is nothing to pin.
     """
     if not dependencies:
         return ""
-    if _EMIT_ACTIVE_DEPENDENCY_BLOCK:
-        body = "\n".join(f"  - {line}" for line in dependencies)
-        return f"dependencies:\n{body}\n"
-    body = "\n".join(f"#   - {line}" for line in dependencies)
-    return f"# dependencies:\n{body}\n"
+    body = "\n".join(f"  - {line}" for line in dependencies)
+    return f"dependencies:\n{body}\n"

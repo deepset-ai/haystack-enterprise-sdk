@@ -62,8 +62,7 @@ def _write_project(root: Path, files: dict) -> Path:
 
 
 def _load_yaml(config_yaml: str) -> dict:
-    base = config_yaml.split("\n# dependencies:")[0]
-    return YAML().load(base)
+    return YAML().load(config_yaml)
 
 
 def _component_code(config_yaml: str, comp_name: str) -> str:
@@ -112,10 +111,10 @@ class TestTransformFixture:
     def test_dependency_block_pins_haystack_version(self) -> None:
         pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
         config_yaml = transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR)
-        # a commented-out dependencies block pinning only the executing haystack-ai version
-        assert "\n# dependencies:\n" in config_yaml
-        block = config_yaml.split("\n# dependencies:\n")[1]
-        assert "#   - haystack-ai==" in block
+        # an active dependencies block pinning only the executing haystack-ai version
+        assert "\ndependencies:\n" in config_yaml
+        block = config_yaml.split("\ndependencies:\n")[1]
+        assert "  - haystack-ai==" in block
         # user packages are never listed in the dependency block
         assert "requests" not in block
 
@@ -125,7 +124,7 @@ class TestTransformFixture:
 
         pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
         config_yaml = transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR)
-        base = config_yaml.split("\n# dependencies:")[0]
+        base = config_yaml.split("\ndependencies:")[0]
         doc = _load_yaml(config_yaml)
         for name, comp in doc["components"].items():
             if comp["type"] == CODE_COMPONENT_TYPE:
@@ -491,8 +490,8 @@ class TestSubprocessExtraction:
         # a token like "class Greeter" across a folded line.
         doc = _load_yaml(config_yaml)
         assert "class Greeter" in doc["components"]["greeter"]["init_parameters"]["code"]
-        assert "\n# dependencies:\n" in config_yaml
-        assert "#   - haystack-ai==" in config_yaml
+        assert "\ndependencies:\n" in config_yaml
+        assert "  - haystack-ai==" in config_yaml
 
     def test_extract_via_subprocess_missing_dep_errors(self, tmp_path: Path) -> None:
         path = _write_project(tmp_path, {"pipeline.py": "import a_missing_module_xyz\n"})

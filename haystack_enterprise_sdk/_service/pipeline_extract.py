@@ -7,8 +7,8 @@ not necessarily the SDK.
 
 It loads a pipeline from a ``.py`` file, rewrites every locally-defined custom component into the
 platform ``Code`` component (inlining the class source and its transitive local helpers), infers
-inputs/outputs, and records the executing ``haystack-ai`` version (rendered as a commented-out,
-currently inactive ``dependencies`` block — see the renderer). The result is a JSON-serializable
+inputs/outputs, and records the executing ``haystack-ai`` version (rendered as an active
+``dependencies`` block — see the renderer). The result is a JSON-serializable
 "extraction bundle" that the SDK renders into deployable YAML.
 
 Run as a script (used by the SDK via a subprocess):
