@@ -39,6 +39,7 @@ from haystack_enterprise_sdk._service.pipeline_transform import (
     STANDARD_INPUT_KEYS,
     STANDARD_OUTPUT_KEYS,
     ExtractionBundle,
+    IoResolver,
     PipelineTransformError,
     SocketOption,
     build_config_yaml,
@@ -537,6 +538,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 def _on_status(status: object) -> None:
                     spinner.text = f"Rolling out '{service_name}' ({getattr(status, 'value', status)})."
 
+                # The I/O mapping review is interactive and runs mid-deploy; hide the spinner while it
+                # prompts so the mapping and "Press Enter to accept" prompt aren't drawn over.
+                spinner_resolver = _spinner_paused_resolver(spinner, io_resolver) if io_resolver else None
+
                 result = client.deploy(
                     target,
                     service_name,
@@ -547,7 +552,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     inputs=io_inputs,
                     outputs=io_outputs,
                     pipeline_output_type=io_output_type,
-                    io_resolver=io_resolver,
+                    io_resolver=spinner_resolver,
                     python_executable=python,
                     validate=not skip_validation,
                     on_status=_on_status,
@@ -842,6 +847,24 @@ def _prompt_login_required() -> bool:
 
 # Sentinel returned by _select_socket when the user keeps the current mapping (Enter in edit mode).
 _KEEP_CURRENT = object()
+
+
+def _spinner_paused_resolver(spinner: Any, resolver: IoResolver) -> IoResolver:
+    """Wrap an interactive ``io_resolver`` so the deploy spinner is hidden while it prompts.
+
+    The I/O mapping review runs mid-deploy, inside the ``yaspin`` spinner context. Without this the
+    spinner animation is drawn over the review summary and the "Press Enter to accept" prompt, making
+    the deploy look stuck while it silently waits on stdin. Hiding the spinner for the duration of the
+    resolver lets the mapping and prompt render cleanly; it resumes once the resolver returns.
+    """
+
+    def wrapped(bundle: ExtractionBundle, inputs: dict, outputs: dict) -> Tuple[dict, dict]:
+        with spinner.hidden():  # type: ignore[attr-defined]
+            return resolver(bundle, inputs, outputs)
+
+    # Expose the wrapped resolver so callers/tests can introspect the underlying configuration.
+    wrapped.__wrapped__ = resolver  # type: ignore[attr-defined]
+    return wrapped
 
 
 def _resolve_io_interactive(

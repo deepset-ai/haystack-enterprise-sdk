@@ -177,7 +177,8 @@ class TestDeployCommand:
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 0
         _, kwargs = client_cls.return_value.deploy.call_args
-        resolver = kwargs["io_resolver"]
+        # The resolver is wrapped so the deploy spinner is paused while it prompts; unwrap to inspect it.
+        resolver = kwargs["io_resolver"].__wrapped__
         assert resolver.func is _resolve_io_interactive
         assert resolver.keywords["mode"] == "review"
         assert resolver.keywords["skip_validation"] is False
@@ -205,7 +206,7 @@ class TestDeployCommand:
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--share", "--skip-io-validation"])
         assert result.exit_code == 0
         _, kwargs = client_cls.return_value.deploy.call_args
-        resolver = kwargs["io_resolver"]
+        resolver = kwargs["io_resolver"].__wrapped__
         assert resolver.func is _resolve_io_interactive
         assert resolver.keywords["skip_validation"] is True
 
@@ -725,3 +726,36 @@ class TestLoadIoConfig:
         assert "answers: prompt_builder.prompt" in result.stdout
         assert "reader.answers" not in result.stdout
         assert "pipeline_output_type: generative" in result.stdout
+
+
+class TestSpinnerPausedResolver:
+    """The deploy spinner must be paused while the interactive I/O resolver prompts."""
+
+    def test_hides_spinner_around_resolver_and_returns_result(self) -> None:
+        from haystack_enterprise_sdk.cli import _spinner_paused_resolver
+
+        events: list[str] = []
+
+        class _FakeSpinnerCtx:
+            def __enter__(self) -> "None":
+                events.append("hidden-enter")
+
+            def __exit__(self, *exc: object) -> bool:
+                events.append("hidden-exit")
+                return False
+
+        spinner = Mock()
+        spinner.hidden.return_value = _FakeSpinnerCtx()
+
+        def inner(bundle: object, inputs: dict, outputs: dict) -> tuple:
+            events.append("resolve")
+            return {"query": ["a.q"]}, {"answers": "b.a"}
+
+        wrapped = _spinner_paused_resolver(spinner, inner)
+        result = wrapped(_bundle(), {}, {})
+
+        # The resolver runs strictly inside the hidden() context, and its result is passed through.
+        assert events == ["hidden-enter", "resolve", "hidden-exit"]
+        assert result == ({"query": ["a.q"]}, {"answers": "b.a"})
+        # The underlying resolver stays introspectable.
+        assert wrapped.__wrapped__ is inner

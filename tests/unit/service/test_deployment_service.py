@@ -174,6 +174,25 @@ class TestRun:
         assert kwargs["json"]["pipeline_config"]["inputs"] == {"query": ["retriever.query"]}
         assert kwargs["json"]["inputs"] == {"retriever": {"query": "who?"}}
 
+    async def test_run_strips_dependencies_block_from_config(
+        self, service: DeploymentService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The sandbox run endpoint executes the config in place; a ``dependencies`` block is meaningless
+        # there and must be dropped so the pinned version can't interfere with sandbox execution.
+        monkeypatch.setattr(
+            "haystack_enterprise_sdk._service.pipeline_transform.build_config_yaml",
+            lambda *a, **k: (
+                "components: {}\ninputs:\n  query:\n  - retriever.query\n"
+                "dependencies:\n  - haystack-ai==3.0.0\n"
+            ),
+        )
+        post = self._mock_run_response(service, {})
+
+        await service.run(FIXTURE, query="who?")
+
+        _, kwargs = post.call_args
+        assert "dependencies" not in kwargs["json"]["pipeline_config"]
+
     async def test_run_forwards_include_outputs_from(
         self, service: DeploymentService, monkeypatch: pytest.MonkeyPatch
     ) -> None:

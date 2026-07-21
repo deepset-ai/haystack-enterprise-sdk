@@ -274,6 +274,10 @@ class DeploymentService:
             python_executable=python_executable,
         )
         pipeline_config = dict(YAML().load(config_yaml))
+        # The sandbox run endpoint executes the config in place and does not install dependencies, so a
+        # ``dependencies`` block is meaningless here (it belongs to the deployed revision). Drop it for
+        # the run so the pinned version can't interfere with sandbox execution.
+        pipeline_config.pop("dependencies", None)
         run_inputs = build_run_inputs(
             pipeline_config,
             query=query,
