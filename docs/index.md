@@ -1,37 +1,37 @@
 <p align="center">
-  <a href="https://cloud.deepset.ai/"><img src="https://raw.githubusercontent.com/deepset-ai/deepset-cloud-sdk/main/assets/logo.png"  alt="deepset Cloud SDK"></a>
+  <a href="https://cloud.deepset.ai/"><img src="https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/assets/logo.png"  alt="Haystack Enterprise Platform SDK"></a>
 </p>
 
-[![Coverage badge](https://github.com/deepset-ai/deepset-cloud-sdk/raw/python-coverage-comment-action-data/badge.svg)](https://github.com/deepset-ai/deepset-cloud-sdk/tree/python-coverage-comment-action-data)
-[![Tests](https://github.com/deepset-ai/deepset-cloud-sdk/actions/workflows/continuous-integration.yml/badge.svg)](https://github.com/deepset-ai/deepset-cloud-sdk/actions/workflows/continuous-integration.yml)
-[![Deploy PyPi](https://github.com/deepset-ai/deepset-cloud-sdk/actions/workflows/deploy-prod.yml/badge.svg)](https://github.com/deepset-ai/deepset-cloud-sdk/actions/workflows/deploy-prod.yml)
-[![Compliance Checks](https://github.com/deepset-ai/deepset-cloud-sdk/actions/workflows/compliance.yml/badge.svg)](https://github.com/deepset-ai/deepset-cloud-sdk/actions/workflows/compliance.yml)
+[![Coverage badge](https://github.com/deepset-ai/haystack-enterprise-sdk/raw/python-coverage-comment-action-data/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/tree/python-coverage-comment-action-data)
+[![Tests](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/continuous-integration.yml/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/continuous-integration.yml)
+[![Deploy PyPi](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/deploy-prod.yml/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/deploy-prod.yml)
+[![Compliance Checks](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/compliance.yml/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/compliance.yml)
 
-The deepset Cloud SDK is an open source software development kit that provides convenient access and integration with deepset Cloud, a powerful cloud offering for various natural language processing (NLP) tasks. To learn more about deepset Cloud, please have a look at the [official Documentation](https://docs.cloud.deepset.ai/).
+The Haystack Enterprise Platform SDK is an open source software development kit that provides convenient access and integration with Haystack Enterprise Platform, a powerful cloud offering for various natural language processing (NLP) tasks. To learn more about Haystack Enterprise Platform, please have a look at the [official Documentation](https://docs.cloud.deepset.ai/).
 
 # Supported Features
-The following examples demonstrate how to use the deepset Cloud SDK to interact with deepset Cloud using Python.
-You can use the deepset Cloud SDK in the command line as well. For more information, see the [CLI documentation](/deepset-cloud-sdk/examples/cli).
-- [SDK Examples - Upload datasets](/deepset-cloud-sdk/examples/sdk)
-- [CLI Examples - Upload datasets](/deepset-cloud-sdk/examples/cli/)
+The following examples demonstrate how to use the Haystack Enterprise Platform SDK to interact with Haystack Enterprise Platform using Python.
+You can use the Haystack Enterprise Platform SDK in the command line as well. For more information, see the [CLI documentation](/haystack-enterprise-sdk/examples/cli).
+- [SDK Examples - Upload datasets](/haystack-enterprise-sdk/examples/sdk)
+- [CLI Examples - Upload datasets](/haystack-enterprise-sdk/examples/cli/)
 
 ## Installation
-The deepset Cloud SDK is available on PyPI and you can install it using pip:
+The Haystack Enterprise Platform SDK is available on PyPI and you can install it using pip:
 ```bash
-pip install deepset-cloud-sdk
+pip install haystack-enterprise-sdk
 ```
 
-After installing the deepset Cloud SDK, you can use it to interact with deepset Cloud. It comes with a command line interface (CLI), that you can use by calling:
+After installing the Haystack Enterprise Platform SDK, you can use it to interact with Haystack Enterprise Platform. It comes with a command line interface (CLI), that you can use by calling:
 ```bash
-deepset-cloud --help
+haystack-enterprise --help
 ```
 
 <p align="center">
-  <a href="https://cloud.deepset.ai/"><img src="https://raw.githubusercontent.com/deepset-ai/deepset-cloud-sdk/main/assets/cli.gif"  alt="deepset Cloud CLI"></a>
+  <a href="https://cloud.deepset.ai/"><img src="https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/assets/cli.gif"  alt="Haystack Enterprise Platform CLI"></a>
 </p>
 
 ### Development Installation
-To install the deepset Cloud SDK for development, clone the repository and install the package in editable mode:
+To install the Haystack Enterprise Platform SDK for development, clone the repository and install the package in editable mode:
 ```bash
 pip install hatch==1.7.0
 hatch build
@@ -39,16 +39,16 @@ hatch build
 
 Instead of calling the cli from the build package, you can call it directly from the source code:
 ```bash
-python3 -m deepset_cloud_sdk.cli --help
+python3 -m haystack_enterprise_sdk.cli --help
 ```
 
 ---
-## Interested in deepset Cloud?
-If you are interested in exploring deepset Cloud, visit cloud.deepset.ai.
-deepset Cloud provides a range of NLP capabilities and services to help you build and deploy powerful
+## Interested in Haystack Enterprise Platform?
+If you are interested in exploring Haystack Enterprise Platform, visit cloud.deepset.ai.
+Haystack Enterprise Platform provides a range of NLP capabilities and services to help you build and deploy powerful
 natural language processing applications.
 
 ## Interested in Haystack?
-deepset Cloud is powered by Haystack, an open source framework for building end-to-end NLP pipelines.
+Haystack Enterprise Platform is powered by Haystack, an open source framework for building end-to-end NLP pipelines.
  - [Project website](https://haystack.deepset.ai/)
  - [GitHub repository](https://github.com/deepset-ai/haystack)

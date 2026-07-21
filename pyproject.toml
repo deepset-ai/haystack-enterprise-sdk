@@ -3,9 +3,9 @@ requires = ["uv_build>=0.9.13,<0.12.0"]
 build-backend = "uv_build"
 
 [project]
-name = "deepset-cloud-sdk"
-version = "1.0.2"
-description = 'deepset SDK'
+name = "haystack-enterprise-sdk"
+version = "1.0.0"
+description = 'Haystack Enterprise Platform SDK'
 readme = "README.md"
 requires-python = ">= 3.9"
 license = "Apache-2.0"
@@ -40,22 +40,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Optional extra for `deepset-cloud deploy`. The deploy command loads your pipeline in a subprocess
+# Optional extra for `haystack-enterprise deploy`. The deploy command loads your pipeline in a subprocess
 # using your project's own interpreter (auto-detected venv or --python), so the CLI environment does
 # NOT need Haystack. Install this extra only when the CLI environment doubles as the pipeline
 # environment (i.e. there is no separate project venv to detect).
-# Install with: pip install "deepset-cloud-sdk[deploy]"  (or uv pip install / uv tool install).
+# Install with: pip install "haystack-enterprise-sdk[deploy]"  (or uv pip install / uv tool install).
 deploy = [
   "haystack-ai>=2.13.2",
 ]
 
 [project.urls]
-Documentation = "https://github.com/deepset-ai/deepset-cloud-sdk#readme"
-Issues = "https://github.com/deepset-ai/deepset-cloud-sdk/issues"
-Source = "https://github.com/deepset-ai/deepset-cloud-sdk"
+Documentation = "https://github.com/deepset-ai/haystack-enterprise-sdk#readme"
+Issues = "https://github.com/deepset-ai/haystack-enterprise-sdk/issues"
+Source = "https://github.com/deepset-ai/haystack-enterprise-sdk"
 
 [project.scripts]
-deepset-cloud = "deepset_cloud_sdk.cli:run_packaged"
+haystack-enterprise = "haystack_enterprise_sdk.cli:run_packaged"
 
 [dependency-groups]
 test = [
@@ -74,7 +74,7 @@ code-quality = [
 ]
 
 [tool.uv.build-backend]
-module-name = "deepset_cloud_sdk"
+module-name = "haystack_enterprise_sdk"
 module-root = ""
 
 [tool.coverage.run]
@@ -110,7 +110,7 @@ fixable = [
 convention = "google"
 
 [tool.ruff.lint.isort]
-known-first-party = ["deepset_cloud_sdk"]
+known-first-party = ["haystack_enterprise_sdk"]
 
 [tool.mypy]
 python_version = "3.10"

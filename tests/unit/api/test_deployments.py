@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from httpx import Request, Response, codes
 
-from deepset_cloud_sdk._api.deployments import (
+from haystack_enterprise_sdk._api.deployments import (
     Deployment,
     DeploymentRevision,
     DeploymentRevisionStatus,
@@ -30,8 +30,8 @@ def _resp(status_code: int, **kwargs: object) -> Response:
 
 
 @pytest.fixture
-def deployments_api(mocked_deepset_cloud_api: Mock) -> DeploymentsAPI:
-    return DeploymentsAPI(mocked_deepset_cloud_api)
+def deployments_api(mocked_haystack_enterprise_api: Mock) -> DeploymentsAPI:
+    return DeploymentsAPI(mocked_haystack_enterprise_api)
 
 
 def _deployment_body(name: str = "svc", deployment_id: Optional[str] = None, status: str = "DEPLOYED") -> dict:
@@ -57,9 +57,9 @@ def _revision_body(deployment_id: str, status: str = "PENDING") -> dict:
 @pytest.mark.asyncio
 class TestListAndFind:
     async def test_list_deployments_parses_page(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.get.return_value = _resp(
+        mocked_haystack_enterprise_api.get.return_value = _resp(
             codes.OK,
             json={"data": [_deployment_body("a"), _deployment_body("b")], "has_more": True, "total": 5},
         )
@@ -67,15 +67,15 @@ class TestListAndFind:
         assert [d.name for d in page.data] == ["a", "b"]
         assert page.has_more is True
         assert page.total == 5
-        mocked_deepset_cloud_api.get.assert_called_once_with(
+        mocked_haystack_enterprise_api.get.assert_called_once_with(
             workspace_name="ws", endpoint="deployments", params={"limit": 100, "page_number": 2}
         )
 
     async def test_find_by_name_matches_on_first_page(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         target = _deployment_body("wanted")
-        mocked_deepset_cloud_api.get.return_value = _resp(
+        mocked_haystack_enterprise_api.get.return_value = _resp(
             codes.OK,
             json={"data": [_deployment_body("other"), target], "has_more": False, "total": 2},
         )
@@ -85,19 +85,19 @@ class TestListAndFind:
         assert found.deployment_id == Deployment.from_response(target).deployment_id
 
     async def test_find_by_name_pages_until_match(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         page1 = _resp(codes.OK, json={"data": [_deployment_body("p1")], "has_more": True, "total": 2})
         page2 = _resp(codes.OK, json={"data": [_deployment_body("wanted")], "has_more": False, "total": 2})
-        mocked_deepset_cloud_api.get.side_effect = [page1, page2]
+        mocked_haystack_enterprise_api.get.side_effect = [page1, page2]
         found = await deployments_api.find_by_name("ws", "wanted")
         assert found is not None and found.name == "wanted"
-        assert mocked_deepset_cloud_api.get.call_count == 2
+        assert mocked_haystack_enterprise_api.get.call_count == 2
 
     async def test_find_by_name_returns_none_when_absent(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.get.return_value = _resp(
+        mocked_haystack_enterprise_api.get.return_value = _resp(
             codes.OK,
             json={"data": [_deployment_body("other")], "has_more": False, "total": 1},
         )
@@ -107,9 +107,9 @@ class TestListAndFind:
 @pytest.mark.asyncio
 class TestCreate:
     async def test_create_deployment_sends_overrides(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.CREATED, json=_deployment_body("svc"))
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=_deployment_body("svc"))
         result = await deployments_api.create_deployment(
             "ws",
             name="svc",
@@ -118,7 +118,7 @@ class TestCreate:
             max_query_replica_count=3,
         )
         assert isinstance(result, Deployment)
-        mocked_deepset_cloud_api.post.assert_called_once_with(
+        mocked_haystack_enterprise_api.post.assert_called_once_with(
             workspace_name="ws",
             endpoint="deployments",
             json={
@@ -131,92 +131,92 @@ class TestCreate:
         )
 
     async def test_create_deployment_minimal_payload(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.CREATED, json=_deployment_body("svc"))
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=_deployment_body("svc"))
         await deployments_api.create_deployment("ws", name="svc")
-        _, kwargs = mocked_deepset_cloud_api.post.call_args
+        _, kwargs = mocked_haystack_enterprise_api.post.call_args
         assert kwargs["json"] == {"name": "svc", "source_type": "EXTERNAL_PIPELINE"}
 
     async def test_create_deployment_failure_raises(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.CONFLICT, text="exists")
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.CONFLICT, text="exists")
         with pytest.raises(FailedToCreateDeploymentError):
             await deployments_api.create_deployment("ws", name="svc")
 
 
 @pytest.mark.asyncio
 class TestRevisions:
-    async def test_push_revision(self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock) -> None:
+    async def test_push_revision(self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock) -> None:
         deployment_id = uuid4()
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.CREATED, json=_revision_body(str(deployment_id)))
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=_revision_body(str(deployment_id)))
         revision = await deployments_api.push_revision("ws", deployment_id, config_yaml="components: {}")
         assert isinstance(revision, DeploymentRevision)
         assert revision.status == DeploymentRevisionStatus.PENDING
-        mocked_deepset_cloud_api.post.assert_called_once_with(
+        mocked_haystack_enterprise_api.post.assert_called_once_with(
             workspace_name="ws",
             endpoint=f"deployments/{deployment_id}/revisions",
             json={"config_yaml": "components: {}", "source_type": "EXTERNAL_PIPELINE"},
         )
 
     async def test_push_revision_tolerates_missing_status(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         deployment_id = uuid4()
         body = {"revision_id": str(uuid4()), "deployment_id": str(deployment_id)}  # no "status"/"config_hash"
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.CREATED, json=body)
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=body)
         revision = await deployments_api.push_revision("ws", deployment_id, config_yaml="components: {}")
         assert revision.status == DeploymentRevisionStatus.PENDING
         assert revision.config_hash == ""
 
     async def test_push_revision_failure_raises(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.UNPROCESSABLE_ENTITY, text="empty")
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.UNPROCESSABLE_ENTITY, text="empty")
         with pytest.raises(FailedToPushRevisionError):
             await deployments_api.push_revision("ws", uuid4(), config_yaml="")
 
-    async def test_activate_revision(self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock) -> None:
+    async def test_activate_revision(self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock) -> None:
         deployment_id, revision_id = uuid4(), uuid4()
-        mocked_deepset_cloud_api.post.return_value = _resp(
+        mocked_haystack_enterprise_api.post.return_value = _resp(
             codes.OK, json=_deployment_body("svc", status="DEPLOYMENT_IN_PROGRESS")
         )
         result = await deployments_api.activate_revision("ws", deployment_id, revision_id)
         assert result.status == DeploymentStatus.DEPLOYMENT_IN_PROGRESS
-        mocked_deepset_cloud_api.post.assert_called_once_with(
+        mocked_haystack_enterprise_api.post.assert_called_once_with(
             workspace_name="ws",
             endpoint=f"deployments/{deployment_id}/revisions/{revision_id}/activate",
         )
 
     async def test_activate_revision_failure_raises(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.CONFLICT, text="nope")
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.CONFLICT, text="nope")
         with pytest.raises(FailedToActivateRevisionError):
             await deployments_api.activate_revision("ws", uuid4(), uuid4())
 
 
 @pytest.mark.asyncio
 class TestValidatePipeline:
-    async def test_valid_204(self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.NO_CONTENT)
+    async def test_valid_204(self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock) -> None:
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.NO_CONTENT)
         result = await deployments_api.validate_pipeline("ws", query_yaml="components: {}")
         assert isinstance(result, PipelineValidationResult)
         assert result.is_valid is True
         assert result.issues == []
-        mocked_deepset_cloud_api.post.assert_called_once_with(
+        mocked_haystack_enterprise_api.post.assert_called_once_with(
             workspace_name="ws",
             endpoint="pipeline_validations",
             json={"deepset_cloud_version": "v2", "query_yaml": "components: {}"},
         )
 
     async def test_only_provided_yaml_fields_are_sent(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.NO_CONTENT)
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.NO_CONTENT)
         await deployments_api.validate_pipeline("ws", indexing_yaml="components: {}", pipeline_id="pid")
-        _, kwargs = mocked_deepset_cloud_api.post.call_args
+        _, kwargs = mocked_haystack_enterprise_api.post.call_args
         assert kwargs["json"] == {
             "deepset_cloud_version": "v2",
             "indexing_yaml": "components: {}",
@@ -224,9 +224,9 @@ class TestValidatePipeline:
         }
 
     async def test_errors_parsed_from_400(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(
+        mocked_haystack_enterprise_api.post.return_value = _resp(
             codes.BAD_REQUEST,
             json={
                 "error_details": [
@@ -242,9 +242,9 @@ class TestValidatePipeline:
         assert len(result.warnings) == 1
 
     async def test_warning_only_400_is_valid(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(
+        mocked_haystack_enterprise_api.post.return_value = _resp(
             codes.BAD_REQUEST,
             json={"error_details": [{"category": "WARNING", "message": "deprecated"}]},
         )
@@ -254,9 +254,9 @@ class TestValidatePipeline:
         assert len(result.warnings) == 1
 
     async def test_tolerates_alternate_detail_keys(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(
+        mocked_haystack_enterprise_api.post.return_value = _resp(
             codes.BAD_REQUEST,
             json={"detail": [{"msg": "boom", "json_path": "/x"}]},  # no category -> defaults to ERROR
         )
@@ -266,34 +266,34 @@ class TestValidatePipeline:
         assert result.errors[0].json_pointer == "/x"
 
     async def test_falls_back_to_top_level_message(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.BAD_REQUEST, json={"message": "invalid config"})
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.BAD_REQUEST, json={"message": "invalid config"})
         result = await deployments_api.validate_pipeline("ws", query_yaml="y")
         assert result.has_errors is True
         assert result.errors[0].message == "invalid config"
 
     async def test_request_failure_raises(
-        self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.INTERNAL_SERVER_ERROR, text="boom")
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.INTERNAL_SERVER_ERROR, text="boom")
         with pytest.raises(FailedToValidatePipelineError):
             await deployments_api.validate_pipeline("ws", query_yaml="y")
 
 
 @pytest.mark.asyncio
 class TestGetAndActivity:
-    async def test_get_deployment(self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock) -> None:
+    async def test_get_deployment(self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock) -> None:
         did = uuid4()
-        mocked_deepset_cloud_api.get.return_value = _resp(
+        mocked_haystack_enterprise_api.get.return_value = _resp(
             codes.OK, json=_deployment_body("svc", deployment_id=str(did), status="DEPLOYED")
         )
         result = await deployments_api.get_deployment("ws", did)
         assert result.deployment_id == did
         assert result.status == DeploymentStatus.DEPLOYED
 
-    async def test_list_activity(self, deployments_api: DeploymentsAPI, mocked_deepset_cloud_api: Mock) -> None:
-        mocked_deepset_cloud_api.get.return_value = _resp(
+    async def test_list_activity(self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock) -> None:
+        mocked_haystack_enterprise_api.get.return_value = _resp(
             codes.OK,
             json={"data": [{"event_type": "REVISION_CREATED"}], "has_more": False, "total": 1},
         )

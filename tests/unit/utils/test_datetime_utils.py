@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from deepset_cloud_sdk._utils.datetime import from_isoformat
+from haystack_enterprise_sdk._utils.datetime import from_isoformat
 
 
 class TestFromIsoformat:

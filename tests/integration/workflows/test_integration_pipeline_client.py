@@ -1,4 +1,4 @@
-"""Integration tests for importing Haystack pipelines into deepset AI Platform."""
+"""Integration tests for importing Haystack pipelines into Haystack Enterprise Platform."""
 
 import json
 import uuid
@@ -22,19 +22,19 @@ from haystack.components.routers.file_type_router import FileTypeRouter
 from haystack.utils import Secret
 from httpx import Response
 
-from deepset_cloud_sdk._api.config import CommonConfig
-from deepset_cloud_sdk._service.pipeline_service import DeepsetValidationError
-from deepset_cloud_sdk.models import (
+from haystack_enterprise_sdk._api.config import CommonConfig
+from haystack_enterprise_sdk._service.pipeline_service import HaystackEnterpriseValidationError
+from haystack_enterprise_sdk.models import (
     IndexConfig,
     IndexInputs,
     PipelineConfig,
     PipelineInputs,
     PipelineOutputs,
 )
-from deepset_cloud_sdk.workflows.async_client.async_pipeline_client import (
+from haystack_enterprise_sdk.workflows.async_client.async_pipeline_client import (
     AsyncPipelineClient,
 )
-from deepset_cloud_sdk.workflows.sync_client.pipeline_client import PipelineClient
+from haystack_enterprise_sdk.workflows.sync_client.pipeline_client import PipelineClient
 
 
 class MockRoutes(NamedTuple):
@@ -105,7 +105,7 @@ def assert_both_endpoints_called_with_auth(
 
 
 def assert_index_exists(integration_config: CommonConfig, workspace_name: str, index_name: str) -> dict:
-    """Assert that an index exists in deepset AI Platform."""
+    """Assert that an index exists in Haystack Enterprise Platform."""
     for attempt in tenacity.Retrying(
         stop=tenacity.stop_after_delay(120),
         wait=tenacity.wait_fixed(wait=timedelta(seconds=1)),
@@ -124,7 +124,7 @@ def assert_index_exists(integration_config: CommonConfig, workspace_name: str, i
 
 
 def assert_pipeline_exists(integration_config: CommonConfig, workspace_name: str, pipeline_name: str) -> None:
-    """Assert that a pipeline exists in deepset AI Platform."""
+    """Assert that a pipeline exists in Haystack Enterprise Platform."""
     for attempt in tenacity.Retrying(
         stop=tenacity.stop_after_delay(120),
         wait=tenacity.wait_fixed(wait=timedelta(seconds=1)),
@@ -141,7 +141,7 @@ def assert_pipeline_exists(integration_config: CommonConfig, workspace_name: str
 
 
 def remove_index(integration_config: CommonConfig, workspace_name: str, index_name: str) -> None:
-    """Remove an index from deepset AI Platform."""
+    """Remove an index from Haystack Enterprise Platform."""
     for attempt in tenacity.Retrying(
         stop=tenacity.stop_after_delay(60),
         wait=tenacity.wait_fixed(wait=timedelta(seconds=1)),
@@ -156,7 +156,7 @@ def remove_index(integration_config: CommonConfig, workspace_name: str, index_na
 
 
 def remove_pipeline(integration_config: CommonConfig, workspace_name: str, pipeline_name: str) -> None:
-    """Remove a pipeline from deepset AI Platform."""
+    """Remove a pipeline from Haystack Enterprise Platform."""
     for attempt in tenacity.Retrying(
         stop=tenacity.stop_after_delay(60),
         wait=tenacity.wait_fixed(wait=timedelta(seconds=1)),
@@ -204,7 +204,7 @@ class TestImportIndexIntoDeepset:
             strict_validation=False,
         )
 
-        test_client.import_into_deepset(sample_index, index_config)
+        test_client.import_into_platform(sample_index, index_config)
 
         assert_both_endpoints_called_with_auth(
             index_import_routes, "test-index", "config_yaml", "components:\n  document_embedder:\n"
@@ -222,7 +222,7 @@ class TestImportIndexIntoDeepset:
             strict_validation=False,
         )
 
-        await test_async_client.import_into_deepset(sample_index, index_config)
+        await test_async_client.import_into_platform(sample_index, index_config)
 
         assert_both_endpoints_called_with_auth(
             index_import_routes, "test-index-async", "config_yaml", "components:\n  document_embedder:\n"
@@ -239,7 +239,7 @@ class TestImportIndexIntoDeepset:
             strict_validation=True,
         )
 
-        test_client.import_into_deepset(sample_index, index_config)
+        test_client.import_into_platform(sample_index, index_config)
 
         # Verify both endpoints were called
         assert index_import_routes.validation.called
@@ -276,8 +276,8 @@ class TestImportIndexIntoDeepset:
         )
 
         # Import should fail with validation error
-        with pytest.raises(DeepsetValidationError):
-            test_client.import_into_deepset(sample_index, index_config)
+        with pytest.raises(HaystackEnterpriseValidationError):
+            test_client.import_into_platform(sample_index, index_config)
 
         # Verify only validation endpoint was called, NOT import
         assert validation_route.called
@@ -311,7 +311,7 @@ class TestImportIndexIntoDeepset:
             overwrite=True,
         )
 
-        test_client.import_into_deepset(sample_index, index_config)
+        test_client.import_into_platform(sample_index, index_config)
 
         # Verify all three endpoints were called in sequence
         assert validation_route.called
@@ -378,14 +378,14 @@ class TestImportPipelineIntoDeepset:
     def test_import_pipeline_into_deepset(
         self, sample_pipeline: Pipeline, test_client: PipelineClient, pipeline_import_routes: MockRoutes
     ) -> None:
-        """Test synchronously importing a pipeline into deepset AI Platform."""
+        """Test synchronously importing a pipeline into Haystack Enterprise Platform."""
         pipeline_config = PipelineConfig(
             name="test-pipeline",
             inputs=PipelineInputs(query=["prompt_builder.prompt", "answer_builder.query"]),
             outputs=PipelineOutputs(answers="answer_builder.answers"),
             strict_validation=False,
         )
-        test_client.import_into_deepset(sample_pipeline, pipeline_config)
+        test_client.import_into_platform(sample_pipeline, pipeline_config)
 
         assert_both_endpoints_called_with_auth(
             pipeline_import_routes,
@@ -406,7 +406,7 @@ class TestImportPipelineIntoDeepset:
             outputs=PipelineOutputs(answers="answer_builder.answers"),
             strict_validation=False,
         )
-        await test_async_client.import_into_deepset(sample_pipeline, pipeline_config)
+        await test_async_client.import_into_platform(sample_pipeline, pipeline_config)
 
         assert_both_endpoints_called_with_auth(
             pipeline_import_routes,
@@ -427,7 +427,7 @@ class TestImportPipelineIntoDeepset:
             outputs=PipelineOutputs(answers="answer_builder.answers"),
             strict_validation=True,
         )
-        await test_async_client.import_into_deepset(sample_pipeline, pipeline_config)
+        await test_async_client.import_into_platform(sample_pipeline, pipeline_config)
 
         # Verify both endpoints were called
         assert pipeline_import_routes.validation.called
@@ -468,8 +468,8 @@ class TestImportPipelineIntoDeepset:
         )
 
         # Import should fail with validation error
-        with pytest.raises(DeepsetValidationError):
-            test_client.import_into_deepset(sample_pipeline, pipeline_config)
+        with pytest.raises(HaystackEnterpriseValidationError):
+            test_client.import_into_platform(sample_pipeline, pipeline_config)
 
         # Verify only validation endpoint was called, NOT import
         assert validation_route.called
@@ -506,7 +506,7 @@ class TestImportPipelineIntoDeepset:
             overwrite=True,
         )
 
-        await test_async_client.import_into_deepset(sample_pipeline, pipeline_config)
+        await test_async_client.import_into_platform(sample_pipeline, pipeline_config)
 
         # Verify all three endpoints were called in sequence
         assert validation_route.called
@@ -532,7 +532,7 @@ class TestImportPipelineIntoDeepset:
 
 
 class TestRealIntegrationIndex:
-    """Real integration tests that call the actual DeepsetCloudAPI."""
+    """Real integration tests that call the actual HaystackEnterpriseAPI."""
 
     @pytest.fixture
     def sample_index_for_integration(self) -> Pipeline:
@@ -569,7 +569,7 @@ class TestRealIntegrationIndex:
                 strict_validation=False,  # Skip validation for integration test
             )
 
-            client.import_into_deepset(sample_index_for_integration, index_config)
+            client.import_into_platform(sample_index_for_integration, index_config)
 
             assert_index_exists(integration_config, workspace_name, index_name)
         finally:
@@ -593,7 +593,7 @@ class TestRealIntegrationIndex:
                 strict_validation=False,  # Skip validation for integration test
             )
 
-            client.import_into_deepset(sample_index_for_integration, index_config)
+            client.import_into_platform(sample_index_for_integration, index_config)
 
             assert_index_exists(integration_config, workspace_name, index_name)
 
@@ -608,7 +608,7 @@ class TestRealIntegrationIndex:
             answer_builder = AnswerBuilder()
             new_index.add_component("answer_builder", answer_builder)
 
-            client.import_into_deepset(new_index, index_config)
+            client.import_into_platform(new_index, index_config)
             response_data = assert_index_exists(integration_config, workspace_name, index_name)
             assert "answer_builder" in response_data["config_yaml"], f"Failed to overwrite index {index_name}"
         finally:
@@ -617,7 +617,7 @@ class TestRealIntegrationIndex:
 
 @pytest.mark.asyncio
 class TestRealIntegrationPipeline:
-    """Real integration tests for pipelines that call the actual DeepsetCloudAPI."""
+    """Real integration tests for pipelines that call the actual HaystackEnterpriseAPI."""
 
     @pytest.fixture
     def sample_pipeline_for_integration(self, monkeypatch: pytest.MonkeyPatch) -> Pipeline:
@@ -664,7 +664,7 @@ class TestRealIntegrationPipeline:
                 strict_validation=False,  # Skip validation for integration test
             )
 
-            await client.import_into_deepset(sample_pipeline_for_integration, pipeline_config)
+            await client.import_into_platform(sample_pipeline_for_integration, pipeline_config)
 
             assert_pipeline_exists(integration_config, workspace_name, pipeline_name)
         finally:
@@ -689,7 +689,7 @@ class TestRealIntegrationPipeline:
                 overwrite=True,
             )
 
-            await client.import_into_deepset(sample_pipeline_for_integration, pipeline_config)
+            await client.import_into_platform(sample_pipeline_for_integration, pipeline_config)
 
             assert_pipeline_exists(integration_config, workspace_name, pipeline_name)
         finally:

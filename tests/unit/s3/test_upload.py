@@ -7,9 +7,9 @@ import pytest
 from pyrate_limiter import Duration, Rate
 from tqdm.asyncio import tqdm
 
-from deepset_cloud_sdk._api.upload_sessions import UploadSession
-from deepset_cloud_sdk._s3.upload import S3, RetryableHttpError, make_safe_file_name
-from deepset_cloud_sdk.models import DeepsetCloudFile
+from haystack_enterprise_sdk._api.upload_sessions import UploadSession
+from haystack_enterprise_sdk._s3.upload import S3, RetryableHttpError, make_safe_file_name
+from haystack_enterprise_sdk.models import HaystackEnterpriseFile
 
 
 class TestUploadsS3:
@@ -40,9 +40,9 @@ class TestUploadsS3:
         ) -> None:
             async with S3() as s3:
                 files = [
-                    DeepsetCloudFile("one.txt", "one"),
-                    DeepsetCloudFile("two.txt", "two"),
-                    DeepsetCloudFile("three.txt", "three"),
+                    HaystackEnterpriseFile("one.txt", "one"),
+                    HaystackEnterpriseFile("two.txt", "two"),
+                    HaystackEnterpriseFile("three.txt", "three"),
                 ]
                 await s3.upload_in_memory(upload_session=upload_session_response, files=files, show_progress=True)
 
@@ -53,9 +53,9 @@ class TestUploadsS3:
         ) -> None:
             async with S3() as s3:
                 files = [
-                    DeepsetCloudFile("one.txt", "one"),
-                    DeepsetCloudFile("two.txt", "two"),
-                    DeepsetCloudFile("three.txt", "three"),
+                    HaystackEnterpriseFile("one.txt", "one"),
+                    HaystackEnterpriseFile("two.txt", "two"),
+                    HaystackEnterpriseFile("three.txt", "three"),
                 ]
                 await s3.upload_in_memory(upload_session=upload_session_response, files=files, show_progress=True)
 
@@ -67,9 +67,9 @@ class TestUploadsS3:
         ) -> None:
             async with S3() as s3:
                 files = [
-                    DeepsetCloudFile("one.txt", "one"),
-                    DeepsetCloudFile("two.txt", "two"),
-                    DeepsetCloudFile("three.txt", "three"),
+                    HaystackEnterpriseFile("one.txt", "one"),
+                    HaystackEnterpriseFile("two.txt", "two"),
+                    HaystackEnterpriseFile("three.txt", "three"),
                 ]
                 await s3.upload_in_memory(upload_session=upload_session_response, files=files, show_progress=False)
 
@@ -98,7 +98,7 @@ class TestUploadsS3:
             rate = Rate(3000, Duration.SECOND)
             async with S3(rate_limit=rate) as s3:
                 number_of_files_to_upload = 9000
-                files = [DeepsetCloudFile(name=f"{i}.txt", text=f"{i}") for i in range(number_of_files_to_upload)]
+                files = [HaystackEnterpriseFile(name=f"{i}.txt", text=f"{i}") for i in range(number_of_files_to_upload)]
                 start = time.monotonic()
                 await s3.upload_in_memory(upload_session_response, files)
                 time_taken = time.monotonic() - start
@@ -157,9 +157,9 @@ class TestUploadsS3:
             with patch.object(aiohttp.ClientSession, "post", side_effect=exception):
                 async with S3() as s3:
                     files = [
-                        DeepsetCloudFile(name="one.txt", text="1"),
-                        DeepsetCloudFile(name="two.txt", text="2"),
-                        DeepsetCloudFile(name="three.txt", text="3"),
+                        HaystackEnterpriseFile(name="one.txt", text="1"),
+                        HaystackEnterpriseFile(name="two.txt", text="2"),
+                        HaystackEnterpriseFile(name="three.txt", text="3"),
                     ]
 
                     results = await s3.upload_in_memory(upload_session_response, files)
@@ -180,9 +180,9 @@ class TestUploadsS3:
             with patch.object(aiohttp.ClientSession, "post", side_effect=exception):
                 async with S3() as s3:
                     files = [
-                        DeepsetCloudFile(name="one.txt", text="1", meta={"something": 1}),
-                        DeepsetCloudFile(name="two.txt", text="2", meta={"something": 2}),
-                        DeepsetCloudFile(name="three.txt", text="3", meta={"something": 3}),
+                        HaystackEnterpriseFile(name="one.txt", text="1", meta={"something": 1}),
+                        HaystackEnterpriseFile(name="two.txt", text="2", meta={"something": 2}),
+                        HaystackEnterpriseFile(name="three.txt", text="3", meta={"something": 3}),
                     ]
 
                     results = await s3.upload_in_memory(upload_session_response, files)

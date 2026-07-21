@@ -3,15 +3,15 @@
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
-from deepset_cloud_sdk._api.deployments import (
+from haystack_enterprise_sdk._api.deployments import (
     Deployment,
     DeploymentRevision,
     DeploymentRevisionStatus,
     DeploymentServiceLevel,
     DeploymentStatus,
 )
-from deepset_cloud_sdk._service.deployment_service import DeployResult
-from deepset_cloud_sdk.workflows.sync_client.deployment_client import DeploymentClient
+from haystack_enterprise_sdk._service.deployment_service import DeployResult
+from haystack_enterprise_sdk.workflows.sync_client.deployment_client import DeploymentClient
 
 
 def _result() -> DeployResult:
@@ -32,7 +32,7 @@ def _result() -> DeployResult:
     return DeployResult(deployment=deployment, revision=revision, activated=False, timed_out=False)
 
 
-@patch("deepset_cloud_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
+@patch("haystack_enterprise_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
 def test_deploy_forwards_to_async_client(async_cls: Mock) -> None:
     async_instance = async_cls.return_value
     async_instance.deploy = AsyncMock(return_value=_result())
@@ -46,7 +46,7 @@ def test_deploy_forwards_to_async_client(async_cls: Mock) -> None:
     assert kwargs["activate"] is True
 
 
-@patch("deepset_cloud_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
+@patch("haystack_enterprise_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
 def test_run_forwards_to_async_client(async_cls: Mock) -> None:
     async_instance = async_cls.return_value
     async_instance.run = AsyncMock(return_value={"llm": {"replies": ["hi"]}})
@@ -61,7 +61,7 @@ def test_run_forwards_to_async_client(async_cls: Mock) -> None:
     assert kwargs["extra_inputs"] == {"retriever": {"top_k": 3}}
 
 
-@patch("deepset_cloud_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
+@patch("haystack_enterprise_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
 def test_get_service_status_forwards(async_cls: Mock) -> None:
     async_instance = async_cls.return_value
     deployment = _result().deployment
@@ -74,10 +74,10 @@ def test_get_service_status_forwards(async_cls: Mock) -> None:
     async_instance.get_service_status.assert_awaited_once_with("svc")
 
 
-@patch("deepset_cloud_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
+@patch("haystack_enterprise_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
 def test_create_shared_prototype_forwards(async_cls: Mock) -> None:
-    from deepset_cloud_sdk._api.shared_prototypes import SharedPrototype
-    from deepset_cloud_sdk._service.deployment_service import ShareOptions
+    from haystack_enterprise_sdk._api.shared_prototypes import SharedPrototype
+    from haystack_enterprise_sdk._service.deployment_service import ShareOptions
 
     prototype = SharedPrototype(
         shared_prototype_id=uuid4(),

@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 from httpx import Request, Response, codes
 
-from deepset_cloud_sdk._api.pipeline_run import (
+from haystack_enterprise_sdk._api.pipeline_run import (
     HaystackRunAPI,
     PipelineRunError,
     build_run_inputs,
@@ -19,8 +19,8 @@ def _resp(status_code: int, **kwargs: object) -> Response:
 
 
 @pytest.fixture
-def run_api(mocked_deepset_cloud_api: Mock) -> HaystackRunAPI:
-    return HaystackRunAPI(mocked_deepset_cloud_api)
+def run_api(mocked_haystack_enterprise_api: Mock) -> HaystackRunAPI:
+    return HaystackRunAPI(mocked_haystack_enterprise_api)
 
 
 class TestBuildRunInputs:
@@ -58,8 +58,8 @@ class TestBuildRunInputs:
 
 @pytest.mark.asyncio
 class TestRunPipeline:
-    async def test_posts_expected_payload(self, run_api: HaystackRunAPI, mocked_deepset_cloud_api: Mock) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.OK, json={"llm": {"replies": ["hi"]}})
+    async def test_posts_expected_payload(self, run_api: HaystackRunAPI, mocked_haystack_enterprise_api: Mock) -> None:
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.OK, json={"llm": {"replies": ["hi"]}})
         result = await run_api.run_pipeline(
             "ws",
             pipeline_config={"components": {}},
@@ -67,7 +67,7 @@ class TestRunPipeline:
             include_outputs_from=["llm"],
         )
         assert result == {"llm": {"replies": ["hi"]}}
-        _, kwargs = mocked_deepset_cloud_api.post.call_args
+        _, kwargs = mocked_haystack_enterprise_api.post.call_args
         assert kwargs["workspace_name"] == "ws"
         assert kwargs["endpoint"] == "haystack/pipelines/run"
         assert kwargs["json"] == {
@@ -77,23 +77,23 @@ class TestRunPipeline:
         }
 
     async def test_omits_include_outputs_from_when_none(
-        self, run_api: HaystackRunAPI, mocked_deepset_cloud_api: Mock
+        self, run_api: HaystackRunAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.OK, json={})
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.OK, json={})
         await run_api.run_pipeline("ws", pipeline_config={}, inputs={})
-        _, kwargs = mocked_deepset_cloud_api.post.call_args
+        _, kwargs = mocked_haystack_enterprise_api.post.call_args
         assert "include_outputs_from" not in kwargs["json"]
 
-    async def test_raises_with_errors_body(self, run_api: HaystackRunAPI, mocked_deepset_cloud_api: Mock) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(
+    async def test_raises_with_errors_body(self, run_api: HaystackRunAPI, mocked_haystack_enterprise_api: Mock) -> None:
+        mocked_haystack_enterprise_api.post.return_value = _resp(
             codes.BAD_REQUEST, json={"errors": ["missing secret OPENAI_API_KEY"]}
         )
         with pytest.raises(PipelineRunError, match="missing secret OPENAI_API_KEY"):
             await run_api.run_pipeline("ws", pipeline_config={}, inputs={})
 
     async def test_raises_with_raw_body_when_unparseable(
-        self, run_api: HaystackRunAPI, mocked_deepset_cloud_api: Mock
+        self, run_api: HaystackRunAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
-        mocked_deepset_cloud_api.post.return_value = _resp(codes.INTERNAL_SERVER_ERROR, text="boom")
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.INTERNAL_SERVER_ERROR, text="boom")
         with pytest.raises(PipelineRunError, match="boom"):
             await run_api.run_pipeline("ws", pipeline_config={}, inputs={})

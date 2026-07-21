@@ -1,8 +1,8 @@
 import pytest
 
-from deepset_cloud_sdk._api.config import CommonConfig
-from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
-from deepset_cloud_sdk._api.upload_sessions import (
+from haystack_enterprise_sdk._api.config import CommonConfig
+from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
+from haystack_enterprise_sdk._api.upload_sessions import (
     UploadSession,
     UploadSessionDetailList,
     UploadSessionIngestionStatus,
@@ -14,8 +14,8 @@ from deepset_cloud_sdk._api.upload_sessions import (
 @pytest.mark.parametrize("integration_config", ["integration_config", "integration_config_safe_mode"], indirect=True)
 class TestCreateUploadSessions:
     async def test_create_and_close_upload_session(self, integration_config: CommonConfig, workspace_name: str) -> None:
-        async with DeepsetCloudAPI.factory(integration_config) as deepset_cloud_api:
-            upload_session_client = UploadSessionsAPI(deepset_cloud_api)
+        async with HaystackEnterpriseAPI.factory(integration_config) as haystack_enterprise_api:
+            upload_session_client = UploadSessionsAPI(haystack_enterprise_api)
 
             result: UploadSession = await upload_session_client.create(workspace_name=workspace_name)
             assert result.session_id is not None
@@ -37,8 +37,8 @@ class TestCreateUploadSessions:
             assert session_status.ingestion_status == UploadSessionIngestionStatus(failed_files=0, finished_files=0)
 
     async def test_list_upload_session(self, integration_config: CommonConfig, workspace_name: str) -> None:
-        async with DeepsetCloudAPI.factory(integration_config) as deepset_cloud_api:
-            upload_session_client = UploadSessionsAPI(deepset_cloud_api)
+        async with HaystackEnterpriseAPI.factory(integration_config) as haystack_enterprise_api:
+            upload_session_client = UploadSessionsAPI(haystack_enterprise_api)
 
             await upload_session_client.create(workspace_name=workspace_name)
 

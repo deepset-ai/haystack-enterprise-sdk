@@ -10,14 +10,14 @@ import pytest
 from _pytest.monkeypatch import MonkeyPatch
 from structlog.testing import capture_logs
 
-from deepset_cloud_sdk._api.config import CommonConfig
-from deepset_cloud_sdk._api.files import (
+from haystack_enterprise_sdk._api.config import CommonConfig
+from haystack_enterprise_sdk._api.files import (
     FailedToUploadFileException,
     File,
     FileList,
-    FileNotFoundInDeepsetCloudException,
+    FileNotFoundInHaystackEnterpriseException,
 )
-from deepset_cloud_sdk._api.upload_sessions import (
+from haystack_enterprise_sdk._api.upload_sessions import (
     UploadSession,
     UploadSessionDetail,
     UploadSessionDetailList,
@@ -27,8 +27,8 @@ from deepset_cloud_sdk._api.upload_sessions import (
     UploadSessionWriteModeEnum,
     WriteMode,
 )
-from deepset_cloud_sdk._s3.upload import S3UploadResult, S3UploadSummary
-from deepset_cloud_sdk._service.files_service import (
+from haystack_enterprise_sdk._s3.upload import S3UploadResult, S3UploadSummary
+from haystack_enterprise_sdk._service.files_service import (
     DEFAULT_S3_CONCURRENCY,
     PROXY_S3_CONCURRENCY,
     SAFE_MODE_CONCURRENCY,
@@ -36,7 +36,7 @@ from deepset_cloud_sdk._service.files_service import (
     _http_proxy_configured,
     _resolve_s3_concurrency,
 )
-from deepset_cloud_sdk.models import DeepsetCloudFile, UserInfo
+from haystack_enterprise_sdk.models import HaystackEnterpriseFile, UserInfo
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ class TestFilePathsUpload:
         monkeypatch: MonkeyPatch,
     ) -> None:
         # enforce batch upload
-        monkeypatch.setattr("deepset_cloud_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", -1)
+        monkeypatch.setattr("haystack_enterprise_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", -1)
         upload_summary = S3UploadSummary(total_files=1, successful_upload_count=1, failed_upload_count=0, failed=[])
         mocked_s3.upload_files_from_paths.return_value = upload_summary
         mocked_upload_sessions_api.create.return_value = upload_session_response
@@ -100,7 +100,7 @@ class TestFilePathsUpload:
         monkeypatch: MonkeyPatch,
     ) -> None:
         # enforce batch upload
-        monkeypatch.setattr("deepset_cloud_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", -1)
+        monkeypatch.setattr("haystack_enterprise_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", -1)
         mocked_upload_sessions_api.create.return_value = upload_session_response
         mocked_upload_sessions_api.status.return_value = UploadSessionStatus(
             session_id=upload_session_response.session_id,
@@ -347,11 +347,11 @@ class TestUploadTexts:
         mocked_s3: Mock,
         monkeypatch: MonkeyPatch,
     ) -> None:
-        monkeypatch.setattr("deepset_cloud_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", -1)
+        monkeypatch.setattr("haystack_enterprise_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", -1)
         upload_summary = S3UploadSummary(total_files=1, successful_upload_count=1, failed_upload_count=0, failed=[])
         mocked_s3.upload_in_memory.return_value = upload_summary
         files = [
-            DeepsetCloudFile(
+            HaystackEnterpriseFile(
                 name="test_file.txt",
                 text="test content",
                 meta={"test": "test"},
@@ -403,7 +403,7 @@ class TestUploadTexts:
         upload_summary = S3UploadSummary(total_files=1, successful_upload_count=1, failed_upload_count=0, failed=[])
         mocked_s3.upload_in_memory.return_value = upload_summary
         files = [
-            DeepsetCloudFile(
+            HaystackEnterpriseFile(
                 name="test_file.txt",
                 text="test content",
                 meta={"test": "test"},
@@ -447,7 +447,7 @@ async def test_upload_file_paths_with_timeout(
     upload_session_response: UploadSession,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("deepset_cloud_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", -1)
+    monkeypatch.setattr("haystack_enterprise_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", -1)
     mocked_upload_sessions_api.create.return_value = upload_session_response
     mocked_upload_sessions_api.status.return_value = UploadSessionStatus(
         session_id=upload_session_response.session_id,
@@ -761,7 +761,7 @@ class TestDownloadFilesService:
 
         monkeypatch.setattr(file_service._files, "list_paginated", mocked_list_paginated)
 
-        mocked_download = AsyncMock(side_effect=[FileNotFoundInDeepsetCloudException])
+        mocked_download = AsyncMock(side_effect=[FileNotFoundInHaystackEnterpriseException])
         monkeypatch.setattr(file_service._files, "download", mocked_download)
 
         # This should not raise an exception

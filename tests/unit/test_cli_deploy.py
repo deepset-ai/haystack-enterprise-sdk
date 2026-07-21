@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from typer.testing import CliRunner
 
-from deepset_cloud_sdk._api.deployments import (
+from haystack_enterprise_sdk._api.deployments import (
     Deployment,
     DeploymentRevision,
     DeploymentRevisionStatus,
@@ -17,21 +17,21 @@ from deepset_cloud_sdk._api.deployments import (
     PipelineValidationIssue,
     PipelineValidationResult,
 )
-from deepset_cloud_sdk._api.pipeline_run import PipelineRunError
-from deepset_cloud_sdk._api.shared_prototypes import (
+from haystack_enterprise_sdk._api.pipeline_run import PipelineRunError
+from haystack_enterprise_sdk._api.shared_prototypes import (
     FailedToCreateSharedPrototypeError,
     SharedPrototype,
 )
-from deepset_cloud_sdk._service.deployment_service import (
+from haystack_enterprise_sdk._service.deployment_service import (
     DeploymentFailedError,
     DeployResult,
     ServiceNotFoundError,
 )
-from deepset_cloud_sdk._service.pipeline_transform import (
+from haystack_enterprise_sdk._service.pipeline_transform import (
     ExtractionBundle,
     PipelineTransformError,
 )
-from deepset_cloud_sdk.cli import cli_app
+from haystack_enterprise_sdk.cli import cli_app
 
 runner = CliRunner()
 
@@ -78,7 +78,7 @@ def _prototype() -> SharedPrototype:
 
 
 class TestDeployCommand:
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_skip_activation(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=False)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--skip-activation"])
@@ -88,7 +88,7 @@ class TestDeployCommand:
         assert kwargs["create_options"] is None
         assert "activate" not in kwargs or kwargs["activate"] is False
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_activates_by_default(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=True, status=DeploymentStatus.DEPLOYED)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
@@ -98,28 +98,28 @@ class TestDeployCommand:
         assert kwargs["activate"] is True
         assert kwargs["on_status"] is not None
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_activate_timed_out(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=True, timed_out=True)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 0
         assert "still in progress" in result.stdout
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_failure_exits_1(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.side_effect = DeploymentFailedError(_deployment(), "check the UI")
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 1
         assert "check the UI" in result.stdout
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_service_not_found_exits_1(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.side_effect = ServiceNotFoundError("no such service")
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 1
         assert "no such service" in result.stdout
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_validates_by_default(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=True)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
@@ -127,7 +127,7 @@ class TestDeployCommand:
         _, kwargs = client_cls.return_value.deploy.call_args
         assert kwargs["validate"] is True
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_skip_validation(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=True)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--skip-validation"])
@@ -135,7 +135,7 @@ class TestDeployCommand:
         _, kwargs = client_cls.return_value.deploy.call_args
         assert kwargs["validate"] is False
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_validation_error_exits_1(self, client_cls: Mock) -> None:
         errors = [PipelineValidationIssue(category="ERROR", code=None, json_pointer="/x", message="bad thing")]
         client_cls.return_value.deploy.side_effect = PipelineValidationError(errors)
@@ -143,7 +143,7 @@ class TestDeployCommand:
         assert result.exit_code == 1
         assert "bad thing" in result.stdout
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_create_passes_options(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=True)
         result = runner.invoke(
@@ -168,10 +168,10 @@ class TestDeployCommand:
         assert options.cpu_limit == "2"
         assert options.max_query_replica_count == 3
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_forwards_review_io_resolver(self, client_cls: Mock) -> None:
         # Every deploy gets the interactive resolver in review mode (no longer coupled to --share).
-        from deepset_cloud_sdk.cli import _resolve_io_interactive
+        from haystack_enterprise_sdk.cli import _resolve_io_interactive
 
         client_cls.return_value.deploy.return_value = _result(activated=False)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
@@ -184,7 +184,7 @@ class TestDeployCommand:
         assert resolver.keywords["save_path"] == Path(FIXTURE).with_suffix(".io.yaml")
         client_cls.return_value.create_shared_prototype.assert_not_called()
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_share_creates_prototype(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=True)
         client_cls.return_value.create_shared_prototype.return_value = _prototype()
@@ -196,9 +196,9 @@ class TestDeployCommand:
         assert options.expiration_days == 30
         assert options.login_required is True
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_skip_io_validation_forwards_flag_true(self, client_cls: Mock) -> None:
-        from deepset_cloud_sdk.cli import _resolve_io_interactive
+        from haystack_enterprise_sdk.cli import _resolve_io_interactive
 
         client_cls.return_value.deploy.return_value = _result(activated=True)
         client_cls.return_value.create_shared_prototype.return_value = _prototype()
@@ -209,7 +209,7 @@ class TestDeployCommand:
         assert resolver.func is _resolve_io_interactive
         assert resolver.keywords["skip_validation"] is True
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_share_flags_forward_to_options(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=True)
         client_cls.return_value.create_shared_prototype.return_value = _prototype()
@@ -230,7 +230,7 @@ class TestDeployCommand:
         assert options.expiration_days == 7
         assert options.login_required is False
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_share_with_skip_activation_errors(self, client_cls: Mock) -> None:
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--share", "--skip-activation"])
         assert result.exit_code == 1
@@ -238,7 +238,7 @@ class TestDeployCommand:
         client_cls.return_value.deploy.assert_not_called()
         client_cls.return_value.create_shared_prototype.assert_not_called()
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_share_skipped_when_not_deployed(self, client_cls: Mock) -> None:
         # Rollout timed out: the service never reached DEPLOYED, so the prototype must not be attempted.
         client_cls.return_value.deploy.return_value = _result(activated=True, timed_out=True)
@@ -247,7 +247,7 @@ class TestDeployCommand:
         assert "Skipped shared prototype" in result.stdout
         client_cls.return_value.create_shared_prototype.assert_not_called()
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_share_failure_warns_but_exits_0(self, client_cls: Mock) -> None:
         # The deploy itself succeeded; a failed share link is a warning, not a failure exit.
         client_cls.return_value.deploy.return_value = _result(activated=True)
@@ -256,7 +256,7 @@ class TestDeployCommand:
         assert result.exit_code == 0
         assert "could not create the shared prototype" in result.stdout
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_interrupt_detaches(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.side_effect = KeyboardInterrupt()
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
@@ -265,13 +265,13 @@ class TestDeployCommand:
 
 
 class TestDryRun:
-    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_prints_yaml_and_skips_api(self, extract_mock: Mock) -> None:
         extract_mock.return_value = _bundle(
             pipeline={"components": {"c": {"type": "haystack.X", "init_parameters": {}}}},
             dependencies=["haystack-ai==2.30.2"],
         )
-        with patch("deepset_cloud_sdk.cli.DeploymentClient") as client_cls:
+        with patch("haystack_enterprise_sdk.cli.DeploymentClient") as client_cls:
             result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"])
         assert result.exit_code == 0
         assert "haystack.X" in result.stdout
@@ -279,7 +279,7 @@ class TestDryRun:
         assert "- haystack-ai==2.30.2" in result.stdout
         client_cls.assert_not_called()  # dry-run never touches the API
 
-    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_writes_output_file(self, extract_mock: Mock, tmp_path: Path) -> None:
         extract_mock.return_value = _bundle()
         out = tmp_path / "out.yaml"
@@ -288,15 +288,15 @@ class TestDryRun:
         assert out.is_file()
         assert "components" in out.read_text()
 
-    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_transform_error_exits_1(self, extract_mock: Mock) -> None:
         extract_mock.side_effect = PipelineTransformError("missing dependency 'tiktoken'")
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run"])
         assert result.exit_code == 1
         assert "tiktoken" in result.stdout
 
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=False)
-    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=False)
+    @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_non_interactive_skips_prompt(self, extract_mock: Mock, _isatty: Mock) -> None:
         extract_mock.return_value = _bundle(
             available_inputs={"retriever": ["query"]},
@@ -306,8 +306,8 @@ class TestDryRun:
         assert result.exit_code == 0
         assert "inputs:" not in result.stdout
 
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
-    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_prompt_sets_io(self, extract_mock: Mock, _isatty: Mock) -> None:
         extract_mock.return_value = _bundle(
             available_inputs={"retriever": ["query"]},
@@ -319,8 +319,8 @@ class TestDryRun:
         assert "- retriever.query" in result.stdout  # rendered YAML, not just the menu text
         assert "answers: reader.answers" in result.stdout
 
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
-    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_fully_inferred_io_skips_prompt(self, extract_mock: Mock, _isatty: Mock) -> None:
         # Inference covered the (mandatory) question socket, so no interactive prompt is needed.
         extract_mock.return_value = _bundle(
@@ -335,8 +335,8 @@ class TestDryRun:
         assert "prompt_builder.question" in result.stdout
         assert "Which socket" not in result.stdout
 
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
-    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_unmapped_mandatory_socket_prompts_mapping(self, extract_mock: Mock, _isatty: Mock) -> None:
         # Inference produced a `query` input but left a differently-named mandatory socket dangling;
         # the CLI must prompt to map it rather than shipping a prototype that crashes at query time.
@@ -354,8 +354,8 @@ class TestDryRun:
         assert "- prompt_builder.passage" in result.stdout  # rendered into the inputs YAML
         assert "Mapped mandatory input 'prompt_builder.passage' to 'query'." in result.stdout
 
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=False)
-    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=False)
+    @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_unmapped_mandatory_socket_warns_non_interactive(self, extract_mock: Mock, _isatty: Mock) -> None:
         extract_mock.return_value = _bundle(
             inferred_inputs={"query": ["answer_builder.query"]},
@@ -369,8 +369,8 @@ class TestDryRun:
         assert "prompt_builder.passage" in result.stdout
         assert "fail at query time" in result.stdout
 
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
-    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_skip_io_validation_bypasses_prompt(self, extract_mock: Mock, _isatty: Mock) -> None:
         # On a TTY a dangling mandatory socket would normally force a prompt; --skip-io-validation
         # deploys with whatever was inferred and asks nothing (no stdin provided).
@@ -388,7 +388,7 @@ class TestDryRun:
         assert "answer_builder.query" in result.stdout
 
     def test_resolve_io_skip_validation_returns_inferred(self) -> None:
-        from deepset_cloud_sdk.cli import _resolve_io_interactive
+        from haystack_enterprise_sdk.cli import _resolve_io_interactive
 
         extraction = _bundle(
             inferred_inputs={"query": ["answer_builder.query"]},
@@ -407,14 +407,14 @@ class TestDryRun:
 
 
 class TestValidateCommand:
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_validate_valid_exits_0(self, client_cls: Mock) -> None:
         client_cls.return_value.validate.return_value = PipelineValidationResult(issues=[])
         result = runner.invoke(cli_app, ["validate", FIXTURE])
         assert result.exit_code == 0
         assert "valid" in result.stdout.lower()
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_validate_error_exits_1(self, client_cls: Mock) -> None:
         issues = [PipelineValidationIssue(category="ERROR", code=None, json_pointer="/c", message="broken")]
         client_cls.return_value.validate.return_value = PipelineValidationResult(issues=issues)
@@ -422,7 +422,7 @@ class TestValidateCommand:
         assert result.exit_code == 1
         assert "broken" in result.stdout
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_validate_warning_only_exits_0(self, client_cls: Mock) -> None:
         issues = [PipelineValidationIssue(category="WARNING", code=None, json_pointer=None, message="deprecated")]
         client_cls.return_value.validate.return_value = PipelineValidationResult(issues=issues)
@@ -430,7 +430,7 @@ class TestValidateCommand:
         assert result.exit_code == 0
         assert "deprecated" in result.stdout
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_validate_transform_error_exits_1(self, client_cls: Mock) -> None:
         client_cls.return_value.validate.side_effect = PipelineTransformError("cannot transform")
         result = runner.invoke(cli_app, ["validate", FIXTURE])
@@ -439,14 +439,14 @@ class TestValidateCommand:
 
 
 class TestServiceStatusCommand:
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_service_status(self, client_cls: Mock) -> None:
         client_cls.return_value.get_service_status.return_value = _deployment(DeploymentStatus.DEPLOYED)
         result = runner.invoke(cli_app, ["service-status", "svc"])
         assert result.exit_code == 0
         assert "DEPLOYED" in result.stdout
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_service_status_not_found(self, client_cls: Mock) -> None:
         client_cls.return_value.get_service_status.side_effect = ServiceNotFoundError("missing")
         result = runner.invoke(cli_app, ["service-status", "svc"])
@@ -455,7 +455,7 @@ class TestServiceStatusCommand:
 
 
 class TestRunCommand:
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_run_prints_output_json(self, client_cls: Mock) -> None:
         client_cls.return_value.run.return_value = {"llm": {"replies": ["hi"]}}
         result = runner.invoke(cli_app, ["run", FIXTURE, "--query", "who?"])
@@ -465,7 +465,7 @@ class TestRunCommand:
         assert kwargs["query"] == "who?"
         assert kwargs["extra_inputs"] is None
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_run_parses_inline_inputs_json(self, client_cls: Mock) -> None:
         client_cls.return_value.run.return_value = {}
         result = runner.invoke(cli_app, ["run", FIXTURE, "--inputs", '{"retriever": {"top_k": 3}}'])
@@ -473,7 +473,7 @@ class TestRunCommand:
         _, kwargs = client_cls.return_value.run.call_args
         assert kwargs["extra_inputs"] == {"retriever": {"top_k": 3}}
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_run_reads_inputs_from_file(self, client_cls: Mock, tmp_path: Path) -> None:
         client_cls.return_value.run.return_value = {}
         inputs_file = tmp_path / "inputs.json"
@@ -483,15 +483,15 @@ class TestRunCommand:
         _, kwargs = client_cls.return_value.run.call_args
         assert kwargs["extra_inputs"] == {"llm": {"prompt": "hi"}}
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_run_invalid_inputs_json_exits(self, client_cls: Mock) -> None:
         result = runner.invoke(cli_app, ["run", FIXTURE, "--inputs", "{not json"])
         assert result.exit_code == 1
         assert "not valid JSON" in result.stdout
         client_cls.return_value.run.assert_not_called()
 
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_run_prompts_for_query_on_tty(self, client_cls: Mock, _tty: Mock) -> None:
         client_cls.return_value.run.return_value = {}
         result = runner.invoke(cli_app, ["run", FIXTURE], input="my question\n")
@@ -499,7 +499,7 @@ class TestRunCommand:
         _, kwargs = client_cls.return_value.run.call_args
         assert kwargs["query"] == "my question"
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_run_writes_output_file(self, client_cls: Mock, tmp_path: Path) -> None:
         client_cls.return_value.run.return_value = {"a": 1}
         out = tmp_path / "out.json"
@@ -507,7 +507,7 @@ class TestRunCommand:
         assert result.exit_code == 0
         assert '"a": 1' in out.read_text(encoding="utf-8")
 
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_run_surfaces_run_error(self, client_cls: Mock) -> None:
         client_cls.return_value.run.side_effect = PipelineRunError("missing secret")
         result = runner.invoke(cli_app, ["run", FIXTURE, "--query", "q"])
@@ -550,8 +550,8 @@ class TestDeployReviewFlow:
         result = runner.invoke(cli_app, args, input=input_)
         return result, captured.get("io")
 
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_review_shows_summary_and_enter_accepts(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
         target = tmp_path / "pipeline.py"
         target.write_text("# stub\n", encoding="utf-8")
@@ -564,8 +564,8 @@ class TestDeployReviewFlow:
         assert io == ({"query": ["retriever.query"]}, {"answers": "reader.answers"})
         assert not (tmp_path / "pipeline.io.yaml").exists()
 
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_review_edit_remaps_with_typed_menu(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
         target = tmp_path / "pipeline.py"
         target.write_text("# stub\n", encoding="utf-8")
@@ -582,8 +582,8 @@ class TestDeployReviewFlow:
         assert "retriever.query" in inputs["query"]  # re-added by the mandatory gate
         assert outputs == {"answers": "reader.answers"}
 
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_review_save_writes_io_config(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
         target = tmp_path / "pipeline.py"
         target.write_text("# stub\n", encoding="utf-8")
@@ -596,8 +596,8 @@ class TestDeployReviewFlow:
         assert "answers: reader.answers" in content
         assert "# The user's question/text sent by the Playground and chat UI (str)" in content
 
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_saved_io_config_auto_detected_and_skips_review(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
         target = tmp_path / "pipeline.py"
         target.write_text("# stub\n", encoding="utf-8")
@@ -610,8 +610,8 @@ class TestDeployReviewFlow:
         assert "I/O mapping (how the platform talks to your pipeline)" not in result.stdout  # no review
         assert io == ({"query": ["retriever.query"]}, {"answers": "reader.answers"})
 
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=True)
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_explicit_io_config_beats_auto_detected(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
         target = tmp_path / "pipeline.py"
         target.write_text("# stub\n", encoding="utf-8")
@@ -625,8 +625,8 @@ class TestDeployReviewFlow:
         assert "Using I/O mapping from" not in result.stdout
         assert io[0] == {"query": ["right.socket"]}
 
-    @patch("deepset_cloud_sdk.cli._stdin_is_tty", return_value=False)
-    @patch("deepset_cloud_sdk.cli.DeploymentClient")
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=False)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_non_tty_deploy_never_prompts(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
         target = tmp_path / "pipeline.py"
         target.write_text("# stub\n", encoding="utf-8")
@@ -638,7 +638,7 @@ class TestDeployReviewFlow:
 
 class TestLoadIoConfig:
     def test_loads_yaml_inputs_and_outputs(self, tmp_path: Path) -> None:
-        from deepset_cloud_sdk.cli import _load_io_config
+        from haystack_enterprise_sdk.cli import _load_io_config
 
         cfg = tmp_path / "io.yaml"
         cfg.write_text(
@@ -656,7 +656,7 @@ class TestLoadIoConfig:
         assert output_type is None
 
     def test_loads_json(self, tmp_path: Path) -> None:
-        from deepset_cloud_sdk.cli import _load_io_config
+        from haystack_enterprise_sdk.cli import _load_io_config
 
         cfg = tmp_path / "io.json"
         cfg.write_text('{"inputs": {"query": ["r.query"]}, "outputs": {"answers": "r.answers"}}', encoding="utf-8")
@@ -665,7 +665,7 @@ class TestLoadIoConfig:
         assert outputs == {"answers": "r.answers"}
 
     def test_absent_sections_return_none(self, tmp_path: Path) -> None:
-        from deepset_cloud_sdk.cli import _load_io_config
+        from haystack_enterprise_sdk.cli import _load_io_config
 
         cfg = tmp_path / "io.yaml"
         cfg.write_text("outputs:\n  answers: r.answers\n", encoding="utf-8")
@@ -676,7 +676,7 @@ class TestLoadIoConfig:
     def test_invalid_shape_exits(self, tmp_path: Path) -> None:
         import typer
 
-        from deepset_cloud_sdk.cli import _load_io_config
+        from haystack_enterprise_sdk.cli import _load_io_config
 
         cfg = tmp_path / "io.yaml"
         cfg.write_text("- just\n- a\n- list\n", encoding="utf-8")
@@ -686,7 +686,7 @@ class TestLoadIoConfig:
     def test_pipeline_output_type_validated(self, tmp_path: Path) -> None:
         import typer
 
-        from deepset_cloud_sdk.cli import _load_io_config
+        from haystack_enterprise_sdk.cli import _load_io_config
 
         cfg = tmp_path / "io.yaml"
         cfg.write_text("outputs:\n  answers: r.answers\npipeline_output_type: generative\n", encoding="utf-8")
@@ -699,14 +699,14 @@ class TestLoadIoConfig:
 
     def test_messages_only_outputs_load(self, tmp_path: Path) -> None:
         # A chat pipeline mapping only `messages` must load (no answers/documents requirement).
-        from deepset_cloud_sdk.cli import _load_io_config
+        from haystack_enterprise_sdk.cli import _load_io_config
 
         cfg = tmp_path / "io.yaml"
         cfg.write_text("outputs:\n  messages: llm.replies\n", encoding="utf-8")
         _, outputs, _ = _load_io_config(cfg)
         assert outputs == {"messages": "llm.replies"}
 
-    @patch("deepset_cloud_sdk._service.pipeline_transform.extract_via_subprocess")
+    @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_io_config_overrides_inference(self, extract_mock: Mock, tmp_path: Path) -> None:
         extract_mock.return_value = _bundle(
             inferred_inputs={"query": ["retriever.query"]},

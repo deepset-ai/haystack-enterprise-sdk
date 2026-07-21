@@ -1,7 +1,7 @@
 """Tests for the declarative platform I/O key spec and the io-config renderer."""
 
-from deepset_cloud_sdk._service.io_spec import PLATFORM_SERVING_SPEC, render_io_config
-from deepset_cloud_sdk._service.pipeline_extract import (
+from haystack_enterprise_sdk._service.io_spec import PLATFORM_SERVING_SPEC, render_io_config
+from haystack_enterprise_sdk._service.pipeline_extract import (
     STANDARD_INPUT_KEYS,
     STANDARD_OUTPUT_KEYS,
 )
@@ -35,7 +35,7 @@ class TestRenderIoConfig:
         assert "# pipeline_output_type: generative" in content
 
     def test_rendered_config_roundtrips_through_loader(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
-        from deepset_cloud_sdk.cli import _load_io_config
+        from haystack_enterprise_sdk.cli import _load_io_config
 
         path = tmp_path / "pipeline.io.yaml"
         path.write_text(
@@ -49,7 +49,7 @@ class TestRenderIoConfig:
 
     def test_rendered_config_with_nothing_mapped_loads_as_absent(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         # All keys commented out: the sections parse as empty and must count as absent, not error.
-        from deepset_cloud_sdk.cli import _load_io_config
+        from haystack_enterprise_sdk.cli import _load_io_config
 
         path = tmp_path / "pipeline.io.yaml"
         path.write_text(render_io_config(PLATFORM_SERVING_SPEC, {}, {}), encoding="utf-8")

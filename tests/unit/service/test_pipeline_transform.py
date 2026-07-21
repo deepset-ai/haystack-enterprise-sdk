@@ -12,12 +12,12 @@ import pytest
 from haystack import Pipeline
 from ruamel.yaml import YAML
 
-from deepset_cloud_sdk._service.pipeline_extract import (
+from haystack_enterprise_sdk._service.pipeline_extract import (
     _classify_origin,
     extract_from_pipeline,
     validate_code_block,
 )
-from deepset_cloud_sdk._service.pipeline_transform import (
+from haystack_enterprise_sdk._service.pipeline_transform import (
     CODE_COMPONENT_TYPE,
     ExtractionBundle,
     PipelineTransformError,
@@ -532,7 +532,7 @@ class TestBuildConfigYaml:
         )
 
     def test_resolver_invoked_when_io_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deepset_cloud_sdk._service import pipeline_transform
+        from haystack_enterprise_sdk._service import pipeline_transform
 
         monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: self._bundle({}, {}))
         resolver = Mock(return_value=({"query": ["retriever.query"]}, {"answers": "reader.answers"}))
@@ -546,7 +546,7 @@ class TestBuildConfigYaml:
     def test_resolver_called_with_inferred_io_and_empty_return_keeps_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The resolver is always consulted (it decides whether to interact); returning empty dicts
         # keeps the inferred mappings untouched.
-        from deepset_cloud_sdk._service import pipeline_transform
+        from haystack_enterprise_sdk._service import pipeline_transform
 
         bundle = self._bundle({"query": ["retriever.query"]}, {"answers": "reader.answers"})
         monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: bundle)
@@ -562,7 +562,7 @@ class TestBuildConfigYaml:
         assert "reader.answers" in yaml
 
     def test_resolver_invoked_when_only_outputs_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deepset_cloud_sdk._service import pipeline_transform
+        from haystack_enterprise_sdk._service import pipeline_transform
 
         bundle = self._bundle({"query": ["retriever.query"]}, {})
         monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: bundle)
@@ -576,7 +576,7 @@ class TestBuildConfigYaml:
     def test_resolver_invoked_when_mandatory_input_unmapped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Inference produced inputs and outputs, but a mandatory socket is not routed to any platform
         # input — the resolver must still be consulted (same rule as --dry-run).
-        from deepset_cloud_sdk._service import pipeline_transform
+        from haystack_enterprise_sdk._service import pipeline_transform
 
         bundle = self._bundle(
             {"query": ["retriever.query"]},

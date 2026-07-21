@@ -5,19 +5,19 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from haystack import AsyncPipeline, Pipeline
 
-from deepset_cloud_sdk._api.deepset_cloud_api import DeepsetCloudAPI
-from deepset_cloud_sdk._service.pipeline_service import PipelineService
-from deepset_cloud_sdk.models import (
+from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
+from haystack_enterprise_sdk._service.pipeline_service import PipelineService
+from haystack_enterprise_sdk.models import (
     IndexConfig,
     IndexInputs,
     PipelineConfig,
     PipelineInputs,
     PipelineOutputs,
 )
-from deepset_cloud_sdk.workflows.async_client.async_pipeline_client import (
+from haystack_enterprise_sdk.workflows.async_client.async_pipeline_client import (
     AsyncPipelineClient,
 )
-from deepset_cloud_sdk.workflows.sync_client.pipeline_client import PipelineClient
+from haystack_enterprise_sdk.workflows.sync_client.pipeline_client import PipelineClient
 
 
 class TestPipelineClientInit:
@@ -25,12 +25,15 @@ class TestPipelineClientInit:
 
     def test_init_with_env_vars_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test successful client initialization with environment variables."""
-        monkeypatch.setattr("deepset_cloud_sdk.workflows.async_client.async_pipeline_client.API_KEY", "env-api-key")
         monkeypatch.setattr(
-            "deepset_cloud_sdk.workflows.async_client.async_pipeline_client.API_URL", "https://env-api-url.com"
+            "haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.API_KEY", "env-api-key"
         )
         monkeypatch.setattr(
-            "deepset_cloud_sdk.workflows.async_client.async_pipeline_client.DEFAULT_WORKSPACE_NAME", "test-workspace"
+            "haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.API_URL", "https://env-api-url.com"
+        )
+        monkeypatch.setattr(
+            "haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.DEFAULT_WORKSPACE_NAME",
+            "test-workspace",
         )
         pc = PipelineClient()
 
@@ -59,7 +62,7 @@ class TestPipelineClientImport:
     @pytest.fixture
     def mock_api_service_setup(self, monkeypatch: pytest.MonkeyPatch) -> dict:
         """Fixture to set up mocked API and service components."""
-        mock_api = Mock(spec=DeepsetCloudAPI)
+        mock_api = Mock(spec=HaystackEnterpriseAPI)
         mock_service = Mock(spec=PipelineService)
         mock_service.import_async = AsyncMock()
 
@@ -72,10 +75,12 @@ class TestPipelineClientImport:
         mock_pipeline_service = Mock(return_value=mock_service)
 
         monkeypatch.setattr(
-            "deepset_cloud_sdk.workflows.async_client.async_pipeline_client.DeepsetCloudAPI.factory", mock_api_factory
+            "haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.HaystackEnterpriseAPI.factory",
+            mock_api_factory,
         )
         monkeypatch.setattr(
-            "deepset_cloud_sdk.workflows.async_client.async_pipeline_client.PipelineService", mock_pipeline_service
+            "haystack_enterprise_sdk.workflows.async_client.async_pipeline_client.PipelineService",
+            mock_pipeline_service,
         )
 
         return {
@@ -108,7 +113,7 @@ class TestPipelineClientImport:
         )
 
     @pytest.mark.parametrize("pipeline_type", [Pipeline, AsyncPipeline])
-    def test_import_into_deepset_and_index_config_success(
+    def test_import_into_platform_and_index_config_success(
         self,
         pipeline_type: Pipeline | AsyncPipeline,
         mock_api_service_setup: dict,
@@ -118,7 +123,7 @@ class TestPipelineClientImport:
         """Test successful sync import of pipeline with IndexConfig."""
         mock_pipeline = Mock(spec=pipeline_type)
 
-        client_with_explicit_config.import_into_deepset(mock_pipeline, index_config)
+        client_with_explicit_config.import_into_platform(mock_pipeline, index_config)
 
         mock_api_service_setup["api_factory"].assert_called_once_with(
             client_with_explicit_config._async_client._api_config
@@ -129,7 +134,7 @@ class TestPipelineClientImport:
         mock_api_service_setup["service"].import_async.assert_called_once_with(mock_pipeline, index_config)
 
     @pytest.mark.parametrize("pipeline_type", [Pipeline, AsyncPipeline])
-    def test_import_into_deepset_and_pipeline_config_success(
+    def test_import_into_platform_and_pipeline_config_success(
         self,
         pipeline_type: Pipeline | AsyncPipeline,
         mock_api_service_setup: dict,
@@ -139,7 +144,7 @@ class TestPipelineClientImport:
         """Test successful sync import of pipeline with PipelineConfig."""
         mock_pipeline = Mock(spec=pipeline_type)
 
-        client_with_explicit_config.import_into_deepset(mock_pipeline, pipeline_config)
+        client_with_explicit_config.import_into_platform(mock_pipeline, pipeline_config)
 
         mock_api_service_setup["api_factory"].assert_called_once_with(
             client_with_explicit_config._async_client._api_config
@@ -149,7 +154,7 @@ class TestPipelineClientImport:
         )
         mock_api_service_setup["service"].import_async.assert_called_once_with(mock_pipeline, pipeline_config)
 
-    def test_import_into_deepset_with_no_event_loop(
+    def test_import_into_platform_with_no_event_loop(
         self,
         client_with_explicit_config: PipelineClient,
         index_config: IndexConfig,
@@ -158,11 +163,11 @@ class TestPipelineClientImport:
         """Test sync import when no event loop exists."""
         mock_pipeline = Mock(spec=Pipeline)
 
-        mock_import_into_deepset = AsyncMock()
+        mock_import_into_platform = AsyncMock()
         monkeypatch.setattr(
             client_with_explicit_config._async_client,
-            "import_into_deepset",
-            mock_import_into_deepset,
+            "import_into_platform",
+            mock_import_into_platform,
         )
 
         # Mock new_event_loop and set_event_loop
@@ -176,14 +181,14 @@ class TestPipelineClientImport:
         monkeypatch.setattr("asyncio.new_event_loop", Mock(return_value=mock_loop))
         monkeypatch.setattr("asyncio.set_event_loop", Mock())
 
-        client_with_explicit_config.import_into_deepset(mock_pipeline, index_config)
+        client_with_explicit_config.import_into_platform(mock_pipeline, index_config)
 
         mock_loop.run_until_complete.assert_called_once()
         mock_loop.close.assert_called_once()
 
-        mock_import_into_deepset.assert_called_once_with(mock_pipeline, index_config)
+        mock_import_into_platform.assert_called_once_with(mock_pipeline, index_config)
 
-    def test_import_into_deepset_with_existing_event_loop(
+    def test_import_into_platform_with_existing_event_loop(
         self,
         client_with_explicit_config: PipelineClient,
         index_config: IndexConfig,
@@ -192,11 +197,11 @@ class TestPipelineClientImport:
         """Test sync import when event loop already exists."""
         mock_pipeline = Mock(spec=Pipeline)
 
-        mock_import_into_deepset = AsyncMock()
+        mock_import_into_platform = AsyncMock()
         monkeypatch.setattr(
             client_with_explicit_config._async_client,
-            "import_into_deepset",
-            mock_import_into_deepset,
+            "import_into_platform",
+            mock_import_into_platform,
         )
 
         mock_loop = Mock()
@@ -206,10 +211,10 @@ class TestPipelineClientImport:
 
         monkeypatch.setattr("asyncio.get_event_loop", Mock(return_value=mock_loop))
 
-        client_with_explicit_config.import_into_deepset(mock_pipeline, index_config)
+        client_with_explicit_config.import_into_platform(mock_pipeline, index_config)
 
         # Verify that existing loop was used and NOT closed
         mock_loop.run_until_complete.assert_called_once()
         mock_loop.close.assert_not_called()
 
-        mock_import_into_deepset.assert_called_once_with(mock_pipeline, index_config)
+        mock_import_into_platform.assert_called_once_with(mock_pipeline, index_config)

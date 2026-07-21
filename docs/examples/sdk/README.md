@@ -1,19 +1,19 @@
 # Examples
 
-## Upload files to deepset AI Platform
+## Upload files to Haystack Enterprise Platform
 
 You can upload files in three different ways:
 1. Upload multiple files by providing explicit file paths.
 2. Upload all files from a folder.
 3. Upload raw text.
 
-For uploading files from your local machine to deepset AI Platform, you can use `upload`.
+For uploading files from your local machine to Haystack Enterprise Platform, you can use `upload`.
 
 ## Authentication
 
 You will need to either explicitly pass an api_key to the `upload` function or set the environment variable
-`DEEPSET_CLOUD_API_KEY` to your api key.
-By running `deepset-cloud login` you can also store your api key globally on your machine.
+`API_KEY` to your api key.
+By running `haystack-enterprise login` you can also store your api key globally on your machine.
 This will allow you to omit the api_key parameter in the following examples.
 
 ## Example 1: Upload all files from a folder
@@ -39,7 +39,7 @@ This can be useful if you want to process your text first and later upload the c
 upload_texts(
     # workspace_name="my_workspace",  # optional, by default the environment variable "DEFAULT_WORKSPACE_NAME" is used
     files=[
-        DeepsetCloudFile(
+        HaystackEnterpriseFile(
             name="example.txt",
             text="this is text",
             meta={"key": "value"},  # optional

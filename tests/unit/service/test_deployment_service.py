@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from deepset_cloud_sdk._api.deployments import (
+from haystack_enterprise_sdk._api.deployments import (
     Deployment,
     DeploymentRevision,
     DeploymentRevisionStatus,
@@ -16,7 +16,7 @@ from deepset_cloud_sdk._api.deployments import (
     PipelineValidationIssue,
     PipelineValidationResult,
 )
-from deepset_cloud_sdk._service.deployment_service import (
+from haystack_enterprise_sdk._service.deployment_service import (
     CreateOptions,
     DeploymentFailedError,
     DeploymentService,
@@ -55,7 +55,7 @@ def service(monkeypatch: pytest.MonkeyPatch) -> DeploymentService:
     svc._deployments.validate_pipeline.return_value = PipelineValidationResult(issues=[])
     # short-circuit the transform so tests don't need Haystack/import machinery
     monkeypatch.setattr(
-        "deepset_cloud_sdk._service.pipeline_transform.build_config_yaml", lambda *a, **k: "components: {}\n"
+        "haystack_enterprise_sdk._service.pipeline_transform.build_config_yaml", lambda *a, **k: "components: {}\n"
     )
     return svc
 
@@ -161,7 +161,7 @@ class TestRun:
         self, service: DeploymentService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            "deepset_cloud_sdk._service.pipeline_transform.build_config_yaml",
+            "haystack_enterprise_sdk._service.pipeline_transform.build_config_yaml",
             lambda *a, **k: "components: {}\ninputs:\n  query:\n  - retriever.query\n",
         )
         post = self._mock_run_response(service, {"llm": {"replies": ["hello"]}})
@@ -178,7 +178,7 @@ class TestRun:
         self, service: DeploymentService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            "deepset_cloud_sdk._service.pipeline_transform.build_config_yaml",
+            "haystack_enterprise_sdk._service.pipeline_transform.build_config_yaml",
             lambda *a, **k: "components: {}\ninputs:\n  query:\n  - retriever.query\n",
         )
         post = self._mock_run_response(service, {})
@@ -264,8 +264,8 @@ class TestCreateSharedPrototype:
     ) -> None:
         from datetime import datetime, timezone
 
-        from deepset_cloud_sdk._api.shared_prototypes import SharedPrototype
-        from deepset_cloud_sdk._service.deployment_service import ShareOptions
+        from haystack_enterprise_sdk._api.shared_prototypes import SharedPrototype
+        from haystack_enterprise_sdk._service.deployment_service import ShareOptions
 
         prototype = SharedPrototype(
             shared_prototype_id=uuid4(),
@@ -277,7 +277,7 @@ class TestCreateSharedPrototype:
         api_mock = AsyncMock()
         api_mock.create.return_value = prototype
         monkeypatch.setattr(
-            "deepset_cloud_sdk._service.deployment_service.SharedPrototypesAPI",
+            "haystack_enterprise_sdk._service.deployment_service.SharedPrototypesAPI",
             lambda _api: api_mock,
         )
 

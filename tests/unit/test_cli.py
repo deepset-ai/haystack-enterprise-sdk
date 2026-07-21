@@ -10,9 +10,9 @@ import pytest
 import structlog
 from typer.testing import CliRunner
 
-__version__ = version("deepset-cloud-sdk")
-from deepset_cloud_sdk._api.files import File
-from deepset_cloud_sdk._api.upload_sessions import (
+__version__ = version("haystack-enterprise-sdk")
+from haystack_enterprise_sdk._api.files import File
+from haystack_enterprise_sdk._api.upload_sessions import (
     UploadSessionDetail,
     UploadSessionIngestionStatus,
     UploadSessionStatus,
@@ -20,15 +20,15 @@ from deepset_cloud_sdk._api.upload_sessions import (
     UploadSessionWriteModeEnum,
     WriteMode,
 )
-from deepset_cloud_sdk.cli import _configure_cli_logging, cli_app
-from deepset_cloud_sdk.models import UserInfo
-from deepset_cloud_sdk.workflows.sync_client.files import download as sync_download
+from haystack_enterprise_sdk.cli import _configure_cli_logging, cli_app
+from haystack_enterprise_sdk.models import UserInfo
+from haystack_enterprise_sdk.workflows.sync_client.files import download as sync_download
 
 runner = CliRunner()
 
 
 class TestCLIMethods:
-    @patch("deepset_cloud_sdk.workflows.sync_client.files.async_upload")
+    @patch("haystack_enterprise_sdk.workflows.sync_client.files.async_upload")
     def test_uploading(self, async_upload_mock: AsyncMock) -> None:
         def log_upload_folder_mock(
             *args: Any,
@@ -41,7 +41,7 @@ class TestCLIMethods:
         assert result.exit_code == 0
         assert "Fake log line" in result.stdout
 
-    @patch("deepset_cloud_sdk.workflows.sync_client.files.async_upload")
+    @patch("haystack_enterprise_sdk.workflows.sync_client.files.async_upload")
     def test_raising_exception_during_cli_run(self, async_upload_mock: AsyncMock) -> None:
         async_upload_mock.side_effect = ValueError(
             "API_KEY environment variable must be set. Please visit https://cloud.deepset.ai/settings/connections to get an API key."
@@ -49,7 +49,7 @@ class TestCLIMethods:
         result = runner.invoke(cli_app, ["upload", "./test/data/upload_folder/example.txt"])
         assert result.exit_code == 1
 
-    @patch("deepset_cloud_sdk.workflows.sync_client.files.async_upload")
+    @patch("haystack_enterprise_sdk.workflows.sync_client.files.async_upload")
     def test_upload_only_desired_file_types_defaults_to_text(self, async_upload_mock: AsyncMock) -> None:
         result = runner.invoke(
             cli_app,
@@ -77,7 +77,7 @@ class TestCLIMethods:
         )
         assert result.exit_code == 0
 
-    @patch("deepset_cloud_sdk.workflows.sync_client.files.async_upload")
+    @patch("haystack_enterprise_sdk.workflows.sync_client.files.async_upload")
     def test_upload_only_desired_file_types_with_desired_file_types(self, async_upload_mock: AsyncMock) -> None:
         result = runner.invoke(
             cli_app,
@@ -112,7 +112,7 @@ class TestCLIMethods:
         )
         assert result.exit_code == 0
 
-    @patch("deepset_cloud_sdk.workflows.sync_client.files.async_upload")
+    @patch("haystack_enterprise_sdk.workflows.sync_client.files.async_upload")
     def test_upload_safe_mode(self, async_upload_mock: AsyncMock) -> None:
         result = runner.invoke(
             cli_app,
@@ -141,7 +141,7 @@ class TestCLIMethods:
         assert result.exit_code == 0
 
     class TestDownloadFiles:
-        @patch("deepset_cloud_sdk.cli.sync_download")
+        @patch("haystack_enterprise_sdk.cli.sync_download")
         def test_download_files(self, sync_download_mock: AsyncMock) -> None:
             sync_download_mock.side_effect = Mock(spec=sync_download)
             result = runner.invoke(cli_app, ["download", "--workspace-name", "default"])
@@ -159,7 +159,7 @@ class TestCLIMethods:
                 safe_mode=False,
             )
 
-        @patch("deepset_cloud_sdk.cli.sync_download")
+        @patch("haystack_enterprise_sdk.cli.sync_download")
         def test_download_files_safe_mode(self, sync_download_mock: AsyncMock) -> None:
             sync_download_mock.side_effect = Mock(spec=sync_download)
             result = runner.invoke(cli_app, ["download", "--workspace-name", "default", "--safe-mode"])
@@ -178,7 +178,7 @@ class TestCLIMethods:
             )
 
     class TestListFiles:
-        @patch("deepset_cloud_sdk.cli.sync_list_files")
+        @patch("haystack_enterprise_sdk.cli.sync_list_files")
         def test_listing_files(self, sync_list_files_mock: Mock) -> None:
             def mocked_list_files(
                 *args: Any,
@@ -203,14 +203,14 @@ class TestCLIMethods:
                 in result.stdout
             )
 
-        @patch("deepset_cloud_sdk.cli.sync_list_files")
+        @patch("haystack_enterprise_sdk.cli.sync_list_files")
         def test_listing_files_with_timeout(self, sync_list_files_mock: Mock) -> None:
             sync_list_files_mock.side_effect = TimeoutError()
             result = runner.invoke(cli_app, ["list-files"])
             assert result.exit_code == 0
             assert "Command timed out." in result.stdout
 
-        @patch("deepset_cloud_sdk.cli.sync_list_files")
+        @patch("haystack_enterprise_sdk.cli.sync_list_files")
         def test_listing_files_with_no_found_files(self, sync_list_files_mock: Mock) -> None:
             def mocked_list_files(
                 *args: Any,
@@ -226,7 +226,7 @@ class TestCLIMethods:
                 in result.stdout
             )
 
-        @patch("deepset_cloud_sdk.cli.sync_list_files")
+        @patch("haystack_enterprise_sdk.cli.sync_list_files")
         def test_listing_files_with_cut_off(self, sync_list_files_mock: AsyncMock) -> None:
             def mocked_list_files(
                 *args: Any,
@@ -262,7 +262,7 @@ class TestCLIMethods:
                 == result.stdout
             )
 
-        @patch("deepset_cloud_sdk.cli.sync_list_files")
+        @patch("haystack_enterprise_sdk.cli.sync_list_files")
         def test_listing_files_with_break_showing_more_results(self, sync_list_files_mock: AsyncMock) -> None:
             def mocked_list_files(
                 *args: Any,
@@ -299,7 +299,7 @@ class TestCLIMethods:
             )
 
     class TestListUploadSessions:
-        @patch("deepset_cloud_sdk.cli.sync_list_upload_sessions")
+        @patch("haystack_enterprise_sdk.cli.sync_list_upload_sessions")
         def test_listing_upload_sessions(self, sync_list_upload_sessions: Mock) -> None:
             def mocked_list_upload_sessions(
                 *args: Any,
@@ -328,7 +328,7 @@ class TestCLIMethods:
                 in result.stdout
             )
 
-        @patch("deepset_cloud_sdk.cli.sync_list_upload_sessions")
+        @patch("haystack_enterprise_sdk.cli.sync_list_upload_sessions")
         def test_listing_upload_sessions_with_break(self, sync_list_upload_sessions: Mock) -> None:
             def mocked_list_upload_sessions(
                 *args: Any,
@@ -368,7 +368,7 @@ class TestCLIMethods:
             assert result.exit_code == 0
             assert "Not In There" not in result.stdout
 
-        @patch("deepset_cloud_sdk.cli.sync_list_upload_sessions")
+        @patch("haystack_enterprise_sdk.cli.sync_list_upload_sessions")
         def test_listing_files_with_timeout(self, sync_list_upload_sessions: Mock) -> None:
             sync_list_upload_sessions.side_effect = TimeoutError()
             result = runner.invoke(cli_app, ["list-upload-sessions"])
@@ -376,7 +376,7 @@ class TestCLIMethods:
             assert "Command timed out." in result.stdout
 
     class TestGetUploadSession:
-        @patch("deepset_cloud_sdk.cli.sync_get_upload_session")
+        @patch("haystack_enterprise_sdk.cli.sync_get_upload_session")
         def test_get_upload_session(self, sync_get_upload_session: AsyncMock) -> None:
             def mocked_get_upload_session(
                 *args: Any,
@@ -405,10 +405,10 @@ class TestCLIUtils:
     def test_login_with_minimal(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test login command with minimal input."""
         # Create a temporary directory for the global .env file
-        global_env_dir = tmp_path / ".deepset-cloud"
+        global_env_dir = tmp_path / ".haystack-enterprise"
         global_env_dir.mkdir()
         global_env_path = global_env_dir / ".env"
-        monkeypatch.setattr("deepset_cloud_sdk.cli.ENV_FILE_PATH", global_env_path)
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", global_env_path)
 
         result = runner.invoke(cli_app, ["login"], input="eu\ntest_api_key\n\n")
         assert result.exit_code == 0
@@ -420,25 +420,25 @@ class TestCLIUtils:
 
     def test_login_with_us_environment(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Create a temporary directory for the global .env file
-        global_env_dir = tmp_path / ".deepset-cloud"
+        global_env_dir = tmp_path / ".haystack-enterprise"
         global_env_dir.mkdir()
         global_env_path = global_env_dir / ".env"
-        monkeypatch.setattr("deepset_cloud_sdk.cli.ENV_FILE_PATH", global_env_path)
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", global_env_path)
 
         result = runner.invoke(cli_app, ["login"], input="us\ntest_api_key\nmy_workspace\n")
         assert result.exit_code == 0
         assert f"Global configuration file created at {global_env_path}" in result.stdout
         assert (
-            "API_KEY=test_api_key\nAPI_URL=http://api.us.deepset.ai/api/v1\nDEFAULT_WORKSPACE_NAME=my_workspace"
+            "API_KEY=test_api_key\nAPI_URL=https://api.us.deepset.ai/api/v1\nDEFAULT_WORKSPACE_NAME=my_workspace"
             == global_env_path.read_text()
         )
 
     def test_login_with_custom_environment(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Create a temporary directory for the global .env file
-        global_env_dir = tmp_path / ".deepset-cloud"
+        global_env_dir = tmp_path / ".haystack-enterprise"
         global_env_dir.mkdir()
         global_env_path = global_env_dir / ".env"
-        monkeypatch.setattr("deepset_cloud_sdk.cli.ENV_FILE_PATH", global_env_path)
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", global_env_path)
 
         result = runner.invoke(
             cli_app,
@@ -453,7 +453,7 @@ class TestCLIUtils:
         )
 
     def test_logout_if_not_logged_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("deepset_cloud_sdk.cli.ENV_FILE_PATH", Path("/nonexistent/path/.env"))
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", Path("/nonexistent/path/.env"))
         result = runner.invoke(cli_app, ["logout"])
         assert result.exit_code == 0
         assert "No global configuration file found. Nothing to do!" in result.stdout
@@ -462,7 +462,7 @@ class TestCLIUtils:
         # Create a temporary .env file
         env_file = tmp_path / ".env"
         env_file.touch()
-        monkeypatch.setattr("deepset_cloud_sdk.cli.ENV_FILE_PATH", env_file)
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", env_file)
 
         result = runner.invoke(cli_app, ["logout"])
         assert result.exit_code == 0

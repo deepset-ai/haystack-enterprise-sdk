@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from deepset_cloud_sdk._api.config import load_environment
+from haystack_enterprise_sdk._api.config import load_environment
 
 
 class TestLoadEnvironment:
@@ -26,7 +26,7 @@ class TestLoadEnvironment:
         local_env = tmp_path / ".env"
         local_env.write_text("API_KEY=local_key\nAPI_URL=local_url\nDEFAULT_WORKSPACE_NAME=local_workspace")
 
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
         # Mock Path.is_file to return True for local .env and False for global
         monkeypatch.setattr(Path, "is_file", lambda self: self == local_env)
 
@@ -37,7 +37,7 @@ class TestLoadEnvironment:
             os.environ["DEFAULT_WORKSPACE_NAME"] = "local_workspace"
             return True
 
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.load_dotenv", mock_load_dotenv)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.load_dotenv", mock_load_dotenv)
 
         assert load_environment()
 
@@ -49,9 +49,9 @@ class TestLoadEnvironment:
         global_env = global_env_dir / ".env"
         global_env.write_text("API_KEY=global_key\nAPI_URL=global_url\nDEFAULT_WORKSPACE_NAME=global_workspace")
 
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
         # point mocked global path to global ENV_FILE_PATH definition
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.ENV_FILE_PATH", global_env)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.ENV_FILE_PATH", global_env)
 
         # Mock load_dotenv to actually load the variables into the environment
         def mock_load_dotenv(path: Path, override: bool = True) -> bool:
@@ -60,7 +60,7 @@ class TestLoadEnvironment:
             os.environ["DEFAULT_WORKSPACE_NAME"] = "global_workspace"
             return True
 
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.load_dotenv", mock_load_dotenv)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.load_dotenv", mock_load_dotenv)
 
         assert load_environment()
 
@@ -72,9 +72,9 @@ class TestLoadEnvironment:
         global_env = tmp_path / "global.env"
         global_env.write_text("API_KEY=global_key\nAPI_URL=global_url\nDEFAULT_WORKSPACE_NAME=global_workspace")
 
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
         monkeypatch.setattr(Path, "is_file", Mock(return_value=True))
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.ENV_FILE_PATH", global_env)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.ENV_FILE_PATH", global_env)
 
         assert load_environment()
         assert os.environ["API_KEY"] == "local_key"
@@ -93,8 +93,8 @@ class TestLoadEnvironment:
         global_env = global_env_dir / ".env"
         global_env.write_text("API_KEY=global_key\nAPI_URL=global_url\nDEFAULT_WORKSPACE_NAME=global_workspace")
 
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.ENV_FILE_PATH", global_env)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.ENV_FILE_PATH", global_env)
 
         # Mock is_file to return True for both files
         monkeypatch.setattr(Path, "is_file", lambda self: self in [local_env, global_env])
@@ -124,8 +124,8 @@ class TestLoadEnvironment:
         os.environ["API_URL"] = "pre_existing_url"
         os.environ["DEFAULT_WORKSPACE_NAME"] = "pre_existing_workspace"
 
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.ENV_FILE_PATH", global_env)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.ENV_FILE_PATH", global_env)
 
         # Mock is_file to return True for both files
         monkeypatch.setattr(Path, "is_file", Mock(return_value=True))
@@ -138,16 +138,16 @@ class TestLoadEnvironment:
 
     def test_no_env_files_with_warnings(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Test when no .env files exist and show_warnings=True."""
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
         monkeypatch.setattr(Path, "is_file", Mock(return_value=False))
         mocked_load_dotenv = Mock()
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.load_dotenv", mocked_load_dotenv)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.load_dotenv", mocked_load_dotenv)
 
         assert not load_environment()
 
         # Mock the logger to verify it's called
         mock_logger = Mock()
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.logger", mock_logger)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.logger", mock_logger)
 
         result = load_environment(show_warnings=True)
 
@@ -158,14 +158,14 @@ class TestLoadEnvironment:
 
     def test_no_env_files_in_silent_mode(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Test that no warnings are logged when show_warnings=False."""
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
         monkeypatch.setattr(Path, "is_file", Mock(return_value=False))
         mocked_load_dotenv = Mock()
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.load_dotenv", mocked_load_dotenv)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.load_dotenv", mocked_load_dotenv)
 
         # Mock the logger to verify it's not called
         mock_logger = Mock()
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.logger", mock_logger)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.logger", mock_logger)
 
         result = load_environment(show_warnings=False)
 
@@ -179,7 +179,7 @@ class TestLoadEnvironment:
         local_env = tmp_path / ".env"
         local_env.write_text("API_KEY=test_key")
 
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
         monkeypatch.setattr(Path, "is_file", lambda self: self == local_env)
 
         # Mock load_dotenv to actually load the variables into the environment
@@ -187,9 +187,9 @@ class TestLoadEnvironment:
             os.environ["API_KEY"] = "test_key"
             return True
 
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.load_dotenv", mock_load_dotenv)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.load_dotenv", mock_load_dotenv)
         mock_logger = Mock()
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.logger", mock_logger)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.logger", mock_logger)
 
         result = load_environment(show_warnings=False)
 
@@ -211,7 +211,7 @@ class TestLoadEnvironment:
         local_env = tmp_path / ".env"
         local_env.write_text(missing_var)
 
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
         monkeypatch.setattr(Path, "is_file", lambda self: self == local_env)
 
         # Mock load_dotenv to actually load the variables into the environment
@@ -221,10 +221,10 @@ class TestLoadEnvironment:
                 os.environ[key] = value
             return True
 
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.load_dotenv", mock_load_dotenv)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.load_dotenv", mock_load_dotenv)
 
         mock_logger = Mock()
-        monkeypatch.setattr("deepset_cloud_sdk._api.config.logger", mock_logger)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.logger", mock_logger)
 
         result = load_environment(show_warnings=True)
 

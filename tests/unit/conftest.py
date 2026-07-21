@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from deepset_cloud_sdk._api import config
+from haystack_enterprise_sdk._api import config
 
 
 @pytest.fixture(autouse=True)
