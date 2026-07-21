@@ -55,6 +55,20 @@ class TestBuildRunInputs:
         with pytest.raises(PipelineRunError):
             build_run_inputs({}, query="who?")
 
+    def test_query_wrapped_into_messages_for_chat_pipeline(self) -> None:
+        # An agent/chat pipeline's input is 'messages' (List[ChatMessage]); a bare --query is wrapped
+        # into a single user message and routed there.
+        config = {"inputs": {"messages": ["agent.messages"]}}
+        inputs = build_run_inputs(config, query="What is deepset?")
+        assert inputs == {
+            "agent": {"messages": [{"role": "user", "meta": {}, "name": None, "content": [{"text": "What is deepset?"}]}]}
+        }
+
+    def test_query_key_wins_over_messages_when_both_present(self) -> None:
+        config = {"inputs": {"query": ["retriever.query"], "messages": ["agent.messages"]}}
+        inputs = build_run_inputs(config, query="hi")
+        assert inputs == {"retriever": {"query": "hi"}}
+
 
 @pytest.mark.asyncio
 class TestRunPipeline:

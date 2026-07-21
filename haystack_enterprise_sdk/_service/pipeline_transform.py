@@ -87,6 +87,9 @@ class ExtractionBundle:
     available_outputs: dict = field(default_factory=dict)
     mandatory_inputs: dict = field(default_factory=dict)
     dependencies: list = field(default_factory=list)
+    # Platform ``pipeline_output_type`` the extractor inferred from the pipeline shape (e.g. ``chat``
+    # for a compiled agent); used as the default when the caller doesn't pass one explicitly.
+    suggested_pipeline_output_type: Optional[str] = None
 
     @classmethod
     def from_dict(cls, raw: dict) -> "ExtractionBundle":
@@ -100,6 +103,7 @@ class ExtractionBundle:
             available_outputs=_normalize_available(raw.get("available_outputs") or {}),
             mandatory_inputs=raw.get("mandatory_inputs") or {},
             dependencies=raw.get("dependencies") or [],
+            suggested_pipeline_output_type=raw.get("suggested_pipeline_output_type"),
         )
 
 
@@ -210,8 +214,11 @@ def render_config_yaml(
     if unmapped:
         logger.warning(unmapped_mandatory_warning(unmapped))
 
-    if pipeline_output_type:
-        pipeline_dict["pipeline_output_type"] = pipeline_output_type
+    # An explicit type always wins; otherwise fall back to what the extractor inferred from the
+    # pipeline shape (e.g. ``chat`` for a compiled agent).
+    output_type = pipeline_output_type or bundle.suggested_pipeline_output_type
+    if output_type:
+        pipeline_dict["pipeline_output_type"] = output_type
 
     if bundle.async_enabled:
         pipeline_dict["async_enabled"] = True

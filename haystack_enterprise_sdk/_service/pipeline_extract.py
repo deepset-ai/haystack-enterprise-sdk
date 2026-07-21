@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 # The platform component that runs arbitrary user code.
 CODE_COMPONENT_TYPE = "deepset_cloud_custom_nodes.code.code_component.Code"
 
+# The platform tool that runs an inlined ``@tool``-decorated function (the tool analogue of Code).
+CODE_TOOL_TYPE = "deepset_cloud_custom_nodes.tools.code_tool.CodeTool"
+
+# Serialized type of a plain Haystack function tool (``@tool``); the only tool kind we inline.
+_FUNCTION_TOOL_TYPE_SUFFIX = "tools.tool.Tool"
+
 # A DocumentWriter is the tell-tale sign of an indexing pipeline, which v1 does not support.
 _INDEX_MARKER_SUFFIXES = ("DocumentWriter",)
 
@@ -57,11 +63,15 @@ class PipelineTransformError(Exception):
 def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any:
     """Import ``path`` and return the Haystack pipeline it defines.
 
+    A bare Haystack ``Agent`` (instance or zero-arg factory) is also accepted and is compiled into a
+    single-component ``Pipeline`` (the agent added under the name ``agent``) so it can be deployed —
+    this mirrors how the official Haystack docs define an agent as a standalone object.
+
     :param path: Path to a ``.py`` file that defines a pipeline. Its parent directory is added to
         ``sys.path`` so sibling packages (for example ``custom_nodes``) resolve. Importing runs the
         user's module top-level code, so its dependencies must be installed in this environment.
-    :param entrypoint: Name of the module-level pipeline instance or zero-arg factory to use. Required
-        only when the file exposes more than one candidate.
+    :param entrypoint: Name of the module-level pipeline/agent instance or zero-arg factory to use.
+        Required only when the file exposes more than one candidate.
     :raises PipelineTransformError: If the file can't be imported, no pipeline is found, the choice is
         ambiguous, or the pipeline looks like an index.
     :return: A Haystack ``Pipeline`` or ``AsyncPipeline`` instance.
@@ -75,6 +85,9 @@ def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any
         pipeline_types = (Pipeline, AsyncPipeline)
     except ImportError:
         pipeline_types = (Pipeline,)
+
+    # A bare Agent is a deployable entrypoint too; accept it here and wrap it into a Pipeline below.
+    agent_types = _agent_types()
 
     path = path.resolve()
     if not path.is_file():
@@ -107,9 +120,42 @@ def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any
     except Exception as err:  # noqa: BLE001 - surface the user's import error verbatim
         raise PipelineTransformError(f"Failed to import {path}: {err.__class__.__name__}: {err}.") from err
 
-    pipeline = _resolve_pipeline(module, entrypoint, pipeline_types)
+    resolved = _resolve_pipeline(module, entrypoint, pipeline_types + agent_types)
+    pipeline = _wrap_agent_if_needed(resolved, Pipeline, agent_types)
     _reject_index_pipeline(pipeline)
     return pipeline
+
+
+# Name given to the agent component when a bare Agent is compiled into a Pipeline.
+AGENT_COMPONENT_NAME = "agent"
+
+
+def _agent_types() -> tuple:
+    """Return the Haystack ``Agent`` classes available for wrapping, or an empty tuple if unsupported.
+
+    Agent lives at ``haystack.components.agents.Agent``; it may be absent on older Haystack, so the
+    import is best-effort and the feature simply doesn't apply when it can't be imported.
+    """
+    try:
+        from haystack.components.agents import Agent
+    except ImportError:
+        return ()
+    return (Agent,)
+
+
+def _wrap_agent_if_needed(obj: Any, pipeline_cls: Any, agent_types: tuple) -> Any:
+    """Compile a bare Haystack ``Agent`` into a single-component ``Pipeline`` so it can be deployed.
+
+    A standalone ``Agent`` isn't a pipeline, but the platform deploys pipelines. Adding the agent as
+    the sole component exposes its own sockets (``messages`` in, ``messages``/``last_message`` out) as
+    the pipeline's I/O, which the deploy/run flow then maps like any other pipeline. Non-agent objects
+    are returned unchanged.
+    """
+    if agent_types and isinstance(obj, agent_types):
+        pipeline = pipeline_cls()
+        pipeline.add_component(AGENT_COMPONENT_NAME, obj)
+        return pipeline
+    return obj
 
 
 def _resolve_pipeline(module: Any, entrypoint: Optional[str], pipeline_types: tuple) -> Any:
@@ -137,8 +183,8 @@ def _resolve_pipeline(module: Any, entrypoint: Optional[str], pipeline_types: tu
             f"Multiple pipeline factories found ({', '.join(sorted(factories))}). Disambiguate with --entrypoint."
         )
     raise PipelineTransformError(
-        "No Pipeline or AsyncPipeline instance or zero-argument factory found in the file. "
-        "Expose the pipeline as a module-level variable or a zero-arg function that returns it."
+        "No Pipeline, AsyncPipeline, or Agent instance or zero-argument factory found in the file. "
+        "Expose the pipeline (or agent) as a module-level variable or a zero-arg function that returns it."
     )
 
 
@@ -171,7 +217,9 @@ def _coerce_to_pipeline(obj: Any, name: str, pipeline_types: tuple) -> Any:
         result = obj()
         if isinstance(result, pipeline_types):
             return result
-    raise PipelineTransformError(f"Entrypoint '{name}' is not a pipeline instance or a factory returning one.")
+    raise PipelineTransformError(
+        f"Entrypoint '{name}' is not a Pipeline or Agent instance (or a zero-arg factory returning one)."
+    )
 
 
 def _load_project_dotenv(start: Path) -> None:
@@ -630,6 +678,177 @@ def _build_code_block(component_type: str, project_root: Path) -> str:
     return "\n\n\n".join(parts) + "\n"
 
 
+def _build_tool_code_block(function_path: str, project_root: Path) -> str:
+    """Build a self-contained code string defining the ``@tool`` function ``function_path``.
+
+    The tool analogue of :func:`_build_code_block`: it transitively collects the tool function's local
+    helpers and emits everything at module level (preserved imports, helper defs/constants, then the
+    tool function last) — the shape the platform CodeTool executes. Unlike the Code component, a
+    CodeTool keeps the whole module, so helpers need not be folded into a single symbol.
+    """
+    module_name, _, func_name = function_path.rpartition(".")
+
+    caches: dict[str, _ModuleSymbols] = {}
+
+    def module_symbols(mod: str) -> _ModuleSymbols:
+        if mod not in caches:
+            caches[mod] = _ModuleSymbols(mod, project_root)
+        return caches[mod]
+
+    preserved_imports: list[str] = []
+    helpers: list[str] = []  # helper source segments, in discovery order
+    entry_source: Optional[str] = None
+    by_name: dict[str, str] = {}  # symbol name -> module that first claimed it
+    seen: set[tuple[str, str]] = set()
+    worklist: list[tuple[str, str]] = [(module_name, func_name)]
+
+    while worklist:
+        mod, sym = worklist.pop(0)
+        if (mod, sym) in seen:
+            continue
+        seen.add((mod, sym))
+        idx = module_symbols(mod)
+        for line in idx.preserved_import_lines:
+            if line and line not in preserved_imports:
+                preserved_imports.append(line)
+        if sym not in idx.defs:
+            continue
+        for ref in _referenced_names(idx.def_nodes[sym]):
+            if ref == sym:
+                continue
+            if ref in idx.local_import_bindings:
+                worklist.append(idx.local_import_bindings[ref])
+            elif ref in idx.defs:
+                worklist.append((mod, ref))
+        if mod == module_name and sym == func_name:
+            entry_source = idx.defs[sym]
+            continue
+        if sym in by_name and by_name[sym] != mod:
+            raise PipelineTransformError(
+                f"Tool '{func_name}': two different local helpers named '{sym}' were pulled in "
+                f"(from '{by_name[sym]}' and '{mod}'). Rename one so they don't collide."
+            )
+        by_name[sym] = mod
+        helpers.append(idx.defs[sym])
+
+    if entry_source is None:
+        raise PipelineTransformError(
+            f"Could not find the tool function '{func_name}' to inline for '{function_path}'."
+        )
+
+    parts: list[str] = []
+    if preserved_imports:
+        parts.append("\n".join(preserved_imports))
+    parts.extend(helpers)
+    parts.append(entry_source)
+    return "\n\n\n".join(parts) + "\n"
+
+
+def _rewrite_local_tools(components: dict, project_root: Path) -> None:
+    """Rewrite each component's local ``@tool`` functions into inlined platform CodeTools, in place.
+
+    A tool defined in the user's project serializes as a ``haystack.tools.tool.Tool`` whose ``function``
+    is a local import path (e.g. ``tools.send_notification``) that does not exist in the platform
+    runtime. We replace it with a ``CodeTool`` carrying the inlined source, mirroring how local
+    components become the ``Code`` component. Non-local tools (built-ins, MCP toolsets) are left as-is.
+    """
+    for comp in components.values():
+        init = comp.get("init_parameters")
+        if not isinstance(init, dict):
+            continue
+        tools = init.get("tools")
+        if not isinstance(tools, list):
+            continue
+        init["tools"] = [_maybe_rewrite_tool(tool, project_root) for tool in tools]
+
+
+def _sanitize_agent_init_params(components: dict) -> None:
+    """Make Agent init params portable across a version gap with the platform runtime, in place.
+
+    When the authoring Haystack is newer than the platform's, two things break validation:
+
+    1. Params the user never set are still serialized (e.g. a newly-added ``tool_concurrency_limit``),
+       and the older platform ``Agent`` rejects any kwarg it doesn't know. We drop every param left at
+       the authoring ``Agent``'s default — there's no user intent in it and the platform applies its own
+       default — which fixes the whole class of "unexpected keyword argument" errors, not one param at a
+       time. ``chat_generator`` has no default, so it (and any other explicitly-set param) is kept.
+    2. ``hooks`` (e.g. a human-in-the-loop console confirmation) can't run in a deployed, non-interactive
+       pipeline and the platform Agent doesn't accept it, so it's always dropped — with a warning, since
+       it may have been set deliberately.
+    """
+    defaults = _agent_init_defaults()
+    for comp_name, comp in components.items():
+        if not str(comp.get("type", "")).endswith("agents.agent.Agent"):
+            continue
+        init = comp.get("init_parameters")
+        if not isinstance(init, dict):
+            continue
+
+        if "hooks" in init:
+            init.pop("hooks", None)
+            logger.warning(
+                "Removed unsupported 'hooks' from agent '%s': the platform Agent does not accept hooks, "
+                "and interactive hooks (e.g. console confirmation) cannot run in a deployed pipeline.",
+                comp_name,
+            )
+
+        pruned = [key for key in list(init) if key in defaults and _equals_default(init[key], defaults[key])]
+        for key in pruned:
+            init.pop(key, None)
+        if pruned:
+            logger.debug("Dropped default-valued agent params from '%s': %s", comp_name, ", ".join(sorted(pruned)))
+
+
+def _agent_init_defaults() -> dict:
+    """Return ``{param: default}`` for the authoring ``Agent.__init__``; empty if it can't be introspected."""
+    try:
+        from haystack.components.agents import Agent
+
+        return {
+            name: param.default
+            for name, param in inspect.signature(Agent.__init__).parameters.items()
+            if param.default is not inspect.Parameter.empty
+        }
+    except Exception:  # noqa: BLE001 - without introspection we simply skip default-pruning
+        return {}
+
+
+def _equals_default(value: Any, default: Any) -> bool:
+    """Whether a serialized init value equals the Agent's Python default (tolerant of odd ``__eq__``)."""
+    try:
+        return bool(value == default)
+    except Exception:  # noqa: BLE001 - an unusual __eq__ means "not a plain default", so keep the param
+        return False
+
+
+def _maybe_rewrite_tool(tool: Any, project_root: Path) -> Any:
+    """Rewrite a single serialized tool to a CodeTool when it wraps a local function; else return as-is."""
+    if not isinstance(tool, dict):
+        return tool
+    if not str(tool.get("type", "")).endswith(_FUNCTION_TOOL_TYPE_SUFFIX):
+        return tool
+    data = tool.get("data") or {}
+    function_path = data.get("function")
+    if not function_path:
+        return tool
+    module_name = str(function_path).rpartition(".")[0]
+    if not module_name or classify_module(module_name, project_root) != "local":
+        return tool
+
+    tool_name = data.get("name") or str(function_path).rpartition(".")[2]
+    logger.debug("Rewriting local tool '%s' (%s) to CodeTool", tool_name, function_path)
+    code = _build_tool_code_block(function_path, project_root)
+    validate_tool_code_block(tool_name, code)
+    return {
+        "type": CODE_TOOL_TYPE,
+        "data": {
+            "name": data.get("name"),
+            "description": data.get("description"),
+            "code": code,
+        },
+    }
+
+
 def _fold_helpers_into_class(
     class_name: str,
     entry_node: ast.ClassDef,
@@ -785,6 +1004,43 @@ def _reject_module_level_definitions(comp_name: str, tree: ast.Module, component
             "outside the @component class. The platform Code component keeps only the single @component "
             "class, so helpers must be folded into it."
         )
+
+
+def validate_tool_code_block(tool_name: str, code: str) -> None:
+    """Validate a generated CodeTool block locally: valid Python defining exactly one ``@tool`` function.
+
+    The platform CodeTool executes the module and picks up the ``@tool``-decorated function, so
+    module-level helpers/imports are fine (unlike the Code component) — but there must be exactly one
+    tool function. Fails fast locally instead of as a validation error after a round-trip.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as err:
+        raise PipelineTransformError(
+            f"Tool '{tool_name}': the generated code block is not valid Python ({err})."
+        ) from err
+    tool_functions = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _has_tool_decorator(node)
+    ]
+    if not tool_functions:
+        raise PipelineTransformError(f"Tool '{tool_name}': no @tool-decorated function found in the generated code block.")
+    if len(tool_functions) > 1:
+        names = ", ".join(fn.name for fn in tool_functions)
+        raise PipelineTransformError(
+            f"Tool '{tool_name}': the generated code block defines multiple @tool functions ({names}). "
+            "A CodeTool must wrap exactly one."
+        )
+
+
+def _has_tool_decorator(node: Any) -> bool:
+    for dec in node.decorator_list:
+        target = dec.func if isinstance(dec, ast.Call) else dec
+        name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
+        if name == "tool":
+            return True
+    return False
 
 
 def _has_component_decorator(node: ast.ClassDef) -> bool:
@@ -1021,6 +1277,14 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
         comp["type"] = CODE_COMPONENT_TYPE
         comp["init_parameters"] = new_init
 
+    # Rewrite local ``@tool`` functions (e.g. an Agent's tools) into inlined platform CodeTools, the
+    # tool analogue of the Code-component rewrite above.
+    _rewrite_local_tools(components, project_root)
+
+    # Make Agent init params portable to the platform runtime: drop default-valued params (which the
+    # older platform Agent may not know) and unsupported ones like ``hooks``.
+    _sanitize_agent_init_params(components)
+
     return {
         "pipeline": pipeline_dict,
         "async_enabled": async_enabled,
@@ -1030,7 +1294,21 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
         "available_outputs": available_outputs(pipeline),
         "mandatory_inputs": mandatory_inputs(pipeline),
         "dependencies": _haystack_dependency(),
+        "suggested_pipeline_output_type": _suggested_output_type(components),
     }
+
+
+def _suggested_output_type(components: dict) -> Optional[str]:
+    """Infer the platform ``pipeline_output_type`` from the pipeline shape.
+
+    A compiled agent (a lone ``Agent`` component) is chat-shaped — messages in, messages out — so it
+    defaults to ``chat``, matching how the platform represents an agent. Anything else returns ``None``
+    and leaves the output type unset (the interactive io-config still lets the user pin one).
+    """
+    types = [str(comp.get("type", "")) for comp in components.values()]
+    if len(types) == 1 and types[0].endswith("agents.agent.Agent"):
+        return "chat"
+    return None
 
 
 def extract_from_file(path: Path, entrypoint: Optional[str] = None) -> dict:

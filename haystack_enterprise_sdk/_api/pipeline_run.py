@@ -93,7 +93,9 @@ def build_run_inputs(
     ``--inputs``) is deep-merged on top so explicit inputs win.
 
     :param pipeline_config: The parsed pipeline config (its ``inputs:`` section drives the mapping).
-    :param query: The query text to route to every socket mapped under the ``query`` input key.
+    :param query: The query text to route to every socket mapped under the ``query`` input key. For a
+        chat/agent pipeline whose input key is ``messages`` (and has no ``query`` key), the query is
+        wrapped into a single user ``ChatMessage`` and routed there instead.
     :param filters: Optional filters to route to the ``filters`` input key.
     :param files: Optional files to route to the ``files`` input key.
     :param extra_inputs: Explicit ``{component: {socket: value}}`` inputs, merged last (wins).
@@ -104,7 +106,13 @@ def build_run_inputs(
     yaml_inputs = pipeline_config.get("inputs") or {}
     values: Dict[str, Any] = {}
     if query is not None:
-        values["query"] = query
+        # A plain --query fills the 'query' input when present. For a chat/agent pipeline whose input
+        # is 'messages' (List[ChatMessage]) and has no 'query' key, wrap it into one user message so a
+        # bare --query still works.
+        if not yaml_inputs.get("query") and yaml_inputs.get("messages"):
+            values["messages"] = [_user_chat_message(query)]
+        else:
+            values["query"] = query
     if filters is not None:
         values["filters"] = filters
     if files is not None:
@@ -131,6 +139,16 @@ def build_run_inputs(
             "(the config has no 'inputs' section). Pass explicit inputs with --inputs."
         )
     return inputs
+
+
+def _user_chat_message(text: str) -> Dict[str, Any]:
+    """A user ``ChatMessage`` in Haystack's serialized form.
+
+    Built as a plain dict (not via ``haystack.dataclasses.ChatMessage``) so the SDK doesn't need
+    Haystack installed in its own environment to run a chat/agent pipeline; the platform deserializes
+    it back into a ``ChatMessage`` on the run endpoint.
+    """
+    return {"role": "user", "meta": {}, "name": None, "content": [{"text": text}]}
 
 
 def _format_run_error(status_code: int, body: str) -> str:

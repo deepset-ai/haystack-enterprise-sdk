@@ -14,8 +14,10 @@ from ruamel.yaml import YAML
 
 from haystack_enterprise_sdk._service.pipeline_extract import (
     _classify_origin,
+    _sanitize_agent_init_params,
     extract_from_pipeline,
     validate_code_block,
+    validate_tool_code_block,
 )
 from haystack_enterprise_sdk._service.pipeline_transform import (
     CODE_COMPONENT_TYPE,
@@ -221,6 +223,224 @@ class TestDetection:
         )
         with pytest.raises(PipelineTransformError, match="indexing pipeline"):
             load_pipeline_from_file(path)
+
+
+# --------------------------------------------------------------------------- #
+# Agent compile step: a bare Agent is wrapped into a single-component Pipeline
+# --------------------------------------------------------------------------- #
+_HAS_AGENT = True
+try:  # pragma: no cover - import guard
+    from haystack.components.agents import Agent  # noqa: F401
+except ImportError:  # pragma: no cover
+    _HAS_AGENT = False
+
+_AGENT_SRC = """
+from haystack.components.agents import Agent
+from haystack.components.generators.chat import OpenAIChatGenerator
+
+agent = Agent(chat_generator=OpenAIChatGenerator(model="gpt-4o-mini"))
+"""
+
+
+@pytest.mark.skipif(not _HAS_AGENT, reason="haystack Agent not available")
+class TestAgentCompile:
+    @pytest.fixture(autouse=True)
+    def _openai_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # OpenAIChatGenerator reads OPENAI_API_KEY at construction; a dummy value is enough to build it.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    def test_compiles_bare_agent_into_pipeline(self, tmp_path: Path) -> None:
+        path = _write_project(tmp_path, {"pipeline.py": _AGENT_SRC})
+        pipeline = load_pipeline_from_file(path, entrypoint="agent")
+        assert isinstance(pipeline, Pipeline)
+        assert "agent" in pipeline.to_dict()["components"]
+
+    def test_compiles_agent_factory(self, tmp_path: Path) -> None:
+        src = _AGENT_SRC + "\ndef make():\n    return agent\n"
+        path = _write_project(tmp_path, {"pipeline.py": src})
+        assert isinstance(load_pipeline_from_file(path, entrypoint="make"), Pipeline)
+
+    def test_agent_yaml_maps_messages_and_defaults_to_chat(self, tmp_path: Path) -> None:
+        path = _write_project(tmp_path, {"pipeline.py": _AGENT_SRC})
+        pipeline = load_pipeline_from_file(path, entrypoint="agent")
+        config_yaml = transform_to_config_yaml(pipeline, project_root=tmp_path)
+        doc = _load_yaml(config_yaml)
+        assert doc["inputs"] == {"messages": ["agent.messages"]}
+        assert doc["outputs"] == {"messages": "agent.messages"}
+        # A compiled agent is chat-shaped, so the output type defaults to chat (matching the platform).
+        assert doc["pipeline_output_type"] == "chat"
+
+    def test_non_agent_pipeline_has_no_suggested_output_type(self, tmp_path: Path) -> None:
+        path = _write_project(tmp_path, {"pipeline.py": "from haystack import Pipeline\npipeline = Pipeline()\n"})
+        pipeline = load_pipeline_from_file(path)
+        bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, tmp_path))
+        assert bundle.suggested_pipeline_output_type is None
+
+    def test_emitted_agent_params_are_not_left_at_defaults(self, tmp_path: Path) -> None:
+        import inspect
+
+        from haystack.components.agents import Agent
+
+        src = (
+            "from haystack.components.agents import Agent\n"
+            "from haystack.components.generators.chat import OpenAIChatGenerator\n"
+            'agent = Agent(chat_generator=OpenAIChatGenerator(model="gpt-4o-mini"), '
+            'system_prompt="You are a helpful assistant.")\n'
+        )
+        path = _write_project(tmp_path, {"pipeline.py": src})
+        pipeline = load_pipeline_from_file(path, entrypoint="agent")
+        init = extract_from_pipeline(pipeline, tmp_path)["pipeline"]["components"]["agent"]["init_parameters"]
+        defaults = {
+            name: p.default
+            for name, p in inspect.signature(Agent.__init__).parameters.items()
+            if p.default is not inspect.Parameter.empty
+        }
+        # Nothing the user left at its default should survive into the deployed config (portability
+        # across the platform's older Agent); explicitly-set params like system_prompt still do.
+        for key, value in init.items():
+            if key in defaults:
+                assert value != defaults[key], f"param '{key}' was left at its default"
+        assert init["system_prompt"] == "You are a helpful assistant."
+        assert "chat_generator" in init
+
+
+_TOOLS_SRC = """
+from typing import Annotated
+from haystack.tools import tool
+
+
+def _format(recipient, message):
+    return f"to {recipient}: {message}"
+
+
+@tool
+def send_notification(
+    recipient: Annotated[str, "email address"],
+    message: Annotated[str, "the body"],
+) -> str:
+    \"\"\"Send a notification.\"\"\"
+    return _format(recipient, message)
+"""
+
+_AGENT_WITH_TOOL_SRC = """
+from haystack.components.agents import Agent
+from haystack.components.generators.chat import OpenAIChatGenerator
+from tools import send_notification
+
+agent = Agent(
+    chat_generator=OpenAIChatGenerator(model="gpt-4o-mini"),
+    tools=[send_notification],
+)
+"""
+
+
+@pytest.mark.skipif(not _HAS_AGENT, reason="haystack Agent not available")
+class TestToolInlining:
+    @pytest.fixture(autouse=True)
+    def _openai_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    def _agent_tools(self, tmp_path: Path) -> list:
+        path = _write_project(tmp_path, {"pipeline.py": _AGENT_WITH_TOOL_SRC, "tools.py": _TOOLS_SRC})
+        pipeline = load_pipeline_from_file(path, entrypoint="agent")
+        bundle = extract_from_pipeline(pipeline, tmp_path)
+        return bundle["pipeline"]["components"]["agent"]["init_parameters"]["tools"]
+
+    def test_local_tool_rewritten_to_code_tool(self, tmp_path: Path) -> None:
+        tools = self._agent_tools(tmp_path)
+        assert len(tools) == 1
+        tool = tools[0]
+        assert tool["type"] == "deepset_cloud_custom_nodes.tools.code_tool.CodeTool"
+        assert tool["data"]["name"] == "send_notification"
+        assert tool["data"]["description"] == "Send a notification."
+        # A local import path must no longer leak into the config.
+        assert "function" not in tool["data"]
+
+    def test_code_tool_inlines_source_and_transitive_helper(self, tmp_path: Path) -> None:
+        code = self._agent_tools(tmp_path)[0]["data"]["code"]
+        assert "@tool" in code
+        assert "def send_notification" in code
+        # The transitive local helper is pulled in; the local import is dropped.
+        assert "def _format" in code
+        assert "from tools import" not in code
+
+    def test_non_local_tool_left_untouched(self, tmp_path: Path) -> None:
+        # A tool whose function resolves to an installed package (not the project) is not rewritten.
+        src = _TOOLS_SRC.replace("from tools import send_notification", "")
+        path = _write_project(
+            tmp_path,
+            {
+                "pipeline.py": _AGENT_WITH_TOOL_SRC.replace(
+                    "from tools import send_notification", "from haystack.tools import Tool"
+                ).replace(
+                    "tools=[send_notification],",
+                    "tools=[Tool(name='noop', description='d', "
+                    "function=len, parameters={'type': 'object', 'properties': {}})],",
+                )
+            },
+        )
+        pipeline = load_pipeline_from_file(path, entrypoint="agent")
+        tools = extract_from_pipeline(pipeline, tmp_path)["pipeline"]["components"]["agent"]["init_parameters"]["tools"]
+        # `len` lives in builtins, not the project, so the tool stays a plain Tool (not a CodeTool).
+        assert tools[0]["type"] != "deepset_cloud_custom_nodes.tools.code_tool.CodeTool"
+
+
+class TestValidateToolCodeBlock:
+    def test_rejects_no_tool_function(self) -> None:
+        with pytest.raises(PipelineTransformError, match="no @tool-decorated function"):
+            validate_tool_code_block("t", "def plain():\n    return 1\n")
+
+    def test_rejects_multiple_tool_functions(self) -> None:
+        code = "from haystack.tools import tool\n@tool\ndef a():\n    return 1\n@tool\ndef b():\n    return 2\n"
+        with pytest.raises(PipelineTransformError, match="multiple @tool functions"):
+            validate_tool_code_block("t", code)
+
+    def test_accepts_single_tool_function(self) -> None:
+        validate_tool_code_block("t", "from haystack.tools import tool\n@tool\ndef a():\n    return 1\n")
+
+
+class TestSanitizeAgentInitParams:
+    def test_removes_hooks_from_agent(self) -> None:
+        components = {
+            "agent": {
+                "type": "haystack.components.agents.agent.Agent",
+                "init_parameters": {"system_prompt": "hi", "hooks": {"before_tool": ["x"]}},
+            }
+        }
+        _sanitize_agent_init_params(components)
+        assert "hooks" not in components["agent"]["init_parameters"]
+        # An explicitly-set, non-default param is preserved.
+        assert components["agent"]["init_parameters"]["system_prompt"] == "hi"
+
+    def test_prunes_default_valued_params(self) -> None:
+        # Unknown-to-the-platform param sitting at the authoring Agent's default is dropped; a custom
+        # value for the same param would be kept.
+        import inspect
+
+        from haystack.components.agents import Agent
+
+        defaults = {
+            name: p.default
+            for name, p in inspect.signature(Agent.__init__).parameters.items()
+            if p.default is not inspect.Parameter.empty
+        }
+        assert defaults, "expected Agent to have defaulted params"
+        some_key, some_default = next(iter(defaults.items()))
+        components = {
+            "agent": {
+                "type": "haystack.components.agents.agent.Agent",
+                "init_parameters": {some_key: some_default, "system_prompt": "custom"},
+            }
+        }
+        _sanitize_agent_init_params(components)
+        init = components["agent"]["init_parameters"]
+        assert some_key not in init
+        assert init["system_prompt"] == "custom"
+
+    def test_leaves_non_agent_component_untouched(self) -> None:
+        components = {"c": {"type": "haystack.components.foo.Foo", "init_parameters": {"hooks": 1}}}
+        _sanitize_agent_init_params(components)
+        assert components["c"]["init_parameters"]["hooks"] == 1
 
 
 # --------------------------------------------------------------------------- #
