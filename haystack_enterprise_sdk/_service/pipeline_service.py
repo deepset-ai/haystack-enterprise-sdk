@@ -104,14 +104,21 @@ class PipelineService:
 
         # import locally to avoid Haystack dependency to be installed in the SDK
         try:
-            from haystack import AsyncPipeline as HaystackAsyncPipeline
             from haystack import Pipeline as HaystackPipeline
         except ImportError as err:
             raise ImportError(
                 "Can't import Pipeline or AsyncPipeline because haystack-ai is not installed. Run 'pip install haystack-ai'."
             ) from err
 
-        if not isinstance(pipeline, (HaystackPipeline, HaystackAsyncPipeline)):
+        # AsyncPipeline was removed in Haystack 3.0 (folded into Pipeline); tolerate its absence.
+        try:
+            from haystack import AsyncPipeline as HaystackAsyncPipeline
+
+            pipeline_types: tuple = (HaystackPipeline, HaystackAsyncPipeline)
+        except ImportError:
+            pipeline_types = (HaystackPipeline,)
+
+        if not isinstance(pipeline, pipeline_types):
             raise TypeError(
                 "Haystack Pipeline or AsyncPipeline object expected. "
                 "Make sure you have installed haystack-ai and use Pipeline or AsyncPipeline "

@@ -66,7 +66,15 @@ def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any
         ambiguous, or the pipeline looks like an index.
     :return: A Haystack ``Pipeline`` or ``AsyncPipeline`` instance.
     """
-    from haystack import AsyncPipeline, Pipeline
+    from haystack import Pipeline
+
+    # AsyncPipeline was removed in Haystack 3.0 (folded into Pipeline); tolerate its absence.
+    try:
+        from haystack import AsyncPipeline
+
+        pipeline_types = (Pipeline, AsyncPipeline)
+    except ImportError:
+        pipeline_types = (Pipeline,)
 
     path = path.resolve()
     if not path.is_file():
@@ -99,7 +107,7 @@ def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any
     except Exception as err:  # noqa: BLE001 - surface the user's import error verbatim
         raise PipelineTransformError(f"Failed to import {path}: {err.__class__.__name__}: {err}.") from err
 
-    pipeline = _resolve_pipeline(module, entrypoint, (Pipeline, AsyncPipeline))
+    pipeline = _resolve_pipeline(module, entrypoint, pipeline_types)
     _reject_index_pipeline(pipeline)
     return pipeline
 
@@ -985,7 +993,14 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
         ``haystack-ai`` version).
     """
     import yaml  # type: ignore[import-untyped]
-    from haystack import AsyncPipeline
+
+    # AsyncPipeline was removed in Haystack 3.0 (folded into Pipeline); tolerate its absence.
+    try:
+        from haystack import AsyncPipeline
+
+        async_enabled = isinstance(pipeline, AsyncPipeline)
+    except ImportError:
+        async_enabled = False
 
     project_root = Path(project_root).resolve()
     pipeline_dict = yaml.safe_load(pipeline.dumps())
@@ -1008,7 +1023,7 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
 
     return {
         "pipeline": pipeline_dict,
-        "async_enabled": isinstance(pipeline, AsyncPipeline),
+        "async_enabled": async_enabled,
         "inferred_inputs": infer_inputs(pipeline),
         "inferred_outputs": infer_outputs(pipeline),
         "available_inputs": available_inputs(pipeline),
