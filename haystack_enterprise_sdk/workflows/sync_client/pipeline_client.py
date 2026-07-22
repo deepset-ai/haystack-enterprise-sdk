@@ -35,7 +35,7 @@ class PipelineClient:  # pylint: disable=too-few-public-methods
         client = PipelineClient(
             api_key="your-api-key",
             workspace_name="your-workspace",
-            api_url="https://api.cloud.deepset.ai/api/v1"
+            api_url="https://api.cloud.deepset.ai"
         )
 
         # Configure your pipeline
