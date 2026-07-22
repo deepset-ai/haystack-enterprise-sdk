@@ -1,6 +1,7 @@
 """Config for loading env variables and setting default values."""
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +11,30 @@ from dotenv import load_dotenv
 logger = structlog.get_logger(__name__)
 
 ENV_FILE_PATH = Path.home() / ".haystack-enterprise" / ".env"
+
+# The deepset platform base URL (without a version suffix).
+PLATFORM_URL = "https://api.cloud.deepset.ai"
+
+# The API version path appended to the base URL when building requests.
+API_VERSION_PATH = "api/v1"
+
+# Matches a trailing version segment like `/api/v1`, `/v1`, `/v2`, ... (case-insensitive),
+# optionally followed by a trailing slash.
+_VERSION_SUFFIX_RE = re.compile(r"/(?:api/)?v\d+/?$", re.IGNORECASE)
+
+
+def normalize_base_url(url: str) -> str:
+    """Normalize an API URL to a bare base URL without a version suffix.
+
+    Strips a trailing version segment (`/api/v1`, `/v1`, `/v2`, ...) and any trailing slash,
+    so both fresh base URLs and legacy full URLs (or pasted URLs including the version) resolve
+    to the same base. The SDK appends the version (:data:`API_VERSION_PATH`) when building requests.
+
+    :param url: The API URL to normalize.
+    :return: The base URL without a trailing version segment or slash.
+    """
+    url = _VERSION_SUFFIX_RE.sub("", url)
+    return url.rstrip("/")
 
 
 def load_environment(show_warnings: bool = True) -> bool:
@@ -65,7 +90,7 @@ def load_environment(show_warnings: bool = True) -> bool:
 load_environment(show_warnings=False)
 
 # connection to Haystack Enterprise Platform
-API_URL: str = os.getenv("API_URL", "https://api.cloud.deepset.ai/api/v1")
+API_URL: str = os.getenv("API_URL", PLATFORM_URL)
 
 API_KEY: str = os.getenv("API_KEY", "")
 
@@ -99,12 +124,12 @@ class CommonConfig:
             if not self.api_key:
                 self.api_key = os.getenv("API_KEY", "")
             if not self.api_url:
-                self.api_url = os.getenv("API_URL", "https://api.cloud.deepset.ai/api/v1")
+                self.api_url = os.getenv("API_URL", PLATFORM_URL)
 
         if not self.api_key:
             raise ValueError(
                 "API key is required. Either set the API_KEY environment variable or pass api_key parameter. Go to [API Keys](https://cloud.deepset.ai/settings/api-keys) in Haystack Enterprise Platform to get an API key."
             )
 
-        if self.api_url.endswith("/"):
-            self.api_url = self.api_url[:-1]
+        # Normalize to a bare base URL; the version suffix is appended when building requests.
+        self.api_url = normalize_base_url(self.api_url)

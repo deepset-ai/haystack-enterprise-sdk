@@ -9,14 +9,18 @@ from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple, Union
 from uuid import UUID
 
-import click
 import structlog
 import typer
 from tabulate import tabulate
 from yaspin import yaspin
 
 __version__ = version("haystack-enterprise-sdk")
-from haystack_enterprise_sdk._api.config import DEFAULT_WORKSPACE_NAME, ENV_FILE_PATH
+from haystack_enterprise_sdk._api.config import (
+    DEFAULT_WORKSPACE_NAME,
+    ENV_FILE_PATH,
+    PLATFORM_URL,
+    normalize_base_url,
+)
 from haystack_enterprise_sdk._api.deployments import (
     DeploymentServiceLevel,
     PipelineValidationError,
@@ -215,18 +219,14 @@ def login() -> None:
             "This local configuration will take precedence over the global configuration you're about to create."
         )
 
-    environment = typer.prompt(
-        "Choose environment",
-        type=click.Choice(["eu", "us", "custom"], case_sensitive=False),
-        default="eu",
-    )
-
-    if environment.lower() == "eu":
-        api_url = "https://api.cloud.deepset.ai/api/v1"
-    elif environment.lower() == "us":
-        api_url = "https://api.us.deepset.ai/api/v1"
+    if typer.confirm(f"Use the deepset platform URL ({PLATFORM_URL})?", default=True):
+        api_url = PLATFORM_URL
     else:
-        api_url = typer.prompt("Enter custom API URL")
+        api_url = typer.prompt("Enter the base API URL")
+
+    # Store the bare base URL; the SDK appends the API version when building requests.
+    api_url = normalize_base_url(api_url)
+
     passed_api_key = typer.prompt("Your Haystack Enterprise Platform API_KEY", hide_input=True)
     passed_default_workspace_name = typer.prompt("Your DEFAULT_WORKSPACE_NAME", default="default")
 

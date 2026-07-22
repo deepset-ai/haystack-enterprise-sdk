@@ -10,7 +10,7 @@ import structlog
 from httpx import Response
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
-from haystack_enterprise_sdk._api.config import CommonConfig
+from haystack_enterprise_sdk._api.config import API_VERSION_PATH, CommonConfig
 
 logger = structlog.get_logger(__name__)
 
@@ -78,7 +78,7 @@ class HaystackEnterpriseAPI:
                     f"Workspace name is not defined. Got '{workspace_name}'. Enter the name of the workspace in `workspace_name`."
                 )
 
-            return f"{api_url}/workspaces/{workspace_name}"
+            return f"{api_url}/{API_VERSION_PATH}/workspaces/{workspace_name}"
 
         return func
 

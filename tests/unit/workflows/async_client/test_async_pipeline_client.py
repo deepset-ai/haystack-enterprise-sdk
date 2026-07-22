@@ -89,7 +89,7 @@ class TestAsyncPipelineClientInit:
 
         pc = AsyncPipelineClient(api_key="hello", api_url="", workspace_name="test-workspace")
 
-        assert pc._api_config.api_url == "https://api.cloud.deepset.ai/api/v1"
+        assert pc._api_config.api_url == "https://api.cloud.deepset.ai"
 
     def test_init_with_missing_workspace_raises_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
