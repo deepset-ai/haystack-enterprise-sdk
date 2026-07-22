@@ -4,7 +4,7 @@ import httpx
 import pytest
 from httpx import codes
 
-from haystack_enterprise_sdk._api.config import CommonConfig
+from haystack_enterprise_sdk._api.config import CommonConfig, normalize_base_url
 from haystack_enterprise_sdk._api.haystack_enterprise_api import (
     HaystackEnterpriseAPI,
     WorkspaceNotDefinedError,
@@ -49,7 +49,7 @@ class TestCommonConfig:
 
         # api url is not explicitly provided nor via env
         c = CommonConfig(api_key="something")
-        assert c.api_url == "https://api.cloud.deepset.ai/api/v1"
+        assert c.api_url == "https://api.cloud.deepset.ai"
 
     def test_common_config_works_with_explicit_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_load_env = Mock(return_value=True)
@@ -119,6 +119,38 @@ class TestCommonConfig:
 
     def test_common_config_removes_last_backslash(self) -> None:
         assert CommonConfig(api_key="your-key", api_url="https://fake.dc.api/").api_url == "https://fake.dc.api"
+
+    @pytest.mark.parametrize(
+        "given, expected",
+        [
+            ("https://fake.dc.api", "https://fake.dc.api"),
+            ("https://fake.dc.api/", "https://fake.dc.api"),
+            ("https://fake.dc.api/api/v1", "https://fake.dc.api"),
+            ("https://fake.dc.api/api/v1/", "https://fake.dc.api"),
+            ("https://fake.dc.api/v1", "https://fake.dc.api"),
+            ("https://fake.dc.api/v2", "https://fake.dc.api"),
+            ("https://fake.dc.api/API/V1", "https://fake.dc.api"),
+        ],
+    )
+    def test_common_config_normalizes_api_url(self, given: str, expected: str) -> None:
+        assert CommonConfig(api_key="your-key", api_url=given).api_url == expected
+
+
+class TestNormalizeBaseUrl:
+    @pytest.mark.parametrize(
+        "given, expected",
+        [
+            ("https://fake.dc.api", "https://fake.dc.api"),
+            ("https://fake.dc.api/", "https://fake.dc.api"),
+            ("https://fake.dc.api/api/v1", "https://fake.dc.api"),
+            ("https://fake.dc.api/api/v1/", "https://fake.dc.api"),
+            ("https://fake.dc.api/v1", "https://fake.dc.api"),
+            ("https://fake.dc.api/v2", "https://fake.dc.api"),
+            ("https://fake.dc.api/API/V1", "https://fake.dc.api"),
+        ],
+    )
+    def test_normalize_base_url(self, given: str, expected: str) -> None:
+        assert normalize_base_url(given) == expected
 
 
 @pytest.mark.asyncio

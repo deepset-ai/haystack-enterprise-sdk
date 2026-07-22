@@ -408,43 +408,51 @@ class TestCLIUtils:
         global_env_path = global_env_dir / ".env"
         monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", global_env_path)
 
-        result = runner.invoke(cli_app, ["login"], input="eu\ntest_api_key\n\n")
+        # Accept the platform URL (empty confirm defaults to yes), default workspace.
+        result = runner.invoke(cli_app, ["login"], input="\ntest_api_key\n\n")
         assert result.exit_code == 0
         assert f"Global configuration file created at {global_env_path}" in result.stdout
         assert (
-            "API_KEY=test_api_key\nAPI_URL=https://api.cloud.deepset.ai/api/v1\nDEFAULT_WORKSPACE_NAME=default"
+            "API_KEY=test_api_key\nAPI_URL=https://api.cloud.deepset.ai\nDEFAULT_WORKSPACE_NAME=default"
             == global_env_path.read_text()
         )
 
-    def test_login_with_us_environment(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_login_with_custom_base_url(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Create a temporary directory for the global .env file
         global_env_dir = tmp_path / ".haystack-enterprise"
         global_env_dir.mkdir()
         global_env_path = global_env_dir / ".env"
         monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", global_env_path)
 
-        result = runner.invoke(cli_app, ["login"], input="us\ntest_api_key\nmy_workspace\n")
-        assert result.exit_code == 0
-        assert f"Global configuration file created at {global_env_path}" in result.stdout
-        assert (
-            "API_KEY=test_api_key\nAPI_URL=https://api.us.deepset.ai/api/v1\nDEFAULT_WORKSPACE_NAME=my_workspace"
-            == global_env_path.read_text()
-        )
-
-    def test_login_with_custom_environment(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Create a temporary directory for the global .env file
-        global_env_dir = tmp_path / ".haystack-enterprise"
-        global_env_dir.mkdir()
-        global_env_path = global_env_dir / ".env"
-        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", global_env_path)
-
+        # Decline the platform URL, then provide a custom base URL.
         result = runner.invoke(
             cli_app,
             ["login"],
-            input="custom\nhttps://custom-api.example.com\ntest_api_key\nmy_workspace\n",
+            input="n\nhttps://custom-api.example.com\ntest_api_key\nmy_workspace\n",
         )
         assert result.exit_code == 0
         assert f"Global configuration file created at {global_env_path}" in result.stdout
+        assert (
+            "API_KEY=test_api_key\nAPI_URL=https://custom-api.example.com\nDEFAULT_WORKSPACE_NAME=my_workspace"
+            == global_env_path.read_text()
+        )
+
+    def test_login_custom_url_with_version_is_normalized(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Create a temporary directory for the global .env file
+        global_env_dir = tmp_path / ".haystack-enterprise"
+        global_env_dir.mkdir()
+        global_env_path = global_env_dir / ".env"
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", global_env_path)
+
+        # A pasted URL that still includes the version suffix is normalized to the base.
+        result = runner.invoke(
+            cli_app,
+            ["login"],
+            input="n\nhttps://custom-api.example.com/api/v1\ntest_api_key\nmy_workspace\n",
+        )
+        assert result.exit_code == 0
         assert (
             "API_KEY=test_api_key\nAPI_URL=https://custom-api.example.com\nDEFAULT_WORKSPACE_NAME=my_workspace"
             == global_env_path.read_text()
