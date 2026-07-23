@@ -51,13 +51,16 @@ def load_environment(show_warnings: bool = True) -> bool:
     local_loaded = current_path_env.is_file() and load_dotenv(current_path_env)
     global_loaded = ENV_FILE_PATH.is_file() and load_dotenv(ENV_FILE_PATH, override=False)
 
-    if local_loaded:
-        logger.info(f"Environment variables successfully loaded from local .env file at {current_path_env}.")
-    if global_loaded:
+    # These success messages are gated on ``show_warnings`` so the import-time call
+    # (``show_warnings=False``) stays silent, before structlog is even configured.
+    if show_warnings:
         if local_loaded:
-            logger.info(f"Loaded global .env file at {ENV_FILE_PATH} to supplement local .env file.")
-        else:
-            logger.info(f"Environment variables successfully loaded from global .env file at {ENV_FILE_PATH}.")
+            logger.info(f"Environment variables successfully loaded from local .env file at {current_path_env}.")
+        if global_loaded:
+            if local_loaded:
+                logger.info(f"Loaded global .env file at {ENV_FILE_PATH} to supplement local .env file.")
+            else:
+                logger.info(f"Environment variables successfully loaded from global .env file at {ENV_FILE_PATH}.")
 
     if not (local_loaded or global_loaded) and show_warnings:
         logger.warning(

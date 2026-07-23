@@ -916,6 +916,11 @@ dependencies = [
     { name = "yaspin" },
 ]
 
+[package.optional-dependencies]
+deploy = [
+    { name = "haystack-ai" },
+]
+
 [package.dev-dependencies]
 code-quality = [
     { name = "mypy" },
@@ -937,6 +942,7 @@ requires-dist = [
     { name = "aiofiles", specifier = ">=24.1.0" },
     { name = "aiohttp", specifier = ">=3.10.10" },
     { name = "click", specifier = "<=8.3.1" },
+    { name = "haystack-ai", marker = "extra == 'deploy'", specifier = ">=2.13.2" },
     { name = "httpx", specifier = ">=0.27.2" },
     { name = "pydantic", specifier = ">=2.11.4" },
     { name = "pyrate-limiter", specifier = ">=3.7.0" },
@@ -950,6 +956,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.15.0" },
     { name = "yaspin", specifier = ">=3.0.0" },
 ]
+provides-extras = ["deploy"]
 
 [package.metadata.requires-dev]
 code-quality = [

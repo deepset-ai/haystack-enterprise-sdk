@@ -39,6 +39,16 @@ dependencies = [
   "sniffio>=1.3.1",
 ]
 
+[project.optional-dependencies]
+# Optional extra for `haystack-enterprise deploy`. The deploy command loads your pipeline in a subprocess
+# using your project's own interpreter (auto-detected venv or --python), so the CLI environment does
+# NOT need Haystack. Install this extra only when the CLI environment doubles as the pipeline
+# environment (i.e. there is no separate project venv to detect).
+# Install with: pip install "haystack-enterprise-sdk[deploy]"  (or uv pip install / uv tool install).
+deploy = [
+  "haystack-ai>=2.13.2",
+]
+
 [project.urls]
 Documentation = "https://github.com/deepset-ai/haystack-enterprise-sdk#readme"
 Issues = "https://github.com/deepset-ai/haystack-enterprise-sdk/issues"
