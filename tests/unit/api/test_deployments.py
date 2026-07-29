@@ -177,7 +177,9 @@ class TestRevisions:
         with pytest.raises(FailedToPushRevisionError):
             await deployments_api.push_revision("ws", uuid4(), config_yaml="")
 
-    async def test_activate_revision(self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock) -> None:
+    async def test_activate_revision(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
         deployment_id, revision_id = uuid4(), uuid4()
         mocked_haystack_enterprise_api.post.return_value = _resp(
             codes.OK, json=_deployment_body("svc", status="DEPLOYMENT_IN_PROGRESS")

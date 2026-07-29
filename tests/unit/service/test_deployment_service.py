@@ -182,8 +182,7 @@ class TestRun:
         monkeypatch.setattr(
             "haystack_enterprise_sdk._service.pipeline_transform.build_config_yaml",
             lambda *a, **k: (
-                "components: {}\ninputs:\n  query:\n  - retriever.query\n"
-                "dependencies:\n  - haystack-ai==3.0.0\n"
+                "components: {}\ninputs:\n  query:\n  - retriever.query\ndependencies:\n  - haystack-ai==3.0.0\n"
             ),
         )
         post = self._mock_run_response(service, {})

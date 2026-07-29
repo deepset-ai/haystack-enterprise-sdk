@@ -12,12 +12,12 @@ from haystack_enterprise_sdk._api.config import (
     DEFAULT_WORKSPACE_NAME,
     CommonConfig,
 )
-from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
 from haystack_enterprise_sdk._api.deployments import (
     Deployment,
     DeploymentStatus,
     PipelineValidationResult,
 )
+from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
 from haystack_enterprise_sdk._api.shared_prototypes import SharedPrototype
 from haystack_enterprise_sdk._service.deployment_service import (
     DEFAULT_ACTIVATION_TIMEOUT_S,

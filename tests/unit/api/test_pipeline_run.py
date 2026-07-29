@@ -61,7 +61,9 @@ class TestBuildRunInputs:
         config = {"inputs": {"messages": ["agent.messages"]}}
         inputs = build_run_inputs(config, query="What is deepset?")
         assert inputs == {
-            "agent": {"messages": [{"role": "user", "meta": {}, "name": None, "content": [{"text": "What is deepset?"}]}]}
+            "agent": {
+                "messages": [{"role": "user", "meta": {}, "name": None, "content": [{"text": "What is deepset?"}]}]
+            }
         }
 
     def test_query_key_wins_over_messages_when_both_present(self) -> None:

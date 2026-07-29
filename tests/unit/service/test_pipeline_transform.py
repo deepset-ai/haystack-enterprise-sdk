@@ -366,7 +366,6 @@ class TestToolInlining:
 
     def test_non_local_tool_left_untouched(self, tmp_path: Path) -> None:
         # A tool whose function resolves to an installed package (not the project) is not rewritten.
-        src = _TOOLS_SRC.replace("from tools import send_notification", "")
         path = _write_project(
             tmp_path,
             {

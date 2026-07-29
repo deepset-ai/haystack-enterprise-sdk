@@ -439,9 +439,7 @@ class TestCLIUtils:
             == global_env_path.read_text()
         )
 
-    def test_login_custom_url_with_version_is_normalized(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_login_custom_url_with_version_is_normalized(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Create a temporary directory for the global .env file
         global_env_dir = tmp_path / ".haystack-enterprise"
         global_env_dir.mkdir()
