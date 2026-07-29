@@ -1,46 +1,67 @@
-<p align="center">
-  <a href="https://cloud.deepset.ai/"><img src="/assets/logo.png"  alt="Haystack Enterprise Platform SDK"></a>
-</p>
+# Haystack Enterprise SDK
 
-[![Coverage badge](https://github.com/deepset-ai/haystack-enterprise-sdk/raw/python-coverage-comment-action-data/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/tree/python-coverage-comment-action-data)
-[![Tests](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/continuous-integration.yml/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/continuous-integration.yml)
-[![Deploy PyPi](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/deploy-prod.yml/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/deploy-prod.yml)
-[![Compliance Checks](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/compliance.yml/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/compliance.yml)
+> **Experimental.** This SDK is under active development. APIs and CLI commands may change without notice.
 
-The Haystack Enterprise Platform SDK is an open source software development kit that provides convenient access to and integration with Haystack Enterprise Platform, a powerful cloud offering for various AI tasks.
-This README provides an overview of the SDK and its features, and information on contributing to the project and exploring related resources.
-
-- [Official SDK Docs](https://docs.cloud.deepset.ai/docs/working-with-the-sdk)
-- Tutorials: 
-    - [Uploading with CLI](https://docs.cloud.deepset.ai/docs/tutorial-uploading-files-with-cli) 
-    - [Uploading with Python Methods](https://docs.cloud.deepset.ai/docs/tutorial-uploading-files-with-python-methods)
-
-# Supported Features
-
-In its current shape, the SDK offers a suite of tools for seamless data upload to Haystack Enterprise Platform and for importing Haystack pipelines and indexes.
-The following examples demonstrate how to use the Haystack Enterprise Platform SDK to interact with Haystack Enterprise Platform using Python.
-You can use the Haystack Enterprise Platform SDK in the command line as well. For more information, see the [CLI documentation](docs/examples/cli/README.md).
-
--   [SDK Examples - Upload datasets](/docs/examples/sdk/upload.py)
--   [CLI Examples - Upload datasets](/docs/examples/cli/README.md)
+Python SDK and CLI for the Haystack Enterprise Platform.
 
 ## Installation
-The Haystack Enterprise Platform SDK is available on [PyPI](https://pypi.org/project/haystack-enterprise-sdk/) and you can install it using pip:
+
+Not published to a package registry yet — install directly from this repository with [uv](https://docs.astral.sh/uv/):
+
 ```bash
-pip install haystack-enterprise-sdk
+# Install as a CLI tool
+uv tool install git+https://github.com/deepset-ai/haystack-enterprise-sdk.git
+
+# Or add it as a dependency of your project
+uv add git+https://github.com/deepset-ai/haystack-enterprise-sdk.git
 ```
 
-After installing the Haystack Enterprise Platform SDK, you can use it to interact with Haystack Enterprise Platform. It comes with a command line interface (CLI), that you can use by calling:
+## Usage
+
 ```bash
 haystack-enterprise --help
 ```
 
-<p align="center">
-  <a href="https://cloud.deepset.ai/"><img src="/assets/cli.gif"  alt="deepset CLI"></a>
-</p>
+### Authentication
 
-### Development Installation
-To install the Haystack Enterprise Platform SDK for development, clone the repository and use uv to manage dependencies:
+```bash
+haystack-enterprise login
+haystack-enterprise logout
+```
+
+### Files
+
+```bash
+# Upload a folder to a workspace
+haystack-enterprise upload ./my-files
+
+# List files in a workspace
+haystack-enterprise list-files
+
+# Download files to your local machine
+haystack-enterprise download
+```
+
+### Pipelines
+
+```bash
+# Validate a local pipeline against the platform
+haystack-enterprise validate ./pipeline.py
+
+# Run a local pipeline in the platform sandbox
+haystack-enterprise run ./pipeline.py
+
+# Deploy a local pipeline as a service deployment
+haystack-enterprise deploy ./pipeline.py my-service
+
+# Check the status of a service deployment
+haystack-enterprise service-status my-service
+```
+
+Pass `--verbose` to any command for INFO/DEBUG logs, and `<command> --help` for its arguments.
+
+## Development
+
 ```bash
 # Install uv if you don't have it
 pip install uv
@@ -48,37 +69,17 @@ pip install uv
 # Sync all dependencies (including dev dependencies)
 uv sync --all-groups
 
-# Build the package
-uv build
-```
-
-Instead of calling the CLI from the build package, you can call it directly from the source code:
-```bash
-uv run python -m haystack_enterprise_sdk.cli --help
-# or
+# Run the CLI from source
 uv run haystack-enterprise --help
 ```
 
-## Contributing
-We welcome contributions from the open source community to enhance the Haystack Enterprise Platform SDK. If you would like to contribute, have a look at [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and instructions on how to get started.
-We appreciate your contributions, whether they're bug fixes, new features, or documentation improvements.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
+## Licenses
 
----
+The SDK is licensed under Apache 2.0, see [LICENSE](LICENSE).
 
-## Interested in Haystack?
-Haystack Enterprise Platform is powered by Haystack, an open source framework for building end-to-end NLP pipelines.
-
- -    [Project website](https://haystack.deepset.ai/)
- -    [GitHub repository](https://github.com/deepset-ai/haystack)
-
----
-
-# Licenses
-
-The SDK is licensed under Apache 2.0, you can see the license [here](https://github.com/deepset-ai/haystack-enterprise-sdk/blob/main/LICENSE)
-
-We use several libraries in this SDK that are licensed under the [MPL 2.0 license](https://www.mozilla.org/en-US/MPL/2.0/)
+Some bundled libraries are licensed under the [MPL 2.0 license](https://www.mozilla.org/en-US/MPL/2.0/):
 
 - [tqdm](https://github.com/tqdm/tqdm) for progress bars
 - [pathspec](https://github.com/cpburnz/python-pathspec) for pattern matching file paths

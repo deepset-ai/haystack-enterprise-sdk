@@ -4,7 +4,6 @@
 
 [![Coverage badge](https://github.com/deepset-ai/haystack-enterprise-sdk/raw/python-coverage-comment-action-data/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/tree/python-coverage-comment-action-data)
 [![Tests](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/continuous-integration.yml/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/continuous-integration.yml)
-[![Deploy PyPi](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/deploy-prod.yml/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/deploy-prod.yml)
 [![Compliance Checks](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/compliance.yml/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/compliance.yml)
 
 The Haystack Enterprise Platform SDK is an open source software development kit that provides convenient access and integration with Haystack Enterprise Platform, a powerful cloud offering for various natural language processing (NLP) tasks. To learn more about Haystack Enterprise Platform, please have a look at the [official Documentation](https://docs.cloud.deepset.ai/).
@@ -16,9 +15,9 @@ You can use the Haystack Enterprise Platform SDK in the command line as well. Fo
 - [CLI Examples - Upload datasets](/haystack-enterprise-sdk/examples/cli/)
 
 ## Installation
-The Haystack Enterprise Platform SDK is available on PyPI and you can install it using pip:
+The SDK is not published to a package registry yet. Install it directly from the repository with [uv](https://docs.astral.sh/uv/):
 ```bash
-pip install haystack-enterprise-sdk
+uv tool install git+https://github.com/deepset-ai/haystack-enterprise-sdk.git
 ```
 
 After installing the Haystack Enterprise Platform SDK, you can use it to interact with Haystack Enterprise Platform. It comes with a command line interface (CLI), that you can use by calling:
