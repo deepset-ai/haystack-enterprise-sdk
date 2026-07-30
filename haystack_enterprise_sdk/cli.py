@@ -87,6 +87,10 @@ def _configure_cli_logging(verbose: bool) -> None:
             structlog.processors.TimeStamper(fmt="%H:%M:%S"),
             structlog.dev.ConsoleRenderer(),
         ],
+        # Pin the factory: importing ``haystack`` reconfigures structlog globally to route through
+        # stdlib logging, which would send our already-rendered lines through the root logger
+        # instead of the console. The CLI owns its own output, so print directly.
+        logger_factory=structlog.PrintLoggerFactory(),
     )
 
     # Cover the one module that uses stdlib logging (``_service/pipeline_extract.py``). Without a

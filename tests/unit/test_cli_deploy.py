@@ -1,6 +1,7 @@
 """CLI tests for the `deploy` and `service-status` commands."""
 
 from pathlib import Path
+from typing import Literal
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
@@ -740,7 +741,7 @@ class TestSpinnerPausedResolver:
             def __enter__(self) -> "None":
                 events.append("hidden-enter")
 
-            def __exit__(self, *exc: object) -> bool:
+            def __exit__(self, *exc: object) -> Literal[False]:
                 events.append("hidden-exit")
                 return False
 
@@ -758,4 +759,4 @@ class TestSpinnerPausedResolver:
         assert events == ["hidden-enter", "resolve", "hidden-exit"]
         assert result == ({"query": ["a.q"]}, {"answers": "b.a"})
         # The underlying resolver stays introspectable.
-        assert wrapped.__wrapped__ is inner
+        assert getattr(wrapped, "__wrapped__") is inner

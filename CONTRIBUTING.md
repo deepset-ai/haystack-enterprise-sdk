@@ -32,14 +32,9 @@ Code quality checks, unit tests, and integration tests (against dev) are perform
 Integration tests are triggered whenever the e2e tests are triggered (environment will be dependent on e2e tests)
 Code quality checks, unit tests, and integration tests (against prod) are performed on the publishing of a release tag.
 
-## Deploy to test PyPi
+## Releasing
 
-When you create a PR in the haystack-enterprise-sdk repository, add the 'test-deploy' label to trigger deployment to the test PyPi repository.
-
-## Publishing to PyPi
-
-To publish a new version of the SDK you will need to create and publish a new release tag.
-
+The SDK is not published to a package registry yet. Install it directly from this repository (see the [README](README.md)).
 
 ## Software design
 

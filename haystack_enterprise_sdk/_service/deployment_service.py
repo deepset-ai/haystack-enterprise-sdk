@@ -13,7 +13,6 @@ import structlog
 from ruamel.yaml import YAML
 
 from haystack_enterprise_sdk._api.config import DEFAULT_WORKSPACE_NAME, CommonConfig
-from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
 from haystack_enterprise_sdk._api.deployments import (
     Deployment,
     DeploymentRevision,
@@ -23,6 +22,7 @@ from haystack_enterprise_sdk._api.deployments import (
     PipelineValidationError,
     PipelineValidationResult,
 )
+from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
 from haystack_enterprise_sdk._api.pipeline_run import HaystackRunAPI, build_run_inputs
 from haystack_enterprise_sdk._api.shared_prototypes import (
     SharedPrototype,

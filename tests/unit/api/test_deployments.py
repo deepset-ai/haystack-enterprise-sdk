@@ -1,6 +1,6 @@
 """Tests for the deployments API client."""
 
-from typing import Optional
+from typing import Any, Optional
 from unittest.mock import Mock
 from uuid import uuid4
 
@@ -24,7 +24,7 @@ from haystack_enterprise_sdk._api.deployments import (
 _REQUEST = Request("GET", "https://test.deepset.ai")
 
 
-def _resp(status_code: int, **kwargs: object) -> Response:
+def _resp(status_code: int, **kwargs: Any) -> Response:
     """Build a Response with a request attached so `raise_for_status` works in tests."""
     return Response(status_code=status_code, request=_REQUEST, **kwargs)
 
@@ -177,7 +177,9 @@ class TestRevisions:
         with pytest.raises(FailedToPushRevisionError):
             await deployments_api.push_revision("ws", uuid4(), config_yaml="")
 
-    async def test_activate_revision(self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock) -> None:
+    async def test_activate_revision(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
         deployment_id, revision_id = uuid4(), uuid4()
         mocked_haystack_enterprise_api.post.return_value = _resp(
             codes.OK, json=_deployment_body("svc", status="DEPLOYMENT_IN_PROGRESS")

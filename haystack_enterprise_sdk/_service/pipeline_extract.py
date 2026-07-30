@@ -79,6 +79,7 @@ def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any
     from haystack import Pipeline
 
     # AsyncPipeline was removed in Haystack 3.0 (folded into Pipeline); tolerate its absence.
+    pipeline_types: tuple[type, ...]
     try:
         from haystack import AsyncPipeline
 
@@ -732,9 +733,7 @@ def _build_tool_code_block(function_path: str, project_root: Path) -> str:
         helpers.append(idx.defs[sym])
 
     if entry_source is None:
-        raise PipelineTransformError(
-            f"Could not find the tool function '{func_name}' to inline for '{function_path}'."
-        )
+        raise PipelineTransformError(f"Could not find the tool function '{func_name}' to inline for '{function_path}'.")
 
     parts: list[str] = []
     if preserved_imports:
@@ -1025,7 +1024,9 @@ def validate_tool_code_block(tool_name: str, code: str) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _has_tool_decorator(node)
     ]
     if not tool_functions:
-        raise PipelineTransformError(f"Tool '{tool_name}': no @tool-decorated function found in the generated code block.")
+        raise PipelineTransformError(
+            f"Tool '{tool_name}': no @tool-decorated function found in the generated code block."
+        )
     if len(tool_functions) > 1:
         names = ", ".join(fn.name for fn in tool_functions)
         raise PipelineTransformError(
