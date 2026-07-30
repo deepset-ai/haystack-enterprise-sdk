@@ -79,6 +79,7 @@ def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any
     from haystack import Pipeline
 
     # AsyncPipeline was removed in Haystack 3.0 (folded into Pipeline); tolerate its absence.
+    pipeline_types: tuple[type, ...]
     try:
         from haystack import AsyncPipeline
 

@@ -1,5 +1,6 @@
 """Tests for the sync deployment client."""
 
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
@@ -38,7 +39,7 @@ def test_deploy_forwards_to_async_client(async_cls: Mock) -> None:
     async_instance.deploy = AsyncMock(return_value=_result())
 
     client = DeploymentClient(api_key="k", workspace_name="ws", api_url="https://api")
-    result = client.deploy("pipeline.py", "svc", activate=True)
+    result = client.deploy(Path("pipeline.py"), "svc", activate=True)
 
     assert isinstance(result, DeployResult)
     async_instance.deploy.assert_awaited_once()
@@ -52,7 +53,7 @@ def test_run_forwards_to_async_client(async_cls: Mock) -> None:
     async_instance.run = AsyncMock(return_value={"llm": {"replies": ["hi"]}})
 
     client = DeploymentClient(api_key="k", workspace_name="ws", api_url="https://api")
-    result = client.run("pipeline.py", query="who?", extra_inputs={"retriever": {"top_k": 3}})
+    result = client.run(Path("pipeline.py"), query="who?", extra_inputs={"retriever": {"top_k": 3}})
 
     assert result == {"llm": {"replies": ["hi"]}}
     async_instance.run.assert_awaited_once()

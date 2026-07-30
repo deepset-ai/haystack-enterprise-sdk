@@ -5,7 +5,7 @@ import os
 import sys
 import textwrap
 from pathlib import Path
-from typing import Generator
+from typing import Any, Generator, Optional, Union
 from unittest.mock import Mock
 
 import pytest
@@ -36,7 +36,12 @@ from haystack_enterprise_sdk._service.pipeline_transform import (
 FIXTURE_DIR = Path(__file__).parent.parent.parent / "test_data" / "deploy"
 
 
-def transform_to_config_yaml(pipeline, project_root, inputs=None, outputs=None) -> str:
+def transform_to_config_yaml(
+    pipeline: Pipeline,
+    project_root: Union[str, Path],
+    inputs: Optional[dict] = None,
+    outputs: Optional[dict] = None,
+) -> str:
     """In-process extract → resolve → render, mirroring the production assembly for a live pipeline."""
     bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, Path(project_root)))
     resolved_inputs, resolved_outputs = resolve_io(bundle, inputs, outputs, None)
@@ -64,12 +69,14 @@ def _write_project(root: Path, files: dict) -> Path:
 
 
 def _load_yaml(config_yaml: str) -> dict:
-    return YAML().load(config_yaml)
+    loaded: dict = YAML().load(config_yaml)
+    return loaded
 
 
 def _component_code(config_yaml: str, comp_name: str) -> str:
     """Return the ``code`` string of a rewritten Code component from rendered YAML."""
-    return _load_yaml(config_yaml)["components"][comp_name]["init_parameters"]["code"]
+    code: str = _load_yaml(config_yaml)["components"][comp_name]["init_parameters"]["code"]
+    return code
 
 
 def _class_def(code: str, class_name: str) -> ast.ClassDef:
@@ -344,7 +351,8 @@ class TestToolInlining:
         path = _write_project(tmp_path, {"pipeline.py": _AGENT_WITH_TOOL_SRC, "tools.py": _TOOLS_SRC})
         pipeline = load_pipeline_from_file(path, entrypoint="agent")
         bundle = extract_from_pipeline(pipeline, tmp_path)
-        return bundle["pipeline"]["components"]["agent"]["init_parameters"]["tools"]
+        tools: list = bundle["pipeline"]["components"]["agent"]["init_parameters"]["tools"]
+        return tools
 
     def test_local_tool_rewritten_to_code_tool(self, tmp_path: Path) -> None:
         tools = self._agent_tools(tmp_path)
@@ -400,7 +408,7 @@ class TestValidateToolCodeBlock:
 
 class TestSanitizeAgentInitParams:
     def test_removes_hooks_from_agent(self) -> None:
-        components = {
+        components: dict[str, Any] = {
             "agent": {
                 "type": "haystack.components.agents.agent.Agent",
                 "init_parameters": {"system_prompt": "hi", "hooks": {"before_tool": ["x"]}},
@@ -425,7 +433,7 @@ class TestSanitizeAgentInitParams:
         }
         assert defaults, "expected Agent to have defaulted params"
         some_key, some_default = next(iter(defaults.items()))
-        components = {
+        components: dict[str, Any] = {
             "agent": {
                 "type": "haystack.components.agents.agent.Agent",
                 "init_parameters": {some_key: some_default, "system_prompt": "custom"},
@@ -437,7 +445,7 @@ class TestSanitizeAgentInitParams:
         assert init["system_prompt"] == "custom"
 
     def test_leaves_non_agent_component_untouched(self) -> None:
-        components = {"c": {"type": "haystack.components.foo.Foo", "init_parameters": {"hooks": 1}}}
+        components: dict[str, Any] = {"c": {"type": "haystack.components.foo.Foo", "init_parameters": {"hooks": 1}}}
         _sanitize_agent_init_params(components)
         assert components["c"]["init_parameters"]["hooks"] == 1
 
@@ -735,7 +743,9 @@ class TestSubprocessExtraction:
 class TestBuildConfigYaml:
     """The ``io_resolver`` always gets the final say; empty returns keep the resolved mappings."""
 
-    def _bundle(self, inferred_inputs: dict, inferred_outputs: dict, mandatory_inputs: dict = None) -> ExtractionBundle:
+    def _bundle(
+        self, inferred_inputs: dict, inferred_outputs: dict, mandatory_inputs: Optional[dict] = None
+    ) -> ExtractionBundle:
         return ExtractionBundle.from_dict(
             {
                 "pipeline": {"components": {}},
@@ -863,6 +873,7 @@ class TestHelperFolding:
         assert [type(n).__name__ for n in non_import] == ["ClassDef"]
 
         greeter = non_import[0]
+        assert isinstance(greeter, ast.ClassDef)
         assert greeter.name == "Greeter"
         members = {n.name: n for n in greeter.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
         # Helper functions folded as @staticmethod inside the class.

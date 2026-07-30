@@ -1,5 +1,6 @@
 """Tests for the sandbox pipeline run API client."""
 
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -14,7 +15,7 @@ from haystack_enterprise_sdk._api.pipeline_run import (
 _REQUEST = Request("POST", "https://test.deepset.ai")
 
 
-def _resp(status_code: int, **kwargs: object) -> Response:
+def _resp(status_code: int, **kwargs: Any) -> Response:
     return Response(status_code=status_code, request=_REQUEST, **kwargs)
 
 

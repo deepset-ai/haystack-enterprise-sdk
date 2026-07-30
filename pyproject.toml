@@ -119,6 +119,9 @@ warn_unused_configs = true
 ignore_missing_imports = true
 disallow_incomplete_defs = true
 disallow_untyped_defs = true
+# Sample user projects, not SDK code: they stand in for a customer's pipeline (third-party imports
+# and all) and are loaded as fixture data, so they are deliberately not type-checked.
+exclude = "^tests/test_data/"
 
 [tool.pylint.'MESSAGES CONTROL']
 max-line-length = 150

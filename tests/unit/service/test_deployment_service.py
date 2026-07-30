@@ -1,8 +1,9 @@
 """Tests for the deployment service orchestration."""
 
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -37,7 +38,7 @@ def _deployment(name: str = "svc", status: DeploymentStatus = DeploymentStatus.U
     )
 
 
-def _revision(deployment_id: object) -> DeploymentRevision:
+def _revision(deployment_id: UUID) -> DeploymentRevision:
     return DeploymentRevision(
         revision_id=uuid4(),
         deployment_id=deployment_id,
@@ -46,8 +47,23 @@ def _revision(deployment_id: object) -> DeploymentRevision:
     )
 
 
+if TYPE_CHECKING:
+
+    class MockedDeploymentService(DeploymentService):
+        """Typing-only view of the fixture below: ``_deployments`` is really an AsyncMock.
+
+        Without this, every ``service._deployments.<mock attr>`` access below fails mypy against
+        the real ``DeploymentsAPI`` type.
+        """
+
+        _deployments: AsyncMock  # type: ignore[assignment]
+
+else:
+    MockedDeploymentService = DeploymentService
+
+
 @pytest.fixture
-def service(monkeypatch: pytest.MonkeyPatch) -> DeploymentService:
+def service(monkeypatch: pytest.MonkeyPatch) -> MockedDeploymentService:
     """A DeploymentService whose DeploymentsAPI is a fully mocked AsyncMock."""
     svc = DeploymentService(api=Mock(), workspace_name="ws")
     svc._deployments = AsyncMock()  # type: ignore[assignment]
@@ -57,7 +73,7 @@ def service(monkeypatch: pytest.MonkeyPatch) -> DeploymentService:
     monkeypatch.setattr(
         "haystack_enterprise_sdk._service.pipeline_transform.build_config_yaml", lambda *a, **k: "components: {}\n"
     )
-    return svc
+    return cast("MockedDeploymentService", svc)
 
 
 def _issue(category: str, message: str = "msg") -> PipelineValidationIssue:
@@ -66,7 +82,7 @@ def _issue(category: str, message: str = "msg") -> PipelineValidationIssue:
 
 @pytest.mark.asyncio
 class TestResolveAndPush:
-    async def test_push_without_activate_stops_at_pending(self, service: DeploymentService) -> None:
+    async def test_push_without_activate_stops_at_pending(self, service: MockedDeploymentService) -> None:
         deployment = _deployment()
         service._deployments.find_by_name.return_value = deployment
         service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
@@ -78,12 +94,12 @@ class TestResolveAndPush:
         service._deployments.push_revision.assert_awaited_once_with("ws", deployment.deployment_id, "components: {}\n")
         service._deployments.activate_revision.assert_not_called()
 
-    async def test_missing_service_without_create_raises(self, service: DeploymentService) -> None:
+    async def test_missing_service_without_create_raises(self, service: MockedDeploymentService) -> None:
         service._deployments.find_by_name.return_value = None
         with pytest.raises(ServiceNotFoundError):
             await service.deploy(FIXTURE, "svc")
 
-    async def test_create_when_missing(self, service: DeploymentService) -> None:
+    async def test_create_when_missing(self, service: MockedDeploymentService) -> None:
         created = _deployment("svc")
         service._deployments.find_by_name.return_value = None
         service._deployments.create_deployment.return_value = created
@@ -105,7 +121,7 @@ class TestResolveAndPush:
 
 @pytest.mark.asyncio
 class TestValidation:
-    async def test_error_blocks_deploy_before_push(self, service: DeploymentService) -> None:
+    async def test_error_blocks_deploy_before_push(self, service: MockedDeploymentService) -> None:
         service._deployments.find_by_name.return_value = _deployment()
         service._deployments.validate_pipeline.return_value = PipelineValidationResult(issues=[_issue("ERROR")])
 
@@ -116,7 +132,7 @@ class TestValidation:
         service._deployments.find_by_name.assert_not_called()
         service._deployments.push_revision.assert_not_called()
 
-    async def test_warning_only_proceeds(self, service: DeploymentService) -> None:
+    async def test_warning_only_proceeds(self, service: MockedDeploymentService) -> None:
         deployment = _deployment()
         service._deployments.find_by_name.return_value = deployment
         service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
@@ -127,7 +143,7 @@ class TestValidation:
         assert result.activated is False
         service._deployments.push_revision.assert_awaited_once()
 
-    async def test_skip_validation_does_not_call_endpoint(self, service: DeploymentService) -> None:
+    async def test_skip_validation_does_not_call_endpoint(self, service: MockedDeploymentService) -> None:
         deployment = _deployment()
         service._deployments.find_by_name.return_value = deployment
         service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
@@ -137,7 +153,7 @@ class TestValidation:
         service._deployments.validate_pipeline.assert_not_called()
         service._deployments.push_revision.assert_awaited_once()
 
-    async def test_standalone_validate_returns_result(self, service: DeploymentService) -> None:
+    async def test_standalone_validate_returns_result(self, service: MockedDeploymentService) -> None:
         expected = PipelineValidationResult(issues=[_issue("ERROR")])
         service._deployments.validate_pipeline.return_value = expected
 
@@ -149,16 +165,16 @@ class TestValidation:
 
 @pytest.mark.asyncio
 class TestRun:
-    def _mock_run_response(self, service: DeploymentService, body: dict) -> AsyncMock:
+    def _mock_run_response(self, service: MockedDeploymentService, body: dict) -> AsyncMock:
         """Wire ``service._api.post`` to return an OK response carrying ``body``."""
         from httpx import Request, Response, codes
 
         post = AsyncMock(return_value=Response(codes.OK, request=Request("POST", "https://x"), json=body))
-        service._api.post = post  # type: ignore[attr-defined]
+        service._api.post = post  # type: ignore[attr-defined,method-assign]
         return post
 
     async def test_run_sends_parsed_config_and_mapped_inputs(
-        self, service: DeploymentService, monkeypatch: pytest.MonkeyPatch
+        self, service: MockedDeploymentService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
             "haystack_enterprise_sdk._service.pipeline_transform.build_config_yaml",
@@ -175,7 +191,7 @@ class TestRun:
         assert kwargs["json"]["inputs"] == {"retriever": {"query": "who?"}}
 
     async def test_run_strips_dependencies_block_from_config(
-        self, service: DeploymentService, monkeypatch: pytest.MonkeyPatch
+        self, service: MockedDeploymentService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The sandbox run endpoint executes the config in place; a ``dependencies`` block is meaningless
         # there and must be dropped so the pinned version can't interfere with sandbox execution.
@@ -193,7 +209,7 @@ class TestRun:
         assert "dependencies" not in kwargs["json"]["pipeline_config"]
 
     async def test_run_forwards_include_outputs_from(
-        self, service: DeploymentService, monkeypatch: pytest.MonkeyPatch
+        self, service: MockedDeploymentService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
             "haystack_enterprise_sdk._service.pipeline_transform.build_config_yaml",
@@ -209,7 +225,7 @@ class TestRun:
 
 @pytest.mark.asyncio
 class TestActivateAndPoll:
-    async def test_activate_polls_until_deployed(self, service: DeploymentService) -> None:
+    async def test_activate_polls_until_deployed(self, service: MockedDeploymentService) -> None:
         deployment = _deployment(status=DeploymentStatus.UNDEPLOYED)
         service._deployments.find_by_name.return_value = deployment
         service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
@@ -232,7 +248,7 @@ class TestActivateAndPoll:
         assert result.deployment.status == DeploymentStatus.DEPLOYED
         assert DeploymentStatus.DEPLOYED in seen
 
-    async def test_activate_failure_raises_with_ui_hint(self, service: DeploymentService) -> None:
+    async def test_activate_failure_raises_with_ui_hint(self, service: MockedDeploymentService) -> None:
         deployment = _deployment()
         service._deployments.find_by_name.return_value = deployment
         service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
@@ -245,7 +261,7 @@ class TestActivateAndPoll:
             await service.deploy(FIXTURE, "svc", activate=True, poll_interval_s=0)
         assert "deepset AI Platform" in exc.value.ui_hint
 
-    async def test_activate_times_out_and_detaches(self, service: DeploymentService) -> None:
+    async def test_activate_times_out_and_detaches(self, service: MockedDeploymentService) -> None:
         deployment = _deployment()
         service._deployments.find_by_name.return_value = deployment
         service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
@@ -262,14 +278,14 @@ class TestActivateAndPoll:
 
 @pytest.mark.asyncio
 class TestGetServiceStatus:
-    async def test_get_service_status(self, service: DeploymentService) -> None:
+    async def test_get_service_status(self, service: MockedDeploymentService) -> None:
         deployment = _deployment(status=DeploymentStatus.DEPLOYED)
         service._deployments.find_by_name.return_value = deployment
         service._deployments.get_deployment.return_value = deployment
         result = await service.get_service_status("svc")
         assert result.status == DeploymentStatus.DEPLOYED
 
-    async def test_get_service_status_missing_raises(self, service: DeploymentService) -> None:
+    async def test_get_service_status_missing_raises(self, service: MockedDeploymentService) -> None:
         service._deployments.find_by_name.return_value = None
         with pytest.raises(ServiceNotFoundError):
             await service.get_service_status("svc")
@@ -278,7 +294,7 @@ class TestGetServiceStatus:
 @pytest.mark.asyncio
 class TestCreateSharedPrototype:
     async def test_computes_expiration_and_forwards_options(
-        self, service: DeploymentService, monkeypatch: pytest.MonkeyPatch
+        self, service: MockedDeploymentService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from datetime import datetime, timezone
 
