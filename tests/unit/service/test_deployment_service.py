@@ -1,7 +1,8 @@
 """Tests for the deployment service orchestration."""
 
+import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Dict, Optional, Tuple, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
@@ -23,6 +24,9 @@ from haystack_enterprise_sdk._service.deployment_service import (
     DeploymentFailedError,
     DeploymentService,
     ServiceNotFoundError,
+    _commit_url,
+    _git,
+    default_revision_comment,
 )
 
 FIXTURE = Path(__file__).parent.parent.parent / "test_data" / "deploy" / "pipeline.py"
@@ -93,12 +97,24 @@ class TestResolveAndPush:
         service._deployments.find_by_name.return_value = deployment
         service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
 
-        result = await service.deploy(FIXTURE, "svc")
+        result = await service.deploy(FIXTURE, "svc", comment="Bump embedder")
 
         assert result.activated is False
         assert result.timed_out is False
-        service._deployments.push_revision.assert_awaited_once_with("ws", deployment.deployment_id, "components: {}\n")
+        service._deployments.push_revision.assert_awaited_once_with(
+            "ws", deployment.deployment_id, "components: {}\n", "Bump embedder"
+        )
         service._deployments.activate_revision.assert_not_called()
+
+    async def test_push_without_comment_generates_one(self, service: MockedDeploymentService) -> None:
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+
+        await service.deploy(FIXTURE, "svc")
+
+        comment = service._deployments.push_revision.await_args.args[3]
+        assert comment.startswith("Deployed pipeline.py via haystack-enterprise CLI")
 
     async def test_missing_service_without_create_raises(self, service: MockedDeploymentService) -> None:
         service._deployments.find_by_name.return_value = None
@@ -413,3 +429,104 @@ class TestCreateSharedPrototype:
         expiry = datetime.fromisoformat(kwargs["expiration_date"])
         delta_days = (expiry - datetime.now(timezone.utc)).total_seconds() / 86400
         assert 6.9 < delta_days < 7.1
+
+
+class TestCommitUrl:
+    @pytest.mark.parametrize(
+        ("remote", "expected"),
+        [
+            ("git@github.com:org/repo.git", "https://github.com/org/repo/commit/" + "a" * 40),
+            ("https://github.com/org/repo.git", "https://github.com/org/repo/commit/" + "a" * 40),
+            ("https://user@github.com/org/repo", "https://github.com/org/repo/commit/" + "a" * 40),
+            ("ssh://git@gitlab.com/group/sub/repo.git", "https://gitlab.com/group/sub/repo/-/commit/" + "a" * 40),
+            ("https://bitbucket.org/org/repo", "https://bitbucket.org/org/repo/commits/" + "a" * 40),
+            ("git@git.internal.example.com:org/repo.git", None),
+            ("/srv/git/repo.git", None),
+        ],
+    )
+    def test_commit_url(self, remote: str, expected: Optional[str]) -> None:
+        assert _commit_url(remote, "a" * 40) == expected
+
+
+class TestDefaultRevisionComment:
+    @staticmethod
+    def _patch_git(monkeypatch: pytest.MonkeyPatch, outputs: Dict[Tuple[str, ...], str]) -> None:
+        """Replace _git with a stand-in answering from ``outputs``, keyed by the git arguments."""
+
+        def _fake_git(_target_dir: Path, *args: str) -> Optional[str]:
+            return outputs.get(args)
+
+        monkeypatch.setattr("haystack_enterprise_sdk._service.deployment_service._git", _fake_git)
+
+    def test_includes_branch_and_commit_link(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(
+            monkeypatch,
+            {
+                ("rev-parse", "HEAD"): "a1b2c3d4" + "0" * 32,
+                ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+                ("remote", "get-url", "origin"): "git@github.com:org/repo.git",
+            },
+        )
+        comment = default_revision_comment(FIXTURE)
+        assert comment == (
+            "Deployed pipeline.py via haystack-enterprise CLI (main@a1b2c3d) "
+            f"https://github.com/org/repo/commit/a1b2c3d4{'0' * 32}"
+        )
+
+    def test_unknown_remote_host_omits_link(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(
+            monkeypatch,
+            {
+                ("rev-parse", "HEAD"): "a1b2c3d4" + "0" * 32,
+                ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+                ("remote", "get-url", "origin"): "git@git.internal.example.com:org/repo.git",
+            },
+        )
+        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI (main@a1b2c3d)"
+
+    def test_no_origin_remote_omits_link(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(
+            monkeypatch,
+            {
+                ("rev-parse", "HEAD"): "a1b2c3d4" + "0" * 32,
+                ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+            },
+        )
+        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI (main@a1b2c3d)"
+
+    def test_detached_head_shows_sha_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(
+            monkeypatch,
+            {
+                ("rev-parse", "HEAD"): "a1b2c3d4" + "0" * 32,
+                ("rev-parse", "--abbrev-ref", "HEAD"): "HEAD",
+            },
+        )
+        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI (a1b2c3d)"
+
+    def test_without_git_falls_back_to_plain_comment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(monkeypatch, {})
+        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI"
+
+
+class TestGitHelper:
+    def test_missing_git_binary_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _raise(*_args: object, **_kwargs: object) -> None:
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr("subprocess.run", _raise)
+        assert _git(Path("."), "rev-parse", "HEAD") is None
+
+    def test_timeout_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _raise(*_args: object, **_kwargs: object) -> None:
+            raise subprocess.TimeoutExpired(cmd="git", timeout=1)
+
+        monkeypatch.setattr("subprocess.run", _raise)
+        assert _git(Path("."), "rev-parse", "HEAD") is None
+
+    def test_non_zero_exit_returns_none(self) -> None:
+        # A real call outside any repository: git exits non-zero.
+        assert _git(Path("/"), "rev-parse", "HEAD") is None
+
+    def test_returns_stripped_stdout(self) -> None:
+        assert _git(Path(__file__).parent, "rev-parse", "--abbrev-ref", "HEAD")

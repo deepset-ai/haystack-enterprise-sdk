@@ -121,6 +121,9 @@ Useful variants:
 # create a managed (provisioned) service with explicit sizing
 haystack-enterprise deploy pipeline.py my-service --managed --service-level PRODUCTION --cpu 2
 
+# describe what changed in this revision
+haystack-enterprise deploy pipeline.py my-service -m "Bump embedder model to bge-large"
+
 # push a revision without rolling it out
 haystack-enterprise deploy pipeline.py my-service --skip-activation
 
@@ -140,6 +143,11 @@ Common options:
   `--service-level`, `--min-replicas`, `--max-replicas`, `--cpu`, `--memory`, `--gpu` and
   `--idle-timeout` require `--managed`; passing them without `--managed`, or passing creation-only
   flags for a service that already exists, is an error rather than a silently ignored flag.
+- `--comment` / `-m` is the comment stored on the revision, so you can tell revisions apart in the
+  platform UI. Every revision needs one; when you omit the flag the CLI generates a comment naming the
+  pipeline file and, if it sits in a git repository, the current branch, commit and a link to the commit
+  on GitHub/GitLab/Bitbucket — e.g.
+  `Deployed pipeline.py via haystack-enterprise CLI (main@a1b2c3d) https://github.com/org/repo/commit/…`.
 - `--skip-activation` pushes the revision as `PENDING` without rolling it out.
 - `--skip-validation` skips the pre-deploy YAML validation (validation runs by default and aborts on
   blocking issues).

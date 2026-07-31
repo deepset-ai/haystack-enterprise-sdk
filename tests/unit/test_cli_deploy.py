@@ -115,6 +115,23 @@ class TestDeployCommand:
         assert "activate" not in kwargs or kwargs["activate"] is False
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_forwards_comment(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--skip-activation", "-m", "Bump embedder"])
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.deploy.call_args
+        assert kwargs["comment"] == "Bump embedder"
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_without_comment_leaves_it_to_the_service(self, client_cls: Mock) -> None:
+        # The default comment is generated in the service layer, so the CLI passes None through.
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--skip-activation"])
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.deploy.call_args
+        assert kwargs["comment"] is None
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_activates_by_default(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=True, status=DeploymentStatus.DEPLOYED)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])

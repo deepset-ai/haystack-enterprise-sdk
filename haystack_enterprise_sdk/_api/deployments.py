@@ -381,19 +381,21 @@ class DeploymentsAPI:
         workspace_name: str,
         deployment_id: UUID,
         config_yaml: str,
+        comment: str,
     ) -> DeploymentRevision:
         """Push a new revision from raw ``config_yaml``. The revision starts as ``PENDING``.
 
         :param workspace_name: Name of the workspace.
         :param deployment_id: Deployment id.
         :param config_yaml: The platform-ready pipeline YAML.
+        :param comment: Comment stored on the revision. The platform requires one.
         :raises FailedToPushRevisionError: If the revision could not be created.
         :return: The created revision.
         """
         response = await self._haystack_enterprise_api.post(
             workspace_name=workspace_name,
             endpoint=f"{self._ENDPOINT}/{deployment_id}/revisions",
-            json={"config_yaml": config_yaml, "source_type": self._SOURCE_TYPE},
+            json={"comment": comment, "config_yaml": config_yaml, "source_type": self._SOURCE_TYPE},
         )
         raise_for_unexpected_status(
             response,

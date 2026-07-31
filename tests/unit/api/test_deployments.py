@@ -160,13 +160,19 @@ class TestRevisions:
     async def test_push_revision(self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock) -> None:
         deployment_id = uuid4()
         mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=_revision_body(str(deployment_id)))
-        revision = await deployments_api.push_revision("ws", deployment_id, config_yaml="components: {}")
+        revision = await deployments_api.push_revision(
+            "ws", deployment_id, config_yaml="components: {}", comment="Bump embedder"
+        )
         assert isinstance(revision, DeploymentRevision)
         assert revision.status == DeploymentRevisionStatus.PENDING
         mocked_haystack_enterprise_api.post.assert_called_once_with(
             workspace_name="ws",
             endpoint=f"deployments/{deployment_id}/revisions",
-            json={"config_yaml": "components: {}", "source_type": "EXTERNAL_PIPELINE"},
+            json={
+                "comment": "Bump embedder",
+                "config_yaml": "components: {}",
+                "source_type": "EXTERNAL_PIPELINE",
+            },
         )
 
     async def test_push_revision_tolerates_missing_status(
@@ -175,7 +181,7 @@ class TestRevisions:
         deployment_id = uuid4()
         body = {"revision_id": str(uuid4()), "deployment_id": str(deployment_id)}  # no "status"/"config_hash"
         mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=body)
-        revision = await deployments_api.push_revision("ws", deployment_id, config_yaml="components: {}")
+        revision = await deployments_api.push_revision("ws", deployment_id, config_yaml="components: {}", comment="c")
         assert revision.status == DeploymentRevisionStatus.PENDING
         assert revision.config_hash == ""
 
@@ -184,7 +190,7 @@ class TestRevisions:
     ) -> None:
         mocked_haystack_enterprise_api.post.return_value = _resp(codes.UNPROCESSABLE_ENTITY, text="empty")
         with pytest.raises(FailedToPushRevisionError):
-            await deployments_api.push_revision("ws", uuid4(), config_yaml="")
+            await deployments_api.push_revision("ws", uuid4(), config_yaml="", comment="c")
 
     async def test_activate_revision(
         self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock

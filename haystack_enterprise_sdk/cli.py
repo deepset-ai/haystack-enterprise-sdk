@@ -421,6 +421,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     skip_activation: bool = False,
     create: Optional[bool] = typer.Option(None, "--create/--no-create"),
     managed: bool = False,
+    comment: Optional[str] = typer.Option(None, "--comment", "-m"),
     entrypoint: Optional[str] = None,
     service_level: Optional[DeploymentServiceLevel] = None,
     min_replicas: Optional[int] = None,
@@ -461,6 +462,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param managed: Create the service as a managed (provisioned) deployment instead of a serverless
         one. Required to use any of the sizing options below, which serverless ignores. Only applies
         when the service is created.
+    :param comment: Comment stored on the new revision (the platform requires one). Defaults to an
+        auto-generated message naming the pipeline file and, when the file sits in a git repository, the
+        current branch, commit and a link to the commit page.
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
     :param service_level: Service sizing tier when creating the service (with --managed).
     :param min_replicas: Minimum query replicas (with --managed).
@@ -499,6 +503,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
 
     Create a managed service with explicit sizing (activates and waits for the rollout):
     `deepset-cloud deploy pipeline.py my-service --managed --service-level PRODUCTION --cpu 2`
+
+    Describe the revision instead of using the auto-generated comment:
+    `deepset-cloud deploy pipeline.py my-service -m "Bump embedder model to bge-large"`
 
     Push a revision without rolling it out:
     `deepset-cloud deploy pipeline.py my-service --skip-activation`
@@ -618,6 +625,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     activate=True,
                     create=create is not False,
                     create_options=create_options,
+                    comment=comment,
                     entrypoint=entrypoint,
                     inputs=io_inputs,
                     outputs=io_outputs,
@@ -633,6 +641,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 service_name,
                 create=create is not False,
                 create_options=create_options,
+                comment=comment,
                 entrypoint=entrypoint,
                 inputs=io_inputs,
                 outputs=io_outputs,
