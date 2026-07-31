@@ -349,6 +349,19 @@ class TestActivateAndPoll:
 
 
 @pytest.mark.asyncio
+class TestFindService:
+    async def test_find_service_returns_match(self, service: MockedDeploymentService) -> None:
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        assert await service.find_service("svc") is deployment
+        service._deployments.find_by_name.assert_awaited_once_with("ws", "svc")
+
+    async def test_find_service_returns_none_when_missing(self, service: MockedDeploymentService) -> None:
+        service._deployments.find_by_name.return_value = None
+        assert await service.find_service("svc") is None
+
+
+@pytest.mark.asyncio
 class TestGetServiceStatus:
     async def test_get_service_status(self, service: MockedDeploymentService) -> None:
         deployment = _deployment(status=DeploymentStatus.DEPLOYED)

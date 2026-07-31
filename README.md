@@ -51,11 +51,11 @@ haystack-enterprise validate ./pipeline.py
 # Run a local pipeline in the platform sandbox
 haystack-enterprise run ./pipeline.py
 
-# Deploy a local pipeline as a service deployment (created serverless with --create)
-haystack-enterprise deploy ./pipeline.py my-service --create
+# Deploy a local pipeline as a service deployment (reused if it exists, otherwise created serverless)
+haystack-enterprise deploy ./pipeline.py my-service
 
 # Create a managed (provisioned) service instead, with explicit sizing
-haystack-enterprise deploy ./pipeline.py my-service --create --managed --cpu 2 --memory 4Gi
+haystack-enterprise deploy ./pipeline.py my-service --managed --cpu 2 --memory 4Gi
 
 # Check the status of a service deployment
 haystack-enterprise service-status my-service

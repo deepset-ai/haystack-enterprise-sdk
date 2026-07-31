@@ -107,15 +107,15 @@ haystack-enterprise run pipeline.py --inputs @inputs.json --output result.json
 the revision, and for a managed service it also waits for the rollout to finish.
 
 ```shell
-# create the service if it doesn't exist (serverless), then activate the revision
-haystack-enterprise deploy pipeline.py my-service --create
+# reuse the service (or create it serverless if it doesn't exist), then activate the revision
+haystack-enterprise deploy pipeline.py my-service
 ```
 
 Useful variants:
 
 ```shell
 # create a managed (provisioned) service with explicit sizing
-haystack-enterprise deploy pipeline.py my-service --create --managed --service-level PRODUCTION --cpu 2
+haystack-enterprise deploy pipeline.py my-service --managed --service-level PRODUCTION --cpu 2
 
 # push a revision without rolling it out
 haystack-enterprise deploy pipeline.py my-service --skip-activation
@@ -126,12 +126,16 @@ haystack-enterprise deploy pipeline.py my-service --dry-run --output out.yaml
 
 Common options:
 
-- `--create` creates the service if it does not exist. New services are **serverless**: they
-  provision no workload and run the active revision per request, so there is no rollout to wait for.
+- The service is looked up by name first: if it exists the revision is pushed to it, otherwise the
+  service is created and the CLI tells you so. New services are **serverless**: they provision no
+  workload and run the active revision per request, so there is no rollout to wait for.
+- `--create` requires that the service does *not* exist yet; the command fails if the name is already
+  taken. `--no-create` is the opposite: it requires the service to exist and fails if it is missing
+  (useful in CI to catch a typo'd service name instead of provisioning a new service).
 - `--managed` creates a managed (provisioned) service instead. Only managed services can be sized, so
   `--service-level`, `--min-replicas`, `--max-replicas`, `--cpu`, `--memory`, `--gpu` and
-  `--idle-timeout` require `--create --managed`; passing them without `--managed` is an error rather
-  than a silently ignored flag.
+  `--idle-timeout` require `--managed`; passing them without `--managed`, or passing creation-only
+  flags for a service that already exists, is an error rather than a silently ignored flag.
 - `--skip-activation` pushes the revision as `PENDING` without rolling it out.
 - `--skip-validation` skips the pre-deploy YAML validation (validation runs by default and aborts on
   blocking issues).
@@ -151,7 +155,7 @@ UI for your pipeline. On an interactive terminal you are prompted; you can also 
 
 ```shell
 # deploy and create a share link that expires in 7 days, no login required
-haystack-enterprise deploy pipeline.py my-service --create --share --share-expiration-days 7 --no-share-login-required
+haystack-enterprise deploy pipeline.py my-service --share --share-expiration-days 7 --no-share-login-required
 ```
 
 - `--share` / `--no-share` create or skip the link (default: prompt on an interactive terminal).
@@ -185,7 +189,7 @@ incrementally.
 | 1. Build | *(Haystack, no CLI)* | Build & test your pipeline/agent locally | No |
 | 2. Validate | `haystack-enterprise validate pipeline.py` | Transform + validate the YAML; confirm it's deployable | Yes |
 | 3. Run | `haystack-enterprise run pipeline.py --query "..."` | Transform + run in the platform sandbox, results in your terminal | Yes |
-| 4. Deploy | `haystack-enterprise deploy pipeline.py my-service --create` | Create a serverless service (or `--managed`), push & activate a revision; optional share link | Yes |
+| 4. Deploy | `haystack-enterprise deploy pipeline.py my-service` | Reuse or create the service (serverless, or `--managed`), push & activate a revision; optional share link | Yes |
 | — | `haystack-enterprise service-status my-service` | Check a service's current status | Yes |
 
 > On Windows, replace `haystack-enterprise` with `python -m haystack_enterprise_sdk.cli`.

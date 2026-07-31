@@ -63,6 +63,19 @@ def test_run_forwards_to_async_client(async_cls: Mock) -> None:
 
 
 @patch("haystack_enterprise_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
+def test_find_service_forwards(async_cls: Mock) -> None:
+    async_instance = async_cls.return_value
+    deployment = _result().deployment
+    async_instance.find_service = AsyncMock(return_value=deployment)
+
+    client = DeploymentClient()
+    result = client.find_service("svc")
+
+    assert result is deployment
+    async_instance.find_service.assert_awaited_once_with("svc")
+
+
+@patch("haystack_enterprise_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
 def test_get_service_status_forwards(async_cls: Mock) -> None:
     async_instance = async_cls.return_value
     deployment = _result().deployment

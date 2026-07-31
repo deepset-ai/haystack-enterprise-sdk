@@ -87,6 +87,9 @@ def _prototype() -> SharedPrototype:
 
 
 class TestDeployCommand:
+    # ``find_service`` on the mocked client returns a truthy Mock by default, i.e. the service already
+    # exists — the common case. Tests about creating a service set it to ``None`` explicitly.
+
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_skip_activation(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=False)
@@ -153,7 +156,8 @@ class TestDeployCommand:
         assert "bad thing" in result.stdout
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
-    def test_deploy_create_managed_passes_options(self, client_cls: Mock) -> None:
+    def test_deploy_managed_passes_options(self, client_cls: Mock) -> None:
+        client_cls.return_value.find_service.return_value = None
         client_cls.return_value.deploy.return_value = _result(activated=True)
         result = runner.invoke(
             cli_app,
@@ -161,7 +165,6 @@ class TestDeployCommand:
                 "deploy",
                 FIXTURE,
                 "svc",
-                "--create",
                 "--managed",
                 "--service-level",
                 "PRODUCTION",
@@ -180,15 +183,57 @@ class TestDeployCommand:
         assert options.max_query_replica_count == 3
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
-    def test_deploy_create_defaults_to_serverless(self, client_cls: Mock) -> None:
+    def test_deploy_missing_service_is_created_serverless(self, client_cls: Mock) -> None:
+        # No --create needed: a service that doesn't exist yet is created (serverless) and reported.
+        client_cls.return_value.find_service.return_value = None
         client_cls.return_value.deploy.return_value = _result(activated=True, mode=DeploymentMode.SERVERLESS)
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--create"])
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 0
+        assert "Created serverless service 'svc'" in result.stdout
         _, kwargs = client_cls.return_value.deploy.call_args
+        assert kwargs["create"] is True
         options = kwargs["create_options"]
         assert options.deployment_mode == DeploymentMode.SERVERLESS
         assert options.service_level is None
         assert options.cpu_limit is None
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_existing_service_is_reused(self, client_cls: Mock) -> None:
+        client_cls.return_value.find_service.return_value = _deployment()
+        client_cls.return_value.deploy.return_value = _result(activated=True)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
+        assert result.exit_code == 0
+        assert "Created" not in result.stdout
+        _, kwargs = client_cls.return_value.deploy.call_args
+        assert kwargs["create_options"] is None
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_create_on_existing_service_fails(self, client_cls: Mock) -> None:
+        client_cls.return_value.find_service.return_value = _deployment()
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--create"])
+        assert result.exit_code == 1
+        assert "already exists" in result.stdout
+        assert "--create" in result.stdout
+        client_cls.return_value.deploy.assert_not_called()
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_no_create_on_missing_service_fails(self, client_cls: Mock) -> None:
+        client_cls.return_value.find_service.return_value = None
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--no-create"])
+        assert result.exit_code == 1
+        assert "No service named 'svc'" in result.stdout
+        assert "--no-create" in result.stdout
+        client_cls.return_value.deploy.assert_not_called()
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_managed_on_existing_service_fails(self, client_cls: Mock) -> None:
+        client_cls.return_value.find_service.return_value = _deployment()
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--managed", "--cpu", "2"])
+        assert result.exit_code == 1
+        assert "already exists" in result.stdout
+        assert "--managed" in result.stdout
+        assert "--cpu" in result.stdout
+        client_cls.return_value.deploy.assert_not_called()
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_serverless_reports_served_revision(self, client_cls: Mock) -> None:
@@ -197,26 +242,22 @@ class TestDeployCommand:
         deploy_result = _result(
             activated=True, status=DeploymentStatus.DEPLOYMENT_IN_PROGRESS, mode=DeploymentMode.SERVERLESS
         )
+        client_cls.return_value.find_service.return_value = None
         client_cls.return_value.deploy.return_value = deploy_result
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--create", "--no-share"])
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--no-share"])
         assert result.exit_code == 0
         assert f"serving revision {deploy_result.revision.revision_id}" in result.stdout
         assert "DEPLOYMENT_IN_PROGRESS" not in result.stdout
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_sizing_flags_without_managed_fail(self, client_cls: Mock) -> None:
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--create", "--cpu", "2", "--max-replicas", "3"])
+        # This guard is pure flag validation: it fires before the service is even looked up.
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--cpu", "2", "--max-replicas", "3"])
         assert result.exit_code == 1
         assert "--cpu" in result.stdout
         assert "--max-replicas" in result.stdout
         assert "--managed" in result.stdout
-        client_cls.return_value.deploy.assert_not_called()
-
-    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
-    def test_deploy_managed_without_create_fails(self, client_cls: Mock) -> None:
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--managed"])
-        assert result.exit_code == 1
-        assert "--create" in result.stdout
+        client_cls.return_value.find_service.assert_not_called()
         client_cls.return_value.deploy.assert_not_called()
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
@@ -247,6 +288,41 @@ class TestDeployCommand:
         assert service_name == "svc"
         assert options.expiration_days == 30
         assert options.login_required is True
+
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_share_questions_are_asked_together_after_the_deploy(self, client_cls: Mock, _isatty: Mock) -> None:
+        # Both share questions belong at the end of the run, back to back — not one before the rollout
+        # and one after it.
+        client_cls.return_value.deploy.return_value = _result(activated=True)
+        client_cls.return_value.create_shared_prototype.return_value = _prototype()
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"], input="y\ny\n")
+        assert result.exit_code == 0
+        deployed = result.stdout.index("is now DEPLOYED")
+        share_prompt = result.stdout.index("Create a shareable prototype link")
+        login_prompt = result.stdout.index("Require login to open the shared link")
+        assert deployed < share_prompt < login_prompt
+        _, options = client_cls.return_value.create_shared_prototype.call_args.args
+        assert options.login_required is True
+
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_share_declined_skips_login_question(self, client_cls: Mock, _isatty: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=True)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"], input="n\n")
+        assert result.exit_code == 0
+        assert "Require login" not in result.stdout
+        client_cls.return_value.create_shared_prototype.assert_not_called()
+
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_no_share_question_when_not_deployed(self, client_cls: Mock, _isatty: Mock) -> None:
+        # Nothing to share yet, so the user isn't asked about a link they cannot get.
+        client_cls.return_value.deploy.return_value = _result(activated=True, timed_out=True)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
+        assert result.exit_code == 0
+        assert "Create a shareable prototype link" not in result.stdout
+        client_cls.return_value.create_shared_prototype.assert_not_called()
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_skip_io_validation_forwards_flag_true(self, client_cls: Mock) -> None:

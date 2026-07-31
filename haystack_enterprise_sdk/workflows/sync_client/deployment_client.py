@@ -166,6 +166,10 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
             )
         )
 
+    def find_service(self, service_name: str) -> Optional[Deployment]:
+        """Return the service deployment named ``service_name``, or ``None`` if the workspace has none."""
+        return _run(self._async_client.find_service(service_name))
+
     def get_service_status(self, service_name: str) -> Deployment:
         """Return the current deployment (with live runtime status) for ``service_name``."""
         return _run(self._async_client.get_service_status(service_name))

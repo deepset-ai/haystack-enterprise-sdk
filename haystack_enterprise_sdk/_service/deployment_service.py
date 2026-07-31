@@ -339,6 +339,14 @@ class DeploymentService:
             include_outputs_from=include_outputs_from,
         )
 
+    async def find_service(self, service_name: str) -> Optional[Deployment]:
+        """Return the service deployment named ``service_name``, or ``None`` if the workspace has none.
+
+        :param service_name: Name of the service deployment to look up.
+        :return: The matching deployment, or ``None``.
+        """
+        return await self._deployments.find_by_name(self._workspace_name, service_name)
+
     async def get_service_status(self, service_name: str) -> Deployment:
         """Return the current deployment (with live runtime status) for ``service_name``.
 
@@ -392,7 +400,7 @@ class DeploymentService:
         if not create:
             raise ServiceNotFoundError(
                 f"No service deployment named '{service_name}' in workspace '{self._workspace_name}'. "
-                "Pass create=True (or --create) to create it."
+                "Pass create=True (or drop --no-create) to create it."
             )
         options = create_options or CreateOptions()
         logger.info("Creating service deployment.", service=service_name, mode=options.deployment_mode.value)

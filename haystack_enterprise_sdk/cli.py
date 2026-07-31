@@ -32,6 +32,7 @@ from haystack_enterprise_sdk._api.upload_sessions import WriteMode
 from haystack_enterprise_sdk._service.deployment_service import (
     CreateOptions,
     DeploymentFailedError,
+    DeployResult,
     ServiceNotFoundError,
     ShareOptions,
 )
@@ -411,7 +412,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     target: Path,
     service_name: str,
     skip_activation: bool = False,
-    create: bool = False,
+    create: Optional[bool] = typer.Option(None, "--create/--no-create"),
     managed: bool = False,
     entrypoint: Optional[str] = None,
     service_level: Optional[DeploymentServiceLevel] = None,
@@ -447,18 +448,20 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param service_name: Name of the target service deployment.
     :param skip_activation: Push the revision without activating it (skips the rollout and wait).
         By default the new revision is activated and the CLI waits for the rollout to finish.
-    :param create: Create the service if it does not exist. The new service is serverless unless
-        --managed is passed.
+    :param create: By default the service is reused when it exists and created (serverless unless
+        --managed is passed) when it does not. Pass --create to require that it does not exist yet,
+        or --no-create to require that it already exists; either way the command fails fast.
     :param managed: Create the service as a managed (provisioned) deployment instead of a serverless
-        one. Required to use any of the sizing options below, which serverless ignores.
+        one. Required to use any of the sizing options below, which serverless ignores. Only applies
+        when the service is created.
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
-    :param service_level: Service sizing tier when creating the service (with --create --managed).
-    :param min_replicas: Minimum query replicas (with --create --managed).
-    :param max_replicas: Maximum query replicas (with --create --managed).
-    :param cpu: CPU limit, e.g. '1' (with --create --managed).
-    :param memory: Memory limit, e.g. '2Gi' (with --create --managed).
-    :param gpu: GPU memory limit in gigabytes (with --create --managed).
-    :param idle_timeout: Idle timeout in seconds before scale-down (with --create --managed).
+    :param service_level: Service sizing tier when creating the service (with --managed).
+    :param min_replicas: Minimum query replicas (with --managed).
+    :param max_replicas: Maximum query replicas (with --managed).
+    :param cpu: CPU limit, e.g. '1' (with --managed).
+    :param memory: Memory limit, e.g. '2Gi' (with --managed).
+    :param gpu: GPU memory limit in gigabytes (with --managed).
+    :param idle_timeout: Idle timeout in seconds before scale-down (with --managed).
     :param python: Path to the Python interpreter used to load your pipeline (defaults to an
         auto-detected virtualenv near the target file, else the current interpreter).
     :param dry_run: Transform the pipeline and print/write the resulting YAML without deploying. No
@@ -483,11 +486,11 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param api_url: API URL to use for authentication.
     :param workspace_name: Workspace to deploy into. Uses the workspace from the .ENV file by default.
 
-    Example (creates a serverless service, activates the revision):
-    `deepset-cloud deploy pipeline.py my-service --create`
+    Example (reuses the service, or creates it serverless when missing, and activates the revision):
+    `deepset-cloud deploy pipeline.py my-service`
 
     Create a managed service with explicit sizing (activates and waits for the rollout):
-    `deepset-cloud deploy pipeline.py my-service --create --managed --service-level PRODUCTION --cpu 2`
+    `deepset-cloud deploy pipeline.py my-service --managed --service-level PRODUCTION --cpu 2`
 
     Push a revision without rolling it out:
     `deepset-cloud deploy pipeline.py my-service --skip-activation`
@@ -523,12 +526,32 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             f"Add --managed to size the service, or drop the flag to create a serverless one."
         )
         raise typer.Exit(1)
-    if managed and not create:
-        typer.echo("--managed only applies when creating a service; add --create or drop --managed.")
-        raise typer.Exit(1)
 
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
-    if not create:
+
+    # Resolving the service is the first thing we do: a name clash with --create, a missing service
+    # with --no-create, or creation-only flags on an existing service are all reported before the
+    # pipeline is loaded and transformed. The service itself is only created later, after validation.
+    existing = client.find_service(service_name)
+    if create is True and existing is not None:
+        typer.echo(
+            f"Service '{service_name}' already exists in workspace '{workspace_name}'. "
+            f"Drop --create to deploy a new revision to it."
+        )
+        raise typer.Exit(1)
+    if create is False and existing is None:
+        typer.echo(f"No service named '{service_name}' in workspace '{workspace_name}'. Drop --no-create to create it.")
+        raise typer.Exit(1)
+    if existing is not None and (managed or given_sizing):
+        creation_flags = (["--managed"] if managed else []) + given_sizing
+        applies = "only applies" if len(creation_flags) == 1 else "only apply"
+        typer.echo(
+            f"Service '{service_name}' already exists; {', '.join(creation_flags)} {applies} when a "
+            f"service is created. Drop the flag to deploy to the existing service."
+        )
+        raise typer.Exit(1)
+
+    if existing is not None:
         create_options = None
     elif managed:
         create_options = CreateOptions(
@@ -547,13 +570,11 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     activate = not skip_activation
 
     # A shared prototype requires the service to be deployed, so it is only offered when we activate.
-    if skip_activation:
-        if share:
-            typer.echo("--share requires activation; drop --skip-activation to share a prototype.")
-            raise typer.Exit(1)
-        do_share = False
-    else:
-        do_share = share if share is not None else _prompt_share()
+    # The share questions themselves are asked after the deploy (see _offer_shared_prototype), so all
+    # of them sit together at the end of the run instead of straddling the rollout.
+    if skip_activation and share:
+        typer.echo("--share requires activation; drop --skip-activation to share a prototype.")
+        raise typer.Exit(1)
 
     # The I/O mapping is reviewed interactively on every deploy — unless an io-config (explicit or
     # auto-detected) already pins it, which bypasses the review entirely.
@@ -583,7 +604,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     target,
                     service_name,
                     activate=True,
-                    create=create,
+                    create=create is not False,
                     create_options=create_options,
                     entrypoint=entrypoint,
                     inputs=io_inputs,
@@ -598,7 +619,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             result = client.deploy(
                 target,
                 service_name,
-                create=create,
+                create=create is not False,
                 create_options=create_options,
                 entrypoint=entrypoint,
                 inputs=io_inputs,
@@ -618,6 +639,16 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         typer.echo(str(err))
         raise typer.Exit(1)  # noqa: B904
 
+    if existing is None:
+        # Highlighted: creating a service is a side effect the user did not explicitly ask for, so it
+        # should stand out from the regular deploy output.
+        typer.secho(
+            f"Created {result.deployment.deployment_mode.value.lower()} service '{service_name}' "
+            f"in workspace '{workspace_name}'.",
+            fg=typer.colors.GREEN,
+            bold=True,
+        )
+
     if not activate:
         typer.echo(
             f"Pushed revision {result.revision.revision_id} to '{service_name}' (status: PENDING). "
@@ -634,25 +665,15 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     else:
         typer.echo(f"Service '{service_name}' is now {result.deployment.status.value}.")
 
-    if do_share:
-        if not result.is_deployed:
-            typer.echo(
-                f"Skipped shared prototype: '{service_name}' is not deployed yet "
-                f"(status: {result.deployment.status.value}). Create the link in the platform "
-                f"once it is deployed."
-            )
-        else:
-            login_required = share_login_required if share_login_required is not None else _prompt_login_required()
-            try:
-                prototype = client.create_shared_prototype(
-                    service_name,
-                    ShareOptions(expiration_days=share_expiration_days, login_required=login_required),
-                )
-            except FailedToCreateSharedPrototypeError as err:
-                # The deploy itself succeeded, so this is a warning, not a failure exit.
-                typer.echo(f"Deployed, but could not create the shared prototype link: {err}")
-            else:
-                typer.echo(f"Shared prototype link: {prototype.link}")
+    if activate:
+        _offer_shared_prototype(
+            client,
+            service_name,
+            result,
+            share=share,
+            expiration_days=share_expiration_days,
+            login_required=share_login_required,
+        )
 
 
 @cli_app.command()
@@ -883,6 +904,54 @@ def _prompt_login_required() -> bool:
     if not _stdin_is_tty():
         return True
     return typer.confirm("Require login to open the shared link?", default=True)
+
+
+def _offer_shared_prototype(
+    client: DeploymentClient,
+    service_name: str,
+    result: DeployResult,
+    *,
+    share: Optional[bool],
+    expiration_days: int,
+    login_required: Optional[bool],
+) -> None:
+    """Offer a shared prototype link for a just-deployed service and create it if wanted.
+
+    Runs at the very end of a deploy, so both share questions ("create a link?" and "require login?")
+    are asked back to back rather than one before the rollout and one after it.
+
+    :param client: Client used to create the link.
+    :param service_name: Name of the deployed service.
+    :param result: The deploy result; the link is only offered once the service is serving.
+    :param share: ``--share/--no-share`` if given, else None to prompt.
+    :param expiration_days: Days until the link expires.
+    :param login_required: ``--share-login-required/--no-...`` if given, else None to prompt.
+    """
+    if not result.is_deployed:
+        # Nothing to share yet, so there is nothing to ask about either; only an explicit --share
+        # deserves a note that it was skipped.
+        if share:
+            typer.echo(
+                f"Skipped shared prototype: '{service_name}' is not deployed yet "
+                f"(status: {result.deployment.status.value}). Create the link in the platform "
+                f"once it is deployed."
+            )
+        return
+
+    if not (share if share is not None else _prompt_share()):
+        return
+
+    require_login = login_required if login_required is not None else _prompt_login_required()
+    try:
+        prototype = client.create_shared_prototype(
+            service_name,
+            ShareOptions(expiration_days=expiration_days, login_required=require_login),
+        )
+    except FailedToCreateSharedPrototypeError as err:
+        # The deploy itself succeeded, so this is a warning, not a failure exit.
+        typer.echo(f"Deployed, but could not create the shared prototype link: {err}")
+    else:
+        typer.echo(f"Shared prototype link: {prototype.link}")
 
 
 # Sentinel returned by _select_socket when the user keeps the current mapping (Enter in edit mode).

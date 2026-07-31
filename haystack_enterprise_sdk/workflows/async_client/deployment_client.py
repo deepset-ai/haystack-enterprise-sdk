@@ -172,6 +172,11 @@ class AsyncDeploymentClient:
                 include_outputs_from=include_outputs_from,
             )
 
+    async def find_service(self, service_name: str) -> Optional[Deployment]:
+        """Return the service deployment named ``service_name``, or ``None`` if the workspace has none."""
+        async with self._service() as service:
+            return await service.find_service(service_name)
+
     async def get_service_status(self, service_name: str) -> Deployment:
         """Return the current deployment (with live runtime status) for ``service_name``."""
         async with self._service() as service:
