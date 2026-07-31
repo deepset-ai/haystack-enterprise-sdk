@@ -41,6 +41,21 @@ def raise_for_unexpected_status(
         raise error_cls(f"{message} Status code: {response.status_code}. {response.text}")
 
 
+def deployment_base_url(api_url: str, workspace_name: str, deployment_id: Any) -> str:
+    """Build the base URL of a deployment's OpenAI-compatible endpoint.
+
+    The platform serves ``POST <this>/chat/completions`` for a deployment with an active revision. It is
+    keyed on the deployment id, not the service name. Returned without the ``/chat/completions`` suffix
+    because that is exactly the ``base_url`` an OpenAI client expects (it appends the path itself).
+
+    :param api_url: Base API URL, already normalized (see :func:`~haystack_enterprise_sdk._api.config.normalize_base_url`).
+    :param workspace_name: Name of the workspace the deployment lives in.
+    :param deployment_id: The deployment's id.
+    :return: e.g. ``https://api.cloud.deepset.ai/api/v1/workspaces/my-ws/deployments/<uuid>``.
+    """
+    return f"{api_url}/{API_VERSION_PATH}/workspaces/{workspace_name}/deployments/{deployment_id}"
+
+
 class HaystackEnterpriseAPI:
     """Haystack Enterprise Platform API client.
 

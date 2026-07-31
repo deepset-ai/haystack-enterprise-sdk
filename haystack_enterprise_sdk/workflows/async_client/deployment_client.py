@@ -17,7 +17,10 @@ from haystack_enterprise_sdk._api.deployments import (
     DeploymentStatus,
     PipelineValidationResult,
 )
-from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
+from haystack_enterprise_sdk._api.haystack_enterprise_api import (
+    HaystackEnterpriseAPI,
+    deployment_base_url,
+)
 from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, OnRetry
 from haystack_enterprise_sdk._api.shared_prototypes import SharedPrototype
 from haystack_enterprise_sdk._service.deployment_service import (
@@ -66,6 +69,22 @@ class AsyncDeploymentClient:
                 "Workspace not configured. Provide a workspace name or set the `DEFAULT_WORKSPACE_NAME` "
                 "environment variable."
             )
+
+    @property
+    def workspace_name(self) -> str:
+        """The workspace this client deploys into."""
+        return self._workspace_name
+
+    def deployment_base_url(self, deployment_id: Any) -> str:
+        """The OpenAI-compatible base URL of a deployment in this client's workspace.
+
+        Append ``/chat/completions`` to call it directly, or hand it to an OpenAI client as ``base_url``.
+        Only usable once the deployment has an active revision.
+
+        :param deployment_id: Id of the deployment (e.g. ``DeployResult.deployment.deployment_id``).
+        :return: The deployment's base URL.
+        """
+        return deployment_base_url(self._api_config.api_url, self._workspace_name, deployment_id)
 
     @asynccontextmanager
     async def _service(self) -> AsyncIterator[DeploymentService]:

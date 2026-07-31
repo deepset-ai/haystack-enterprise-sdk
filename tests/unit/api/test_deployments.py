@@ -21,6 +21,7 @@ from haystack_enterprise_sdk._api.deployments import (
     FailedToValidatePipelineError,
     PipelineValidationResult,
 )
+from haystack_enterprise_sdk.models import PipelineOutputType
 
 _REQUEST = Request("GET", "https://test.deepset.ai")
 
@@ -322,3 +323,24 @@ class TestDeploymentModeParsing:
     def test_unknown_deployment_mode_defaults_to_managed(self) -> None:
         body = {**_deployment_body("svc"), "deployment_mode": "WAT"}
         assert Deployment.from_response(body).deployment_mode == DeploymentMode.MANAGED
+
+
+class TestOutputTypeParsing:
+    """The platform's own answer to "is this a chat pipeline?", derived from the active revision."""
+
+    def test_reads_output_type(self) -> None:
+        body = {**_deployment_body("svc"), "output_type": "chat"}
+        assert Deployment.from_response(body).output_type is PipelineOutputType.CHAT
+
+    def test_missing_output_type_is_none(self) -> None:
+        # Absent until a revision is active, which is the normal case for a freshly pushed revision.
+        assert Deployment.from_response(_deployment_body("svc")).output_type is None
+
+    def test_null_output_type_is_none(self) -> None:
+        body = {**_deployment_body("svc"), "output_type": None}
+        assert Deployment.from_response(body).output_type is None
+
+    def test_unknown_output_type_is_none(self) -> None:
+        # The platform has values this SDK does not model (e.g. "unknown"); they must not crash a deploy.
+        body = {**_deployment_body("svc"), "output_type": "unknown"}
+        assert Deployment.from_response(body).output_type is None

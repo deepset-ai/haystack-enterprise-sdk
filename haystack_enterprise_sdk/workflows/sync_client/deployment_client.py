@@ -182,3 +182,12 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
     def create_shared_prototype(self, service_name: str, options: Optional[ShareOptions] = None) -> SharedPrototype:
         """Create a shared prototype (a shareable chat UI link) for a deployed service synchronously."""
         return _run(self._async_client.create_shared_prototype(service_name, options))
+
+    @property
+    def workspace_name(self) -> str:
+        """The workspace this client deploys into."""
+        return self._async_client.workspace_name
+
+    def deployment_base_url(self, deployment_id: Any) -> str:
+        """The OpenAI-compatible base URL of a deployment. See :meth:`AsyncDeploymentClient.deployment_base_url`."""
+        return self._async_client.deployment_base_url(deployment_id)

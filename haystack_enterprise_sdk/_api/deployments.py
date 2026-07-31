@@ -20,6 +20,7 @@ from haystack_enterprise_sdk._api.haystack_enterprise_api import (
     HaystackEnterpriseAPI,
     raise_for_unexpected_status,
 )
+from haystack_enterprise_sdk.models import PipelineOutputType
 
 logger = structlog.get_logger(__name__)
 
@@ -89,6 +90,10 @@ class Deployment:
     active_revision_id: Optional[UUID]
     pending_revision_id: Optional[UUID]
     deployment_mode: DeploymentMode = DeploymentMode.MANAGED
+    # How the platform classifies what this deployment returns. Derived server-side from the *active*
+    # revision, so it stays None until a revision is activated. This is the platform's own answer to
+    # "is this a chat pipeline?" -- the CLI reads it rather than guessing from components or sockets.
+    output_type: Optional[PipelineOutputType] = None
 
     @classmethod
     def from_response(cls, body: Dict[str, Any]) -> "Deployment":
@@ -109,6 +114,9 @@ class Deployment:
             # A server that does not report the mode is read as managed: that is the platform default,
             # and treating an unknown deployment as managed keeps the rollout polling in place.
             deployment_mode=_enum_or_default(DeploymentMode, body.get("deployment_mode"), DeploymentMode.MANAGED),
+            # The platform enum has values this SDK does not model (e.g. "unknown"), and the field is
+            # absent until a revision is active, so anything unrecognized degrades to None.
+            output_type=_enum_or_none(PipelineOutputType, body.get("output_type")),
         )
 
 
@@ -515,6 +523,17 @@ def _parse_validation_issues(body: Any) -> List[PipelineValidationIssue]:
 
 def _optional_uuid(value: Optional[str]) -> Optional[UUID]:
     return UUID(value) if value else None
+
+
+def _enum_or_none(enum_cls: Type[_E], value: Any) -> Optional[_E]:
+    """Return ``enum_cls(value)`` or None if ``value`` is missing/unknown (logs on unknown)."""
+    if value is None:
+        return None
+    try:
+        return enum_cls(value)
+    except ValueError:
+        logger.warning("Unknown enum value; ignoring.", enum=enum_cls.__name__, value=value)
+        return None
 
 
 def _enum_or_default(enum_cls: Type[_E], value: Any, default: _E) -> _E:

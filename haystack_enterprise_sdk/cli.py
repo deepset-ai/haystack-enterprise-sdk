@@ -475,17 +475,18 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         API credentials are needed.
     :param output: With --dry-run, write the transformed YAML to this file instead of stdout.
     :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections (and an
-        optional `pipeline_output_type`) that replace inference and skip the interactive mapping
-        review. Defaults to `<target>.io.yaml` next to the pipeline file when that exists (the file
-        the interactive review offers to save).
-    :param skip_io_validation: Deploy even if mandatory pipeline inputs aren't mapped to platform
-        inputs; skips the interactive input/output mapping review and deploys with whatever was
-        inferred. Use for arbitrary pipelines you invoke directly rather than via the Playground or
-        shared prototype chat UI.
+        optional `pipeline_output_type`) that replace inference and skip all mapping prompts. Defaults
+        to `<target>.io.yaml` next to the pipeline file when that exists (the file the interactive
+        review offers to save).
+    :param skip_io_validation: Skip all input/output mapping prompts and deploy with whatever was
+        inferred, warning about nothing. The platform rejects a pipeline with no query input or no
+        output, so expect the deploy to fail validation unless you also pass --skip-validation.
     :param skip_validation: Skip validating the generated YAML against the platform before deploying.
         By default the YAML is validated and the deploy is aborted on blocking (ERROR) issues.
-    :param share: Create a shareable prototype link (opens a chat UI) after deploying. Omit to be
-        prompted on an interactive terminal; pass --share/--no-share to force the choice.
+    :param share: Create a shareable prototype link (opens a chat UI) after deploying. Not created
+        unless asked for; a plain deploy prints the service's chat-completions endpoint instead.
+        Because the chat UI routes through the pipeline's input/output mapping, --share is also what
+        triggers the interactive mapping review.
     :param share_expiration_days: Days until the shared prototype link expires (default 30).
     :param share_login_required: Whether recipients must log in to open the shared link. Omit to be
         prompted when sharing interactively (default require login).
@@ -583,17 +584,21 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         typer.echo("--share requires activation; drop --skip-activation to share a prototype.")
         raise typer.Exit(1)
 
-    # The I/O mapping is reviewed interactively on every deploy — unless an io-config (explicit or
-    # auto-detected) already pins it, which bypasses the review entirely.
+    # An io-config (explicit or auto-detected) pins the mapping, so nothing is asked. Otherwise --share
+    # reviews the whole mapping, because its chat UI routes through all of it; a plain deploy asks only
+    # for the two things the platform requires of a servable pipeline (a query input and one output) and
+    # only when inference did not already supply them.
     if io_inputs is not None or io_outputs is not None:
-        io_resolver = None
-    else:
+        io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="warn")
+    elif share:
         io_resolver = functools.partial(
             _resolve_io_interactive,
             skip_validation=skip_io_validation,
             mode="review",
             save_path=Path(target).with_suffix(".io.yaml"),
         )
+    else:
+        io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="serve")
 
     try:
         if activate:
@@ -681,6 +686,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             expiration_days=share_expiration_days,
             login_required=share_login_required,
         )
+        _echo_endpoint(client, service_name, result, shared=bool(share))
 
 
 @cli_app.command()
@@ -704,9 +710,10 @@ def validate(
     :param python: Path to the Python interpreter used to load your pipeline (defaults to an
         auto-detected virtualenv near the target file, else the current interpreter).
     :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections (and an
-        optional `pipeline_output_type`) that replace inference and skip the interactive mapping
-        prompt. Defaults to `<target>.io.yaml` next to the pipeline file when that exists.
-    :param skip_io_validation: Skip the interactive input/output prompt and use whatever was inferred.
+        optional `pipeline_output_type`) that replace inference. Defaults to `<target>.io.yaml` next to
+        the pipeline file when that exists.
+    :param skip_io_validation: Skip the warning about mandatory pipeline inputs that aren't mapped to a
+        platform input. Validation never prompts for the mapping.
     :param api_key: deepset API key to use for authentication.
     :param api_url: API URL to use for authentication.
     :param workspace_name: Workspace to validate against. Uses the workspace from the .ENV file by default.
@@ -719,7 +726,8 @@ def validate(
         _load_io_config(io_config_path) if io_config_path is not None else (None, None, None)
     )
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
-    io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation)
+    # Validation never sends a query and never serves a chat UI, so the mapping is used as inferred.
+    io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="warn")
     try:
         result = client.validate(
             target,
@@ -784,9 +792,10 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
     :param python: Path to the Python interpreter used to load your pipeline (defaults to an
         auto-detected virtualenv near the target file, else the current interpreter).
     :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections that
-        replace inference and skip the interactive mapping prompt. Defaults to `<target>.io.yaml`
+        replace inference and skip the query-socket prompt. Defaults to `<target>.io.yaml`
         next to the pipeline file when that exists.
-    :param skip_io_validation: Skip the interactive input/output prompt and use whatever was inferred.
+    :param skip_io_validation: Skip the query-socket prompt and use whatever was inferred. Nothing is
+        asked anyway when a query can already be routed, or when only --inputs is given.
     :param output: Write the pipeline output JSON to this file instead of printing it to stdout.
     :param retries: Number of retry attempts after a transient failure (network error, timeout, 429,
         5xx). 0 disables retrying. Config and input errors are never retried.
@@ -808,7 +817,13 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
         query = typer.prompt("Query")
 
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
-    io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation)
+    # The mapping is only consumed to route a query onto a socket. With --inputs alone there is nothing
+    # to route, so there is nothing to ask about.
+    io_resolver = functools.partial(
+        _resolve_io_interactive,
+        skip_validation=skip_io_validation,
+        mode="query" if query is not None else "warn",
+    )
 
     def _invoke(resolver: Any, on_retry: Optional[Any]) -> dict:
         return client.run(
@@ -913,9 +928,9 @@ def _deploy_dry_run(
     """Transform the pipeline and print/write the YAML without contacting the API.
 
     Uses the same extract → resolve → render path as the real deploy (:func:`build_config_yaml`).
-    Prompts only for mapping gaps (``mode="gaps"``) so scripted dry runs stay quiet.
+    Never prompts (``mode="warn"``): a dry run renders YAML, it does not serve or query anything.
     """
-    io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation)
+    io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="warn")
     try:
         config_yaml = build_config_yaml(
             target,
@@ -985,13 +1000,6 @@ def _elapsed_ticker(spinner: Any, text: Callable[[int], str]) -> Iterator[Callab
         thread.join(timeout=2.0)
 
 
-def _prompt_share() -> bool:
-    """Ask whether to create a shareable prototype link. Returns False on a non-interactive terminal."""
-    if not _stdin_is_tty():
-        return False
-    return typer.confirm("Create a shareable prototype link (opens a chat UI) for this service?", default=False)
-
-
 def _prompt_login_required() -> bool:
     """Ask whether the shared link should require login. Returns True (the safe default) on non-TTY."""
     if not _stdin_is_tty():
@@ -1008,31 +1016,39 @@ def _offer_shared_prototype(
     expiration_days: int,
     login_required: Optional[bool],
 ) -> None:
-    """Offer a shared prototype link for a just-deployed service and create it if wanted.
+    """Create a shared prototype link for a just-deployed service when ``--share`` asked for one.
 
-    Runs at the very end of a deploy, so both share questions ("create a link?" and "require login?")
-    are asked back to back rather than one before the rollout and one after it.
+    A prototype is never created unless asked for: the useful default for a deployed service is the
+    chat-completions endpoint (see :func:`_echo_endpoint`), and only ``--share`` opts into a chat UI.
 
     :param client: Client used to create the link.
     :param service_name: Name of the deployed service.
-    :param result: The deploy result; the link is only offered once the service is serving.
-    :param share: ``--share/--no-share`` if given, else None to prompt.
+    :param result: The deploy result; the link is only created once the service is serving.
+    :param share: True when ``--share`` was passed.
     :param expiration_days: Days until the link expires.
     :param login_required: ``--share-login-required/--no-...`` if given, else None to prompt.
     """
-    if not result.is_deployed:
-        # Nothing to share yet, so there is nothing to ask about either; only an explicit --share
-        # deserves a note that it was skipped.
-        if share:
-            typer.echo(
-                f"Skipped shared prototype: '{service_name}' is not deployed yet "
-                f"(status: {result.deployment.status.value}). Create the link in the platform "
-                f"once it is deployed."
-            )
+    if not share:
         return
 
-    if not (share if share is not None else _prompt_share()):
+    if not result.is_deployed:
+        # The platform only accepts a prototype for a DEPLOYED service, so say why nothing was created.
+        typer.echo(
+            f"Skipped shared prototype: '{service_name}' is not deployed yet "
+            f"(status: {result.deployment.status.value}). Create the link in the platform "
+            f"once it is deployed."
+        )
         return
+
+    if result.deployment.output_type is not PipelineOutputType.CHAT:
+        # The shared prototype is a chat UI. The platform still allows the link, so this is a warning
+        # rather than a refusal -- and --share was an explicit request.
+        reported = result.deployment.output_type.value if result.deployment.output_type else "not reported"
+        typer.echo(
+            f"Note: the platform classifies '{service_name}' as {reported}, not a chat pipeline, so the "
+            f"shared chat UI may not render its output well. Set `pipeline_output_type: chat` in the "
+            f"io-config if that is wrong."
+        )
 
     require_login = login_required if login_required is not None else _prompt_login_required()
     try:
@@ -1045,6 +1061,37 @@ def _offer_shared_prototype(
         typer.echo(f"Deployed, but could not create the shared prototype link: {err}")
     else:
         typer.echo(f"Shared prototype link: {prototype.link}")
+
+
+def _echo_endpoint(client: DeploymentClient, service_name: str, result: DeployResult, *, shared: bool) -> None:
+    """Print the ready-to-use chat-completions endpoint for a just-deployed service.
+
+    This is what a deployed service is for, and it needs no interactive mapping ceremony from us — so a
+    plain deploy hands it back instead of asking questions. The platform requires an active revision, so
+    it is only printed once the service is serving.
+
+    :param client: Client the endpoint is derived from (its api_url and workspace).
+    :param service_name: Name of the deployed service; goes into the request's ``model`` field.
+    :param result: The deploy result, for the deployment id the endpoint is keyed on.
+    :param shared: Whether a shared prototype link was already created, so the chat-pipeline hint that
+        points at ``--share`` is not repeated.
+    """
+    if not result.is_deployed:
+        return
+
+    base_url = client.deployment_base_url(result.deployment.deployment_id)
+    model = f"{client.workspace_name}/{service_name}"
+    typer.echo(f"\nChat completions endpoint (OpenAI-compatible):\n  POST {base_url}/chat/completions")
+    typer.echo(
+        f"\n  curl -N {base_url}/chat/completions \\\n"
+        f'    -H "Authorization: Bearer $API_KEY" \\\n'
+        f'    -H "Content-Type: application/json" \\\n'
+        f'    -d \'{{"model": "{model}", "messages": [{{"role": "user", "content": "Hello"}}]}}\''
+    )
+    typer.echo(f'\n  Or point an OpenAI client at base_url={base_url} with model="{model}".')
+
+    if not shared and result.deployment.output_type is PipelineOutputType.CHAT:
+        typer.echo("\nThis is a chat pipeline — re-run with --share for a shareable chat UI link.")
 
 
 # Sentinel returned by _select_socket when the user keeps the current mapping (Enter in edit mode).
@@ -1075,27 +1122,32 @@ def _resolve_io_interactive(
     current_outputs: dict,
     *,
     skip_validation: bool = False,
-    mode: str = "gaps",
+    mode: str = "warn",
     save_path: Optional[Path] = None,
 ) -> Tuple[dict, dict]:
-    """Interactively resolve the pipeline's platform input/output mapping.
+    """Resolve the pipeline's platform input/output mapping, prompting only where the mapping is used.
 
     Used as the ``io_resolver`` for the deploy/validate/run flows (:func:`resolve_io` always calls it
     when set). It receives the already-resolved ``current_inputs``/``current_outputs`` and, depending
     on ``mode``:
 
-    - ``"review"`` (the real deploy): always shows the full mapping with per-key descriptions; Enter
-      accepts, ``e`` edits key by key.
-    - ``"gaps"`` (validate/run/dry-run): silent when the mapping is complete; prompts only for the
-      standard keys still missing.
+    - ``"review"`` (``deploy --share``): shows the full mapping with per-key descriptions; Enter accepts,
+      ``e`` edits key by key. The shared prototype's chat UI routes through the mapping, so it is worth
+      confirming; any unmapped *mandatory* socket is prompted for afterwards, and the confirmed mapping
+      can be saved as an io-config.
+    - ``"serve"`` (a plain ``deploy``): asks at most the two questions the platform requires of a
+      servable pipeline — which socket receives the query, and which socket is the main output — and
+      only for whichever of the two inference did not already answer.
+    - ``"query"`` (``run`` with a query): asks the single question needed to route the query onto a
+      socket, and only when inference did not already answer it.
+    - ``"warn"`` (``validate``, ``--dry-run``): never prompts. Neither serves nor queries the pipeline,
+      so the inferred mapping is used as-is and unmapped mandatory sockets are only warned about.
 
-    In both modes, any *mandatory* socket left unmapped is prompted for afterwards — it would crash
-    the pipeline at query time. Off a TTY it returns the current mappings unchanged, warning loudly
-    about unmapped mandatory sockets, so CI never blocks.
+    Off a TTY no mode prompts: the mappings come back unchanged with the same warning, so CI never blocks.
 
     :param skip_validation: When True (``--skip-io-validation``), skip all prompting and mandatory-input
         enforcement and return the current mappings.
-    :param mode: ``"review"`` or ``"gaps"`` (see above).
+    :param mode: ``"review"``, ``"serve"``, ``"query"``, or ``"warn"`` (see above).
     :param save_path: When set (review mode), offer to save the confirmed mapping to this io-config
         file so future deploys pick it up automatically.
     """
@@ -1104,31 +1156,97 @@ def _resolve_io_interactive(
     outputs = dict(current_outputs)
     if skip_validation:
         return inputs, outputs
-    unmapped = unmapped_mandatory_inputs(extraction.mandatory_inputs, inputs)
 
-    if not _stdin_is_tty():
-        if unmapped:
-            typer.echo(f"Warning: {unmapped_mandatory_warning(unmapped)}")
+    if mode == "warn" or not _stdin_is_tty():
+        _warn_unmapped_mandatory(extraction, inputs)
         return inputs, outputs
 
-    if mode == "review":
-        inputs, outputs = _review_io_mapping(spec, extraction, inputs, outputs)
-    else:
-        if not (not inputs or not outputs or unmapped):
-            return inputs, outputs
-        inputs, outputs = _fill_io_gaps(spec, extraction, inputs, outputs)
+    if mode in ("query", "serve"):
+        inputs = _ensure_query_input(extraction, inputs)
+        if mode == "serve":
+            outputs = _ensure_output(extraction, outputs)
+        _warn_unmapped_mandatory(extraction, inputs)
+        return inputs, outputs
 
-    # Any mandatory socket still unmapped would crash the pipeline at query time — map each one.
+    inputs, outputs = _review_io_mapping(spec, extraction, inputs, outputs)
+
+    # Any mandatory socket still unmapped would crash the pipeline at query time — map each one. Only
+    # worth insisting on here: in review mode the mapping is about to be served to a chat UI.
     for socket in unmapped_mandatory_inputs(extraction.mandatory_inputs, inputs):
         key = _select_input_key_for_socket(socket)
         if socket not in inputs.setdefault(key, []):
             inputs[key].append(socket)
         typer.echo(f"  Mapped mandatory input '{socket}' to '{key}'.")
 
-    if mode == "review" and save_path is not None:
+    if save_path is not None:
         _offer_io_config_save(spec, save_path, inputs, outputs)
 
     return inputs, outputs
+
+
+def _warn_unmapped_mandatory(extraction: ExtractionBundle, inputs: dict) -> None:
+    """Warn (never prompt) about mandatory pipeline inputs no platform input routes to."""
+    unmapped = unmapped_mandatory_inputs(extraction.mandatory_inputs, inputs)
+    if unmapped:
+        typer.echo(f"Warning: {unmapped_mandatory_warning(unmapped)}")
+
+
+def _ensure_query_input(extraction: ExtractionBundle, inputs: dict) -> dict:
+    """Make sure a query can be routed somewhere, asking at most one question.
+
+    A query reaches the pipeline only through this mapping: the sockets under the ``query`` key get the
+    raw text, and those under ``messages`` get it wrapped as a user ``ChatMessage``. Both the sandbox
+    (:func:`build_run_inputs`) and the platform's own runtime drop the query silently when neither key is
+    mapped, so one of them has to exist. Silent when inference already produced one.
+    """
+    if inputs.get("query") or inputs.get("messages"):
+        return inputs
+
+    options = socket_options(extraction.available_inputs)
+    socket = _select_socket(options, "\nWhich socket receives the query?", required=False)
+    if not isinstance(socket, str):
+        return inputs
+
+    # A List[ChatMessage] socket needs the query wrapped as a chat message, which is what the 'messages'
+    # key does; everything else takes the raw string under 'query'.
+    chosen = next((option for option in options if option.path == socket), None)
+    key = "messages" if _mentions(chosen, "ChatMessage") else "query"
+    inputs.setdefault(key, []).append(socket)
+    typer.echo(f"  Mapped '{key}' to '{socket}'.")
+    return inputs
+
+
+def _ensure_output(extraction: ExtractionBundle, outputs: dict) -> dict:
+    """Make sure at least one output is mapped, asking at most one question.
+
+    The platform rejects a query pipeline with no outputs at all ("A query pipeline needs at least one
+    output"), and an unmapped output means the served result comes back empty. One is enough, so this is
+    silent whenever inference produced any. The key is picked from the socket's type, matching how
+    ``infer_outputs`` reads socket names.
+    """
+    if outputs:
+        return outputs
+
+    options = socket_options(extraction.available_outputs)
+    socket = _select_socket(options, "\nWhich socket is the main output?", required=False)
+    if not isinstance(socket, str):
+        return outputs
+
+    chosen = next((option for option in options if option.path == socket), None)
+    if _mentions(chosen, "ChatMessage"):
+        key = "messages"
+    elif _mentions(chosen, "Document"):
+        key = "documents"
+    else:
+        key = "answers"
+    outputs[key] = socket
+    typer.echo(f"  Mapped '{key}' to '{socket}'.")
+    return outputs
+
+
+def _mentions(option: Optional[SocketOption], type_name: str) -> bool:
+    """Whether a socket's declared type mentions ``type_name`` (e.g. ``List[ChatMessage]``)."""
+    return bool(option is not None and option.type_str and type_name in option.type_str)
 
 
 def _review_io_mapping(
@@ -1200,35 +1318,6 @@ def _edit_io_mapping(
             outputs.pop(key.name, None)
         else:
             outputs[key.name] = choice
-    return inputs, outputs
-
-
-def _fill_io_gaps(
-    spec: IntegrationIoSpec, extraction: ExtractionBundle, inputs: dict, outputs: dict
-) -> Tuple[dict, dict]:
-    """Prompt only for the standard platform keys that are still unmapped."""
-    typer.echo(
-        "\nCould not fully determine the pipeline inputs/outputs (needed for the Playground and "
-        "shared prototype). Please select them:"
-    )
-    input_options = socket_options(extraction.available_inputs)
-    for key in spec.inputs:
-        if inputs.get(key.name):
-            continue
-        socket = _select_socket(
-            input_options, f"Which socket is the '{key.name}' input? ({key.description})", required=False
-        )
-        if socket:
-            inputs.setdefault(key.name, []).append(socket)
-    output_options = socket_options(extraction.available_outputs)
-    for key in spec.outputs:
-        if outputs.get(key.name):
-            continue
-        socket = _select_socket(
-            output_options, f"Which socket is the '{key.name}' output? ({key.description})", required=False
-        )
-        if socket:
-            outputs[key.name] = socket
     return inputs, outputs
 
 

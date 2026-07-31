@@ -255,9 +255,10 @@ def unmapped_mandatory_warning(unmapped: List[str]) -> str:
     """The canonical warning for mandatory pipeline inputs left unmapped — used by log and CLI output."""
     return (
         f"These mandatory pipeline inputs are not mapped to any platform input: {', '.join(unmapped)}. "
-        'The pipeline will fail at query time with "Missing mandatory input". Map them interactively '
-        "on a terminal, or pass an explicit inputs mapping that routes a platform input (e.g. `query`) "
-        "to each of these sockets."
+        'A query sent through the platform will fail with "Missing mandatory input". Pass an inputs '
+        "mapping that routes a platform input (e.g. `query`) to each of these sockets -- via an "
+        "io-config file, or interactively with `deploy --share`. Harmless if you invoke the pipeline "
+        "directly with explicit inputs."
     )
 
 
