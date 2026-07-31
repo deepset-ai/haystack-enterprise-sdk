@@ -18,6 +18,7 @@ from haystack_enterprise_sdk._api.deployments import (
     PipelineValidationResult,
 )
 from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
+from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, OnRetry
 from haystack_enterprise_sdk._api.shared_prototypes import SharedPrototype
 from haystack_enterprise_sdk._service.deployment_service import (
     DEFAULT_ACTIVATION_TIMEOUT_S,
@@ -153,6 +154,8 @@ class AsyncDeploymentClient:
         filters: Optional[Any] = None,
         extra_inputs: Optional[Dict[str, Dict[str, Any]]] = None,
         include_outputs_from: Optional[List[str]] = None,
+        retries: int = DEFAULT_RUN_RETRIES,
+        on_retry: Optional[OnRetry] = None,
     ) -> Dict[str, Any]:
         """Transform ``target`` and run the generated YAML in the platform sandbox, without deploying.
 
@@ -170,6 +173,8 @@ class AsyncDeploymentClient:
                 filters=filters,
                 extra_inputs=extra_inputs,
                 include_outputs_from=include_outputs_from,
+                retries=retries,
+                on_retry=on_retry,
             )
 
     async def find_service(self, service_name: str) -> Optional[Deployment]:

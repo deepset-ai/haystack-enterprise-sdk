@@ -4,9 +4,12 @@ import functools
 import json
 import logging
 import sys
+import threading
+import time
+from contextlib import contextmanager
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Iterator, List, Optional, Sequence, Tuple, Union
 from uuid import UUID
 
 import structlog
@@ -16,6 +19,7 @@ from yaspin import yaspin
 
 __version__ = version("haystack-enterprise-sdk")
 from haystack_enterprise_sdk._api.config import (
+    ASYNC_CLIENT_TIMEOUT,
     DEFAULT_WORKSPACE_NAME,
     ENV_FILE_PATH,
     PLATFORM_URL,
@@ -26,7 +30,7 @@ from haystack_enterprise_sdk._api.deployments import (
     DeploymentServiceLevel,
     PipelineValidationError,
 )
-from haystack_enterprise_sdk._api.pipeline_run import PipelineRunError
+from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, PipelineRunError
 from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
 from haystack_enterprise_sdk._service.deployment_service import (
@@ -66,6 +70,9 @@ from haystack_enterprise_sdk.workflows.sync_client.files import (
 from haystack_enterprise_sdk.workflows.sync_client.files import upload as sync_upload
 
 cli_app = typer.Typer(pretty_exceptions_show_locals=False)
+
+# How long a sandbox run has to be waiting before the spinner explains that this is normal.
+_RUN_HINT_AFTER_S = 20
 
 
 def _configure_cli_logging(verbose: bool) -> None:
@@ -749,6 +756,7 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
     io_config: Optional[Path] = None,
     skip_io_validation: bool = False,
     output: Optional[Path] = None,
+    retries: int = DEFAULT_RUN_RETRIES,
     api_key: Optional[str] = None,
     api_url: Optional[str] = None,
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
@@ -780,6 +788,8 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
         next to the pipeline file when that exists.
     :param skip_io_validation: Skip the interactive input/output prompt and use whatever was inferred.
     :param output: Write the pipeline output JSON to this file instead of printing it to stdout.
+    :param retries: Number of retry attempts after a transient failure (network error, timeout, 429,
+        5xx). 0 disables retrying. Config and input errors are never retried.
     :param api_key: deepset API key to use for authentication.
     :param api_url: API URL to use for authentication.
     :param workspace_name: Workspace to run in. Uses the workspace from the .ENV file by default.
@@ -799,18 +809,58 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
 
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
     io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation)
-    try:
-        result = client.run(
+
+    def _invoke(resolver: Any, on_retry: Optional[Any]) -> dict:
+        return client.run(
             target,
             entrypoint=entrypoint,
             inputs=io_inputs,
             outputs=io_outputs,
-            io_resolver=io_resolver,
+            io_resolver=resolver,
             python_executable=python,
             query=query,
             extra_inputs=extra_inputs,
             include_outputs_from=include_outputs_from or None,
+            retries=retries,
+            on_retry=on_retry,
         )
+
+    # The spinner line is `<status>... <elapsed>s <hint>`; a retry swaps both parts. Kept short so it
+    # still fits an 80-column terminal, which truncates rather than wraps.
+    status = "Running pipeline in the sandbox"
+    hint = f"(runs can take minutes; timeout {ASYNC_CLIENT_TIMEOUT}s)"
+    # A quick run needs no reassurance -- hold the "this is normal" hint back until the wait is long
+    # enough that someone might start wondering whether it hung. A retry shows its reason right away.
+    hint_after_s = _RUN_HINT_AFTER_S
+
+    try:
+        # The spinner is a terminal affordance only: the payload is JSON on stdout that people pipe
+        # into jq or a file, and yaspin would scribble escape codes into it.
+        if not _stdout_is_tty():
+            result = _invoke(io_resolver, None)
+        else:
+            with yaspin().arc as spinner:
+
+                def _text(elapsed: int) -> str:
+                    if elapsed < hint_after_s:
+                        return f"{status}... {elapsed}s"
+                    return f"{status}... {elapsed}s {hint}"
+
+                with _elapsed_ticker(spinner, _text) as reset_elapsed:
+
+                    def _on_retry(attempt: int, attempts: int, reason: str) -> None:
+                        nonlocal status, hint, hint_after_s
+                        status = f"Retrying ({attempt}/{attempts})"
+                        hint = f"({_first_line(reason, limit=45)})"
+                        hint_after_s = 0
+                        reset_elapsed()
+
+                    # The I/O mapping prompt runs mid-flight; hide the spinner while it asks so the
+                    # prompt isn't drawn over (same reason as in deploy).
+                    result = _invoke(_spinner_paused_resolver(spinner, io_resolver), _on_retry)
+    except KeyboardInterrupt:
+        typer.echo("\nCancelled.")
+        raise typer.Exit(130)  # noqa: B904
     except (PipelineTransformError, PipelineRunError) as err:
         typer.echo(str(err))
         raise typer.Exit(1)  # noqa: B904
@@ -890,6 +940,49 @@ def _deploy_dry_run(
 def _stdin_is_tty() -> bool:
     """Whether stdin is an interactive terminal (indirection kept simple to patch in tests)."""
     return sys.stdin.isatty()
+
+
+def _first_line(text: str, *, limit: int) -> str:
+    """The first line of ``text``, shortened to ``limit`` characters, for one-line spinner output."""
+    line = text.strip().splitlines()[0] if text.strip() else ""
+    return line if len(line) <= limit else f"{line[: limit - 1]}\N{HORIZONTAL ELLIPSIS}"
+
+
+def _stdout_is_tty() -> bool:
+    """Whether stdout is an interactive terminal (indirection kept simple to patch in tests)."""
+    return sys.stdout.isatty()
+
+
+@contextmanager
+def _elapsed_ticker(spinner: Any, text: Callable[[int], str]) -> Iterator[Callable[[], None]]:
+    """Repaint ``spinner.text`` once a second with the seconds elapsed so far.
+
+    A long sandbox run is a single blocking HTTP call with nothing to report until it returns; a
+    plain static spinner still leaves users wondering whether it hung. Ticking the elapsed seconds
+    is the cheap proof that the CLI is alive and still waiting.
+
+    Yields a ``reset()`` callable that restarts the counter -- used when a retry begins, so the
+    elapsed time always refers to the attempt currently in flight.
+    """
+    started = time.monotonic()
+    stop = threading.Event()
+
+    def reset() -> None:
+        nonlocal started
+        started = time.monotonic()
+
+    def tick() -> None:
+        while not stop.wait(1.0):
+            spinner.text = text(int(time.monotonic() - started))
+
+    spinner.text = text(0)
+    thread = threading.Thread(target=tick, daemon=True)
+    thread.start()
+    try:
+        yield reset
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
 
 
 def _prompt_share() -> bool:

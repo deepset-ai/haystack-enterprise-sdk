@@ -4,8 +4,9 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from httpx import Request, Response, codes
+from httpx import ReadTimeout, Request, Response, codes
 
+from haystack_enterprise_sdk._api import pipeline_run
 from haystack_enterprise_sdk._api.pipeline_run import (
     HaystackRunAPI,
     PipelineRunError,
@@ -113,4 +114,64 @@ class TestRunPipeline:
     ) -> None:
         mocked_haystack_enterprise_api.post.return_value = _resp(codes.INTERNAL_SERVER_ERROR, text="boom")
         with pytest.raises(PipelineRunError, match="boom"):
+            await run_api.run_pipeline("ws", pipeline_config={}, inputs={}, retries=0)
+
+
+@pytest.mark.asyncio
+class TestRunPipelineRetries:
+    """Transient failures are retried; permanent ones (bad config/inputs) are not."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff_sleep(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Keep the tests instant: exercise the retry logic, not the wall clock.
+        monkeypatch.setattr(pipeline_run, "_RETRY_BASE_DELAY_S", 0.0)
+
+    async def test_retries_transient_status_then_succeeds(
+        self, run_api: HaystackRunAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.post.side_effect = [
+            _resp(codes.SERVICE_UNAVAILABLE, text="upstream busy"),
+            _resp(codes.OK, json={"llm": {"replies": ["hi"]}}),
+        ]
+        result = await run_api.run_pipeline("ws", pipeline_config={}, inputs={})
+        assert result == {"llm": {"replies": ["hi"]}}
+        assert mocked_haystack_enterprise_api.post.call_count == 2
+
+    async def test_does_not_retry_permanent_status(
+        self, run_api: HaystackRunAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        # A bad config would fail identically on every attempt -- retrying only burns LLM credits.
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.BAD_REQUEST, json={"errors": ["bad config"]})
+        with pytest.raises(PipelineRunError, match="bad config"):
             await run_api.run_pipeline("ws", pipeline_config={}, inputs={})
+        assert mocked_haystack_enterprise_api.post.call_count == 1
+
+    async def test_retries_network_errors_and_raises_with_attempt_count(
+        self, run_api: HaystackRunAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.post.side_effect = ReadTimeout("timed out")
+        with pytest.raises(PipelineRunError, match=r"ReadTimeout.*after 3 attempt"):
+            await run_api.run_pipeline("ws", pipeline_config={}, inputs={})
+        assert mocked_haystack_enterprise_api.post.call_count == 3
+
+    async def test_retries_zero_disables_retrying(
+        self, run_api: HaystackRunAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.SERVICE_UNAVAILABLE, text="busy")
+        with pytest.raises(PipelineRunError, match="busy"):
+            await run_api.run_pipeline("ws", pipeline_config={}, inputs={}, retries=0)
+        assert mocked_haystack_enterprise_api.post.call_count == 1
+
+    async def test_on_retry_reports_attempt_and_reason(
+        self, run_api: HaystackRunAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.post.side_effect = [
+            _resp(codes.TOO_MANY_REQUESTS, text="slow down"),
+            _resp(codes.OK, json={}),
+        ]
+        seen: list = []
+        await run_api.run_pipeline("ws", pipeline_config={}, inputs={}, on_retry=lambda *args: seen.append(args))
+        assert len(seen) == 1
+        attempt, attempts, reason = seen[0]
+        assert (attempt, attempts) == (2, 3)
+        assert "slow down" in reason

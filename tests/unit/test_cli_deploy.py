@@ -20,7 +20,7 @@ from haystack_enterprise_sdk._api.deployments import (
     PipelineValidationIssue,
     PipelineValidationResult,
 )
-from haystack_enterprise_sdk._api.pipeline_run import PipelineRunError
+from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, PipelineRunError
 from haystack_enterprise_sdk._api.shared_prototypes import (
     FailedToCreateSharedPrototypeError,
     SharedPrototype,
@@ -650,6 +650,49 @@ class TestRunCommand:
         result = runner.invoke(cli_app, ["run", FIXTURE, "--query", "q"])
         assert result.exit_code == 1
         assert "missing secret" in result.stdout
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_run_passes_retries_through(self, client_cls: Mock) -> None:
+        client_cls.return_value.run.return_value = {}
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--query", "q", "--retries", "5"])
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.run.call_args
+        assert kwargs["retries"] == 5
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_run_defaults_to_three_attempts(self, client_cls: Mock) -> None:
+        client_cls.return_value.run.return_value = {}
+        runner.invoke(cli_app, ["run", FIXTURE, "--query", "q"])
+        _, kwargs = client_cls.return_value.run.call_args
+        assert kwargs["retries"] == DEFAULT_RUN_RETRIES
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_run_output_stays_parseable_json_off_tty(self, client_cls: Mock) -> None:
+        # Piped output (jq, redirect) must not contain spinner escape codes.
+        client_cls.return_value.run.return_value = {"llm": {"replies": ["hi"]}}
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--query", "q"])
+        assert result.exit_code == 0
+        assert json.loads(result.stdout) == {"llm": {"replies": ["hi"]}}
+        _, kwargs = client_cls.return_value.run.call_args
+        assert kwargs["on_retry"] is None
+
+    @patch("haystack_enterprise_sdk.cli._stdout_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_run_shows_spinner_on_tty(self, client_cls: Mock, _tty: Mock) -> None:
+        client_cls.return_value.run.return_value = {}
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--query", "q"])
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.run.call_args
+        # On a terminal the retry hook is wired up and the I/O resolver is spinner-aware.
+        assert kwargs["on_retry"] is not None
+        assert hasattr(kwargs["io_resolver"], "__wrapped__")
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_run_cancelled_exits_cleanly(self, client_cls: Mock) -> None:
+        client_cls.return_value.run.side_effect = KeyboardInterrupt()
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--query", "q"])
+        assert result.exit_code == 130
+        assert "Cancelled" in result.stdout
 
 
 def _typed_bundle() -> ExtractionBundle:

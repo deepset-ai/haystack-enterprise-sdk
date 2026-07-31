@@ -24,7 +24,12 @@ from haystack_enterprise_sdk._api.deployments import (
     PipelineValidationResult,
 )
 from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
-from haystack_enterprise_sdk._api.pipeline_run import HaystackRunAPI, build_run_inputs
+from haystack_enterprise_sdk._api.pipeline_run import (
+    DEFAULT_RUN_RETRIES,
+    HaystackRunAPI,
+    OnRetry,
+    build_run_inputs,
+)
 from haystack_enterprise_sdk._api.shared_prototypes import (
     SharedPrototype,
     SharedPrototypesAPI,
@@ -293,6 +298,8 @@ class DeploymentService:
         filters: Optional[Any] = None,
         extra_inputs: Optional[Dict[str, Dict[str, Any]]] = None,
         include_outputs_from: Optional[List[str]] = None,
+        retries: int = DEFAULT_RUN_RETRIES,
+        on_retry: Optional[OnRetry] = None,
     ) -> Dict[str, Any]:
         """Transform ``target`` and run the generated YAML in the platform sandbox, without deploying.
 
@@ -310,6 +317,9 @@ class DeploymentService:
         :param filters: Optional filters routed to the ``filters`` input key.
         :param extra_inputs: Explicit ``{component: {socket: value}}`` run inputs, merged last (wins).
         :param include_outputs_from: Component names whose outputs to include (defaults to all).
+        :param retries: Number of retry attempts after a transient failure. ``0`` disables retrying.
+        :param on_retry: Optional callback invoked as ``(next_attempt, total_attempts, reason)``
+            before each backoff sleep.
         :raises PipelineRunError: If the run fails or the query cannot be mapped to any input.
         :return: The pipeline output, a dict keyed by component name.
         """
@@ -337,6 +347,8 @@ class DeploymentService:
             pipeline_config=pipeline_config,
             inputs=run_inputs,
             include_outputs_from=include_outputs_from,
+            retries=retries,
+            on_retry=on_retry,
         )
 
     async def find_service(self, service_name: str) -> Optional[Deployment]:

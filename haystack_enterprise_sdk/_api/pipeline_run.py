@@ -8,8 +8,10 @@ Note: this endpoint is beta. The pipeline is sent as ``pipeline_config`` (the YA
 dict), not as a YAML string, and the run inputs are keyed by ``{component_name: {socket: value}}``.
 """
 
-from typing import Any, Dict, List, Optional
+import asyncio
+from typing import Any, Callable, Dict, List, Optional
 
+import httpx
 import structlog
 from httpx import codes
 
@@ -17,6 +19,18 @@ from haystack_enterprise_sdk._api.config import ASYNC_CLIENT_TIMEOUT
 from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
 
 logger = structlog.get_logger(__name__)
+
+# Statuses worth another attempt: the run never really started (or the platform asked us to back off),
+# so the same request can still succeed. Everything else -- a bad config, bad inputs, auth -- is a
+# permanent failure and retrying it would only burn time and LLM credits.
+_TRANSIENT_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+# Retries *after* the first attempt, so the default is 3 attempts in total.
+DEFAULT_RUN_RETRIES = 2
+_RETRY_BASE_DELAY_S = 2.0
+
+# Called as ``(next_attempt, total_attempts, reason)`` before each backoff sleep.
+OnRetry = Callable[[int, int, str], None]
 
 
 class PipelineRunError(Exception):
@@ -39,18 +53,24 @@ class HaystackRunAPI:
         """
         self._haystack_enterprise_api = haystack_enterprise_api
 
-    async def run_pipeline(
+    async def run_pipeline(  # pylint: disable=too-many-arguments
         self,
         workspace_name: str,
         *,
         pipeline_config: Dict[str, Any],
         inputs: Dict[str, Dict[str, Any]],
         include_outputs_from: Optional[List[str]] = None,
+        retries: int = DEFAULT_RUN_RETRIES,
+        on_retry: Optional[OnRetry] = None,
     ) -> Dict[str, Any]:
         """Run a pipeline configuration with the given inputs, without deploying it.
 
         Mirrors the builder/playground "Run" call: send the parsed pipeline config plus the run
         inputs and get back the pipeline output keyed by component name.
+
+        Transient failures (network errors, timeouts, 429 and 5xx) are retried with exponential
+        backoff. A permanent failure -- a bad config, bad inputs, auth -- is raised on the first
+        attempt, since repeating it would only burn time and LLM credits.
 
         :param workspace_name: Name of the workspace.
         :param pipeline_config: The pipeline definition (components, connections, inputs/outputs)
@@ -58,22 +78,44 @@ class HaystackRunAPI:
         :param inputs: Run inputs, shape ``{component_name: {socket: value}}``.
         :param include_outputs_from: Component names whose outputs to include. When ``None`` the
             platform defaults to all components.
-        :raises PipelineRunError: If the run fails (bad config/inputs or a server error).
+        :param retries: Number of retry attempts after a transient failure. ``0`` disables retrying.
+        :param on_retry: Optional callback invoked as ``(next_attempt, total_attempts, reason)``
+            before each backoff sleep, so callers can report the retry to the user.
+        :raises PipelineRunError: If the run fails (bad config/inputs, a server error, or every
+            attempt failed transiently).
         :return: The pipeline output, a dict keyed by component name.
         """
         payload: Dict[str, Any] = {"pipeline_config": pipeline_config, "inputs": inputs}
         if include_outputs_from is not None:
             payload["include_outputs_from"] = include_outputs_from
 
-        response = await self._haystack_enterprise_api.post(
-            workspace_name=workspace_name,
-            endpoint=self._ENDPOINT,
-            json=payload,
-            timeout_s=ASYNC_CLIENT_TIMEOUT,  # pipeline runs can be slow (LLM calls); 20s is too short.
-        )
-        if response.status_code != codes.OK:
-            raise PipelineRunError(_format_run_error(response.status_code, response.text))
-        return dict(response.json())
+        attempts = max(1, retries + 1)
+        reason = ""
+        for attempt in range(1, attempts + 1):
+            try:
+                response = await self._haystack_enterprise_api.post(
+                    workspace_name=workspace_name,
+                    endpoint=self._ENDPOINT,
+                    json=payload,
+                    timeout_s=ASYNC_CLIENT_TIMEOUT,  # runs can be slow (LLM calls); 20s is too short.
+                )
+            except httpx.RequestError as err:  # covers timeouts, connection and read errors
+                reason = f"Pipeline run failed: {type(err).__name__}: {err}"
+            else:
+                if response.status_code == codes.OK:
+                    return dict(response.json())
+                reason = _format_run_error(response.status_code, response.text)
+                if response.status_code not in _TRANSIENT_STATUS_CODES:
+                    raise PipelineRunError(reason)
+
+            if attempt == attempts:
+                break
+            logger.debug("Retrying pipeline run", attempt=attempt, attempts=attempts, reason=reason)
+            if on_retry is not None:
+                on_retry(attempt + 1, attempts, reason)
+            await asyncio.sleep(_RETRY_BASE_DELAY_S * 2 ** (attempt - 1))
+
+        raise PipelineRunError(reason if attempts == 1 else f"{reason} (after {attempts} attempts)")
 
 
 def build_run_inputs(

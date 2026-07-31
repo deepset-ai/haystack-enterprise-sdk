@@ -48,8 +48,12 @@ haystack-enterprise download
 # Validate a local pipeline against the platform
 haystack-enterprise validate ./pipeline.py
 
-# Run a local pipeline in the platform sandbox
+# Run a local pipeline in the platform sandbox (shows a spinner with the elapsed time while it waits)
 haystack-enterprise run ./pipeline.py
+
+# Transient failures (network errors, timeouts, 429, 5xx) are retried twice by default; 0 disables it.
+# Config and input errors always fail immediately.
+haystack-enterprise run ./pipeline.py --retries 0
 
 # Deploy a local pipeline as a service deployment (reused if it exists, otherwise created serverless)
 haystack-enterprise deploy ./pipeline.py my-service
