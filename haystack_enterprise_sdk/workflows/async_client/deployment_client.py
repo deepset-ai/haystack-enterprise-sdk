@@ -151,6 +151,7 @@ class AsyncDeploymentClient:
         python_executable: Optional[str] = None,
         query: Optional[str] = None,
         filters: Optional[Any] = None,
+        named_inputs: Optional[Dict[str, Any]] = None,
         extra_inputs: Optional[Dict[str, Dict[str, Any]]] = None,
         include_outputs_from: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
@@ -168,6 +169,7 @@ class AsyncDeploymentClient:
                 python_executable=python_executable,
                 query=query,
                 filters=filters,
+                named_inputs=named_inputs,
                 extra_inputs=extra_inputs,
                 include_outputs_from=include_outputs_from,
             )

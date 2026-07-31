@@ -6,7 +6,7 @@ import logging
 import sys
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 from uuid import UUID
 
 import structlog
@@ -685,6 +685,13 @@ def validate(
 def run(  # pylint: disable=too-many-arguments,too-many-locals
     target: Path,
     query: Optional[str] = None,
+    set_input: Optional[List[str]] = typer.Option(
+        None,
+        "--set",
+        help="A named platform input as KEY=VALUE, e.g. --set github_token=ghs_abc. Repeat for several. "
+        "VALUE may be '@path/to/file' to read it from a file. Routed through the same mapping as "
+        "--query, so it works for any input key the pipeline declares, not only the standard ones.",
+    ),
     inputs: Optional[str] = None,
     include_outputs_from: Optional[List[str]] = None,
     entrypoint: Optional[str] = None,
@@ -708,11 +715,16 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
 
     :param target: Path to the Python file that defines the pipeline.
     :param query: Query text routed to the sockets mapped under the pipeline's 'query' input. Convenient
-        for the common case; on an interactive terminal you are prompted for it when neither --query nor
-        --inputs is given.
+        for the common case; on an interactive terminal you are prompted for it when neither --query,
+        --set, nor --inputs is given.
+    :param set_input: Named platform input(s) as 'KEY=VALUE'. Repeat the option to pass several. Routed
+        through the same 'inputs:' mapping as --query, so it reaches any input key the pipeline
+        declares -- not only the standard query/filters/files ones. 'VALUE' may be '@path/to/file' to
+        read a large value (e.g. a system prompt) from a file instead of the command line. Wins over
+        --query for the same input key; loses to --inputs, which is the lowest-level escape hatch.
     :param inputs: Explicit run inputs as JSON, either a literal JSON string or '@path/to/file.json'.
         Shape is the Haystack run inputs dict, '{"component": {"socket": value}}'. Merged over (and
-        wins against) any inputs derived from --query.
+        wins against) any inputs derived from --query/--set.
     :param include_outputs_from: Component name(s) whose outputs to include in the result. Repeat the
         option to pass several. Defaults to all components.
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
@@ -730,14 +742,18 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
     Example:
     `deepset-cloud run pipeline.py --query "What is deepset?"`
 
+    With a pipeline's own named inputs:
+    `deepset-cloud run pipeline.py --set github_token=ghs_abc --set security_prompt=@security.md`
+
     With explicit inputs from a file:
     `deepset-cloud run pipeline.py --inputs @inputs.json`
     """
+    named_inputs = _parse_set_option(set_input)
     extra_inputs = _parse_inputs_option(inputs)
     io_config_path = _resolve_io_config_path(target, io_config)
     io_inputs, io_outputs, _ = _load_io_config(io_config_path) if io_config_path is not None else (None, None, None)
 
-    if query is None and extra_inputs is None and _stdin_is_tty():
+    if query is None and named_inputs is None and extra_inputs is None and _stdin_is_tty():
         query = typer.prompt("Query")
 
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
@@ -751,6 +767,7 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
             io_resolver=io_resolver,
             python_executable=python,
             query=query,
+            named_inputs=named_inputs,
             extra_inputs=extra_inputs,
             include_outputs_from=include_outputs_from or None,
         )
@@ -790,6 +807,33 @@ def _parse_inputs_option(inputs: Optional[str]) -> Optional[dict]:
     if not isinstance(parsed, dict):
         typer.echo("--inputs must be a JSON object mapping component names to their inputs.")
         raise typer.Exit(1)
+    return parsed
+
+
+def _parse_set_option(values: Optional[List[str]]) -> Optional[Dict[str, str]]:
+    """Parse repeated ``--set KEY=VALUE`` options into a dict, resolving an ``@path`` value from a file.
+
+    Returns ``None`` when no ``--set`` was given. Exits with an error on a malformed 'KEY=VALUE' entry
+    or an unreadable file.
+
+    :param values: The raw 'KEY=VALUE' strings from repeated --set options.
+    """
+    if not values:
+        return None
+    parsed: Dict[str, str] = {}
+    for item in values:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            typer.echo(f"--set '{item}' is not in KEY=VALUE form.")
+            raise typer.Exit(1)
+        if value.startswith("@"):
+            path = Path(value[1:])
+            try:
+                value = path.read_text(encoding="utf-8")
+            except OSError as err:
+                typer.echo(f"Could not read --set '{key}' file '{path}': {err}")
+                raise typer.Exit(1)  # noqa: B904
+        parsed[key] = value
     return parsed
 
 
