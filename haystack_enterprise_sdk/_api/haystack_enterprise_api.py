@@ -85,6 +85,17 @@ def _unauthorized_message(api_key: str) -> str:
     return "Authentication failed. Your API key may be invalid, revoked, or issued for a different environment."
 
 
+def _bearer_token(headers: Dict[str, str], default: str) -> str:
+    """Extract the bearer token actually sent in ``headers``, falling back to ``default`` if none is set.
+
+    :param headers: The request headers actually sent, after any caller override has been merged in.
+    :param default: The API key to fall back to when ``headers`` carries no ``Authorization`` header.
+    """
+    auth = headers.get("Authorization", "")
+    prefix = "Bearer "
+    return auth[len(prefix) :] if auth.startswith(prefix) else default
+
+
 def _raise_for_proxy_error(response: Response, api_key: str) -> None:
     """Raise a friendly ``HaystackEnterpriseAPIError`` for a proxy/infrastructure-level error response.
 
@@ -254,13 +265,14 @@ class HaystackEnterpriseAPI:
         :param timeout_s: Timeout in seconds.
         :return: Response object.
         """
+        merged_headers = {**self.headers, **(headers or {})}
         response = await self.client.post(
             f"{self.base_url(workspace_name)}/{endpoint}",
             params=params or {},
             json=json,
             data=data,
             files=files,
-            headers={**self.headers, **(headers or {})},
+            headers=merged_headers,
             timeout=timeout_s,
         )
         logger.debug(
@@ -272,7 +284,7 @@ class HaystackEnterpriseAPI:
             files=files,
             status=response.status_code,
         )
-        _raise_for_proxy_error(response, self.api_key)
+        _raise_for_proxy_error(response, _bearer_token(merged_headers, self.api_key))
         return response
 
     async def delete(
