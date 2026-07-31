@@ -1,5 +1,6 @@
 """CLI tests for the `deploy` and `service-status` commands."""
 
+import json
 from pathlib import Path
 from typing import Literal
 from unittest.mock import Mock, patch
@@ -10,6 +11,7 @@ from typer.testing import CliRunner
 
 from haystack_enterprise_sdk._api.deployments import (
     Deployment,
+    DeploymentMode,
     DeploymentRevision,
     DeploymentRevisionStatus,
     DeploymentServiceLevel,
@@ -44,7 +46,9 @@ def _bundle(**raw: object) -> ExtractionBundle:
     return ExtractionBundle.from_dict({"pipeline": {"components": {}}, **raw})  # type: ignore[arg-type]
 
 
-def _deployment(status: DeploymentStatus = DeploymentStatus.DEPLOYED) -> Deployment:
+def _deployment(
+    status: DeploymentStatus = DeploymentStatus.DEPLOYED, mode: DeploymentMode = DeploymentMode.MANAGED
+) -> Deployment:
     return Deployment(
         deployment_id=uuid4(),
         name="svc",
@@ -52,13 +56,17 @@ def _deployment(status: DeploymentStatus = DeploymentStatus.DEPLOYED) -> Deploym
         service_level=DeploymentServiceLevel.DEVELOPMENT,
         active_revision_id=uuid4(),
         pending_revision_id=None,
+        deployment_mode=mode,
     )
 
 
 def _result(
-    activated: bool, timed_out: bool = False, status: DeploymentStatus = DeploymentStatus.DEPLOYED
+    activated: bool,
+    timed_out: bool = False,
+    status: DeploymentStatus = DeploymentStatus.DEPLOYED,
+    mode: DeploymentMode = DeploymentMode.MANAGED,
 ) -> DeployResult:
-    deployment = _deployment(status)
+    deployment = _deployment(status, mode)
     revision = DeploymentRevision(
         revision_id=uuid4(),
         deployment_id=deployment.deployment_id,
@@ -145,7 +153,7 @@ class TestDeployCommand:
         assert "bad thing" in result.stdout
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
-    def test_deploy_create_passes_options(self, client_cls: Mock) -> None:
+    def test_deploy_create_managed_passes_options(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=True)
         result = runner.invoke(
             cli_app,
@@ -154,6 +162,7 @@ class TestDeployCommand:
                 FIXTURE,
                 "svc",
                 "--create",
+                "--managed",
                 "--service-level",
                 "PRODUCTION",
                 "--cpu",
@@ -165,9 +174,50 @@ class TestDeployCommand:
         assert result.exit_code == 0
         _, kwargs = client_cls.return_value.deploy.call_args
         options = kwargs["create_options"]
+        assert options.deployment_mode == DeploymentMode.MANAGED
         assert options.service_level == DeploymentServiceLevel.PRODUCTION
         assert options.cpu_limit == "2"
         assert options.max_query_replica_count == 3
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_create_defaults_to_serverless(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=True, mode=DeploymentMode.SERVERLESS)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--create"])
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.deploy.call_args
+        options = kwargs["create_options"]
+        assert options.deployment_mode == DeploymentMode.SERVERLESS
+        assert options.service_level is None
+        assert options.cpu_limit is None
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_serverless_reports_served_revision(self, client_cls: Mock) -> None:
+        # A serverless service has no rollout status worth reporting; its persisted status stays
+        # DEPLOYMENT_IN_PROGRESS, which would read as a stuck deploy.
+        deploy_result = _result(
+            activated=True, status=DeploymentStatus.DEPLOYMENT_IN_PROGRESS, mode=DeploymentMode.SERVERLESS
+        )
+        client_cls.return_value.deploy.return_value = deploy_result
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--create", "--no-share"])
+        assert result.exit_code == 0
+        assert f"serving revision {deploy_result.revision.revision_id}" in result.stdout
+        assert "DEPLOYMENT_IN_PROGRESS" not in result.stdout
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_sizing_flags_without_managed_fail(self, client_cls: Mock) -> None:
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--create", "--cpu", "2", "--max-replicas", "3"])
+        assert result.exit_code == 1
+        assert "--cpu" in result.stdout
+        assert "--max-replicas" in result.stdout
+        assert "--managed" in result.stdout
+        client_cls.return_value.deploy.assert_not_called()
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_managed_without_create_fails(self, client_cls: Mock) -> None:
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--managed"])
+        assert result.exit_code == 1
+        assert "--create" in result.stdout
+        client_cls.return_value.deploy.assert_not_called()
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_forwards_review_io_resolver(self, client_cls: Mock) -> None:
@@ -447,6 +497,15 @@ class TestServiceStatusCommand:
         result = runner.invoke(cli_app, ["service-status", "svc"])
         assert result.exit_code == 0
         assert "DEPLOYED" in result.stdout
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_service_status_reports_deployment_mode(self, client_cls: Mock) -> None:
+        client_cls.return_value.get_service_status.return_value = _deployment(
+            DeploymentStatus.DEPLOYED, mode=DeploymentMode.SERVERLESS
+        )
+        result = runner.invoke(cli_app, ["service-status", "svc"])
+        assert result.exit_code == 0
+        assert json.loads(result.stdout)["deployment_mode"] == "SERVERLESS"
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_service_status_not_found(self, client_cls: Mock) -> None:

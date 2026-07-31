@@ -9,6 +9,7 @@ import pytest
 
 from haystack_enterprise_sdk._api.deployments import (
     Deployment,
+    DeploymentMode,
     DeploymentRevision,
     DeploymentRevisionStatus,
     DeploymentServiceLevel,
@@ -27,7 +28,11 @@ from haystack_enterprise_sdk._service.deployment_service import (
 FIXTURE = Path(__file__).parent.parent.parent / "test_data" / "deploy" / "pipeline.py"
 
 
-def _deployment(name: str = "svc", status: DeploymentStatus = DeploymentStatus.UNDEPLOYED) -> Deployment:
+def _deployment(
+    name: str = "svc",
+    status: DeploymentStatus = DeploymentStatus.UNDEPLOYED,
+    mode: DeploymentMode = DeploymentMode.MANAGED,
+) -> Deployment:
     return Deployment(
         deployment_id=uuid4(),
         name=name,
@@ -35,6 +40,7 @@ def _deployment(name: str = "svc", status: DeploymentStatus = DeploymentStatus.U
         service_level=DeploymentServiceLevel.DEVELOPMENT,
         active_revision_id=None,
         pending_revision_id=None,
+        deployment_mode=mode,
     )
 
 
@@ -109,14 +115,51 @@ class TestResolveAndPush:
             FIXTURE,
             "svc",
             create=True,
-            create_options=CreateOptions(service_level=DeploymentServiceLevel.PRODUCTION, cpu_limit="2"),
+            create_options=CreateOptions(
+                deployment_mode=DeploymentMode.MANAGED,
+                service_level=DeploymentServiceLevel.PRODUCTION,
+                cpu_limit="2",
+            ),
         )
 
         assert result.deployment is created
         service._deployments.create_deployment.assert_awaited_once()
         _, kwargs = service._deployments.create_deployment.call_args
+        assert kwargs["deployment_mode"] == DeploymentMode.MANAGED
         assert kwargs["service_level"] == DeploymentServiceLevel.PRODUCTION
         assert kwargs["cpu_limit"] == "2"
+
+    async def test_create_defaults_to_serverless(self, service: MockedDeploymentService) -> None:
+        created = _deployment("svc", mode=DeploymentMode.SERVERLESS)
+        service._deployments.find_by_name.return_value = None
+        service._deployments.create_deployment.return_value = created
+        service._deployments.push_revision.return_value = _revision(created.deployment_id)
+
+        await service.deploy(FIXTURE, "svc", create=True)
+
+        _, kwargs = service._deployments.create_deployment.call_args
+        assert kwargs["deployment_mode"] == DeploymentMode.SERVERLESS
+        assert kwargs["service_level"] is None
+        assert kwargs["cpu_limit"] is None
+
+
+class TestCreateOptions:
+    def test_serverless_rejects_sizing_options(self) -> None:
+        with pytest.raises(ValueError, match="cpu_limit"):
+            CreateOptions(cpu_limit="2")
+
+    def test_serverless_names_every_offending_option(self) -> None:
+        with pytest.raises(ValueError) as exc:
+            CreateOptions(service_level=DeploymentServiceLevel.PRODUCTION, max_query_replica_count=3)
+        assert "service_level" in str(exc.value)
+        assert "max_query_replica_count" in str(exc.value)
+
+    def test_managed_accepts_sizing_options(self) -> None:
+        options = CreateOptions(deployment_mode=DeploymentMode.MANAGED, cpu_limit="2")
+        assert options.cpu_limit == "2"
+
+    def test_default_mode_is_serverless(self) -> None:
+        assert CreateOptions().deployment_mode is DeploymentMode.SERVERLESS
 
 
 @pytest.mark.asyncio
@@ -274,6 +317,35 @@ class TestActivateAndPoll:
 
         assert result.timed_out is True
         assert result.activated is True
+
+    async def test_serverless_activates_without_polling(self, service: MockedDeploymentService) -> None:
+        # Serverless provisions no workload, so there is no rollout status to poll for: the activated
+        # revision is what runs, and waiting would only burn the timeout.
+        deployment = _deployment(mode=DeploymentMode.SERVERLESS)
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+        service._deployments.activate_revision.return_value = _deployment(
+            status=DeploymentStatus.DEPLOYMENT_IN_PROGRESS, mode=DeploymentMode.SERVERLESS
+        )
+
+        result = await service.deploy(FIXTURE, "svc", activate=True, poll_interval_s=0)
+
+        service._deployments.activate_revision.assert_awaited_once()
+        service._deployments.get_deployment.assert_not_called()
+        assert result.activated is True
+        assert result.timed_out is False
+        # The status never settles for serverless, so activation alone counts as serving.
+        assert result.is_deployed is True
+
+    async def test_serverless_push_without_activate_is_not_serving(self, service: MockedDeploymentService) -> None:
+        deployment = _deployment(mode=DeploymentMode.SERVERLESS)
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+
+        result = await service.deploy(FIXTURE, "svc")
+
+        assert result.activated is False
+        assert result.is_deployed is False
 
 
 @pytest.mark.asyncio

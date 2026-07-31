@@ -5,6 +5,8 @@ import logging
 import structlog
 
 from haystack_enterprise_sdk._api.deployments import (
+    DeploymentMode,
+    DeploymentServiceLevel,
     PipelineValidationError,
     PipelineValidationIssue,
     PipelineValidationResult,
@@ -67,6 +69,8 @@ __all__ = [
     "DeploymentClient",
     "AsyncDeploymentClient",
     "CreateOptions",
+    "DeploymentMode",
+    "DeploymentServiceLevel",
     "DeployResult",
     "ShareOptions",
     "SharedPrototype",

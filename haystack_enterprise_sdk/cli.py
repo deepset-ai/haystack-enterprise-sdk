@@ -22,6 +22,7 @@ from haystack_enterprise_sdk._api.config import (
     normalize_base_url,
 )
 from haystack_enterprise_sdk._api.deployments import (
+    DeploymentMode,
     DeploymentServiceLevel,
     PipelineValidationError,
 )
@@ -411,6 +412,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     service_name: str,
     skip_activation: bool = False,
     create: bool = False,
+    managed: bool = False,
     entrypoint: Optional[str] = None,
     service_level: Optional[DeploymentServiceLevel] = None,
     min_replicas: Optional[int] = None,
@@ -445,15 +447,18 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param service_name: Name of the target service deployment.
     :param skip_activation: Push the revision without activating it (skips the rollout and wait).
         By default the new revision is activated and the CLI waits for the rollout to finish.
-    :param create: Create the service if it does not exist (Development sizing unless overridden).
+    :param create: Create the service if it does not exist. The new service is serverless unless
+        --managed is passed.
+    :param managed: Create the service as a managed (provisioned) deployment instead of a serverless
+        one. Required to use any of the sizing options below, which serverless ignores.
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
-    :param service_level: Service sizing tier when creating the service.
-    :param min_replicas: Minimum query replicas (with --create).
-    :param max_replicas: Maximum query replicas (with --create).
-    :param cpu: CPU limit, e.g. '1' (with --create).
-    :param memory: Memory limit, e.g. '2Gi' (with --create).
-    :param gpu: GPU memory limit in gigabytes (with --create).
-    :param idle_timeout: Idle timeout in seconds before scale-down (with --create).
+    :param service_level: Service sizing tier when creating the service (with --create --managed).
+    :param min_replicas: Minimum query replicas (with --create --managed).
+    :param max_replicas: Maximum query replicas (with --create --managed).
+    :param cpu: CPU limit, e.g. '1' (with --create --managed).
+    :param memory: Memory limit, e.g. '2Gi' (with --create --managed).
+    :param gpu: GPU memory limit in gigabytes (with --create --managed).
+    :param idle_timeout: Idle timeout in seconds before scale-down (with --create --managed).
     :param python: Path to the Python interpreter used to load your pipeline (defaults to an
         auto-detected virtualenv near the target file, else the current interpreter).
     :param dry_run: Transform the pipeline and print/write the resulting YAML without deploying. No
@@ -478,8 +483,11 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param api_url: API URL to use for authentication.
     :param workspace_name: Workspace to deploy into. Uses the workspace from the .ENV file by default.
 
-    Example (activates and waits for the rollout by default):
+    Example (creates a serverless service, activates the revision):
     `deepset-cloud deploy pipeline.py my-service --create`
+
+    Create a managed service with explicit sizing (activates and waits for the rollout):
+    `deepset-cloud deploy pipeline.py my-service --create --managed --service-level PRODUCTION --cpu 2`
 
     Push a revision without rolling it out:
     `deepset-cloud deploy pipeline.py my-service --skip-activation`
@@ -496,9 +504,35 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         _deploy_dry_run(target, entrypoint, python, output, skip_io_validation, io_inputs, io_outputs, io_output_type)
         return
 
+    # The sizing flags only mean something for a managed service being created, so a combination that
+    # would silently drop them is rejected before anything is created on the platform.
+    sizing_flags = {
+        "--service-level": service_level,
+        "--idle-timeout": idle_timeout,
+        "--min-replicas": min_replicas,
+        "--max-replicas": max_replicas,
+        "--cpu": cpu,
+        "--memory": memory,
+        "--gpu": gpu,
+    }
+    given_sizing = [flag for flag, value in sizing_flags.items() if value is not None]
+    if given_sizing and not managed:
+        applies = "only applies" if len(given_sizing) == 1 else "only apply"
+        typer.echo(
+            f"{', '.join(given_sizing)} {applies} to managed services. "
+            f"Add --managed to size the service, or drop the flag to create a serverless one."
+        )
+        raise typer.Exit(1)
+    if managed and not create:
+        typer.echo("--managed only applies when creating a service; add --create or drop --managed.")
+        raise typer.Exit(1)
+
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
-    create_options = (
-        CreateOptions(
+    if not create:
+        create_options = None
+    elif managed:
+        create_options = CreateOptions(
+            deployment_mode=DeploymentMode.MANAGED,
             service_level=service_level,
             idle_timeout_in_seconds=idle_timeout,
             min_query_replica_count=min_replicas,
@@ -507,9 +541,8 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             memory_limit=memory,
             gpu_limit_gigabyte=gpu,
         )
-        if create
-        else None
-    )
+    else:
+        create_options = CreateOptions(deployment_mode=DeploymentMode.SERVERLESS)
 
     activate = not skip_activation
 
@@ -595,6 +628,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             f"Activation of '{service_name}' is still in progress. Detached; the rollout continues. "
             f"Check with `deepset-cloud service-status {service_name}`."
         )
+    elif result.deployment.deployment_mode is DeploymentMode.SERVERLESS:
+        # A serverless service has no rollout status to report; the activated revision is what runs.
+        typer.echo(f"Serverless service '{service_name}' is serving revision {result.revision.revision_id}.")
     else:
         typer.echo(f"Service '{service_name}' is now {result.deployment.status.value}.")
 
@@ -1225,6 +1261,7 @@ def service_status(
                 "name": deployment.name,
                 "deployment_id": str(deployment.deployment_id),
                 "status": deployment.status.value,
+                "deployment_mode": deployment.deployment_mode.value,
                 "service_level": deployment.service_level.value,
                 "active_revision_id": str(deployment.active_revision_id) if deployment.active_revision_id else None,
                 "pending_revision_id": (

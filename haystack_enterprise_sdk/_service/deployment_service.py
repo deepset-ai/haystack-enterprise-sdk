@@ -15,6 +15,7 @@ from ruamel.yaml import YAML
 from haystack_enterprise_sdk._api.config import DEFAULT_WORKSPACE_NAME, CommonConfig
 from haystack_enterprise_sdk._api.deployments import (
     Deployment,
+    DeploymentMode,
     DeploymentRevision,
     DeploymentsAPI,
     DeploymentServiceLevel,
@@ -42,8 +43,14 @@ DEFAULT_ACTIVATION_TIMEOUT_S = 600.0
 
 @dataclass
 class CreateOptions:
-    """Sizing options used when ``create=True`` creates the service."""
+    """Options used when ``create=True`` creates the service.
 
+    The service is created serverless unless ``deployment_mode`` says otherwise. A serverless service
+    provisions no workload, so the sizing fields are meaningless for it and passing them is rejected
+    rather than silently dropped.
+    """
+
+    deployment_mode: DeploymentMode = DeploymentMode.SERVERLESS
     service_level: Optional[DeploymentServiceLevel] = None
     idle_timeout_in_seconds: Optional[int] = None
     min_query_replica_count: Optional[int] = None
@@ -51,6 +58,30 @@ class CreateOptions:
     cpu_limit: Optional[str] = None
     memory_limit: Optional[str] = None
     gpu_limit_gigabyte: Optional[int] = None
+
+    _SIZING_FIELDS = (
+        "service_level",
+        "idle_timeout_in_seconds",
+        "min_query_replica_count",
+        "max_query_replica_count",
+        "cpu_limit",
+        "memory_limit",
+        "gpu_limit_gigabyte",
+    )
+
+    def __post_init__(self) -> None:
+        """Reject sizing options that the requested deployment mode cannot honour.
+
+        :raises ValueError: If sizing options are set on a serverless deployment.
+        """
+        if self.deployment_mode is not DeploymentMode.SERVERLESS:
+            return
+        set_fields = [field for field in self._SIZING_FIELDS if getattr(self, field) is not None]
+        if set_fields:
+            raise ValueError(
+                f"Sizing options {', '.join(set_fields)} only apply to managed deployments. "
+                f"Pass deployment_mode=DeploymentMode.MANAGED (or --managed) to size the service."
+            )
 
 
 @dataclass
@@ -64,8 +95,17 @@ class DeployResult:
 
     @property
     def is_deployed(self) -> bool:
-        """Whether the rollout finished in a deployed (running or idle) state."""
-        return not self.timed_out and self.deployment.status in _SUCCESS_STATUSES
+        """Whether the service is serving the revision.
+
+        A serverless deployment has no rollout to finish and its status never settles into a deployed
+        state, so activating the revision is what makes it serve; a managed deployment has to reach a
+        deployed (running or idle) status.
+        """
+        if self.timed_out:
+            return False
+        if self.deployment.deployment_mode is DeploymentMode.SERVERLESS:
+            return self.activated
+        return self.deployment.status in _SUCCESS_STATUSES
 
 
 @dataclass
@@ -140,7 +180,7 @@ class DeploymentService:
         :param service_name: Name of the target service deployment.
         :param activate: If True, activate the new revision and poll until it is live or fails.
         :param create: If True, create the service when it does not exist.
-        :param create_options: Sizing options used when creating the service.
+        :param create_options: Options used when creating the service. Defaults to a serverless service.
         :param entrypoint: Name of the pipeline instance/factory when the file is ambiguous.
         :param inputs: Optional explicit pipeline inputs (overrides inference).
         :param outputs: Optional explicit pipeline outputs (overrides inference).
@@ -187,6 +227,14 @@ class DeploymentService:
         deployment = await self._deployments.activate_revision(
             self._workspace_name, deployment.deployment_id, revision.revision_id
         )
+
+        if deployment.deployment_mode is DeploymentMode.SERVERLESS:
+            # Serverless provisions no workload, so there is no rollout to observe and no terminal
+            # status to wait for: the activated revision is what gets run per request. Polling here
+            # would only burn the timeout on a status that never settles.
+            logger.info("Activated serverless revision; no rollout to wait for.", service=service_name)
+            return DeployResult(deployment=deployment, revision=revision, activated=True, timed_out=False)
+
         deployment, timed_out = await self._poll_until_settled(
             deployment.deployment_id, timeout_s, poll_interval_s, on_status
         )
@@ -347,10 +395,11 @@ class DeploymentService:
                 "Pass create=True (or --create) to create it."
             )
         options = create_options or CreateOptions()
-        logger.info("Creating service deployment.", service=service_name)
+        logger.info("Creating service deployment.", service=service_name, mode=options.deployment_mode.value)
         return await self._deployments.create_deployment(
             self._workspace_name,
             name=service_name,
+            deployment_mode=options.deployment_mode,
             service_level=options.service_level,
             idle_timeout_in_seconds=options.idle_timeout_in_seconds,
             min_query_replica_count=options.min_query_replica_count,

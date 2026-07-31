@@ -54,6 +54,18 @@ class DeploymentServiceLevel(str, enum.Enum):
     CUSTOM = "CUSTOM"
 
 
+class DeploymentMode(str, enum.Enum):
+    """How a deployment is hosted.
+
+    ``SERVERLESS`` deployments provision no workload: the active revision's config is run ad-hoc per
+    request, so the sizing options (service level, replica counts, CPU/memory/GPU, idle timeout) do not
+    apply to them. ``MANAGED`` deployments run as a provisioned service and are sized by those options.
+    """
+
+    MANAGED = "MANAGED"
+    SERVERLESS = "SERVERLESS"
+
+
 class DeploymentSourceType(str, enum.Enum):
     """Type of artifact a deployment revision was created from.
 
@@ -76,6 +88,7 @@ class Deployment:
     service_level: DeploymentServiceLevel
     active_revision_id: Optional[UUID]
     pending_revision_id: Optional[UUID]
+    deployment_mode: DeploymentMode = DeploymentMode.MANAGED
 
     @classmethod
     def from_response(cls, body: Dict[str, Any]) -> "Deployment":
@@ -93,6 +106,9 @@ class Deployment:
             ),
             active_revision_id=_optional_uuid(body.get("active_revision_id")),
             pending_revision_id=_optional_uuid(body.get("pending_revision_id")),
+            # A server that does not report the mode is read as managed: that is the platform default,
+            # and treating an unknown deployment as managed keeps the rollout polling in place.
+            deployment_mode=_enum_or_default(DeploymentMode, body.get("deployment_mode"), DeploymentMode.MANAGED),
         )
 
 
@@ -278,10 +294,11 @@ class DeploymentsAPI:
                 return None
             page_number += 1
 
-    async def create_deployment(
+    async def create_deployment(  # pylint: disable=too-many-arguments
         self,
         workspace_name: str,
         name: str,
+        deployment_mode: DeploymentMode = DeploymentMode.SERVERLESS,
         service_level: Optional[DeploymentServiceLevel] = None,
         idle_timeout_in_seconds: Optional[int] = None,
         min_query_replica_count: Optional[int] = None,
@@ -290,10 +307,15 @@ class DeploymentsAPI:
         memory_limit: Optional[str] = None,
         gpu_limit_gigabyte: Optional[int] = None,
     ) -> Deployment:
-        """Create a service deployment. Sizing defaults to the Development tier unless overridden.
+        """Create a service deployment. Serverless unless a managed mode is requested.
+
+        The platform itself defaults to ``MANAGED``, so the mode is always sent explicitly: a service
+        created through this SDK provisions no workload unless it was asked for. The sizing parameters
+        only apply to ``MANAGED`` deployments.
 
         :param workspace_name: Name of the workspace.
         :param name: Deployment name.
+        :param deployment_mode: How the deployment is hosted. Defaults to serverless.
         :param service_level: Service sizing tier. Defaults to Development server-side.
         :param idle_timeout_in_seconds: Idle timeout before scale-down.
         :param min_query_replica_count: Minimum query replicas.
@@ -304,7 +326,11 @@ class DeploymentsAPI:
         :raises FailedToCreateDeploymentError: If the deployment could not be created.
         :return: The created deployment.
         """
-        payload: Dict[str, Any] = {"name": name, "source_type": self._SOURCE_TYPE}
+        payload: Dict[str, Any] = {
+            "name": name,
+            "source_type": self._SOURCE_TYPE,
+            "deployment_mode": deployment_mode.value,
+        }
         if service_level is not None:
             payload["service_level"] = service_level.value
         for key, value in {

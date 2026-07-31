@@ -9,6 +9,7 @@ from httpx import Request, Response, codes
 
 from haystack_enterprise_sdk._api.deployments import (
     Deployment,
+    DeploymentMode,
     DeploymentRevision,
     DeploymentRevisionStatus,
     DeploymentsAPI,
@@ -113,6 +114,7 @@ class TestCreate:
         result = await deployments_api.create_deployment(
             "ws",
             name="svc",
+            deployment_mode=DeploymentMode.MANAGED,
             service_level=DeploymentServiceLevel.PRODUCTION,
             cpu_limit="2",
             max_query_replica_count=3,
@@ -124,19 +126,25 @@ class TestCreate:
             json={
                 "name": "svc",
                 "source_type": "EXTERNAL_PIPELINE",
+                "deployment_mode": "MANAGED",
                 "service_level": "PRODUCTION",
                 "max_query_replica_count": 3,
                 "cpu_limit": "2",
             },
         )
 
-    async def test_create_deployment_minimal_payload(
+    async def test_create_deployment_minimal_payload_is_serverless(
         self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=_deployment_body("svc"))
         await deployments_api.create_deployment("ws", name="svc")
         _, kwargs = mocked_haystack_enterprise_api.post.call_args
-        assert kwargs["json"] == {"name": "svc", "source_type": "EXTERNAL_PIPELINE"}
+        # The platform itself defaults to MANAGED, so the serverless default has to be sent explicitly.
+        assert kwargs["json"] == {
+            "name": "svc",
+            "source_type": "EXTERNAL_PIPELINE",
+            "deployment_mode": "SERVERLESS",
+        }
 
     async def test_create_deployment_failure_raises(
         self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
@@ -301,3 +309,16 @@ class TestGetAndActivity:
         )
         events = await deployments_api.list_activity("ws", uuid4())
         assert events == [{"event_type": "REVISION_CREATED"}]
+
+
+class TestDeploymentModeParsing:
+    def test_reads_deployment_mode(self) -> None:
+        body = {**_deployment_body("svc"), "deployment_mode": "SERVERLESS"}
+        assert Deployment.from_response(body).deployment_mode == DeploymentMode.SERVERLESS
+
+    def test_missing_deployment_mode_defaults_to_managed(self) -> None:
+        assert Deployment.from_response(_deployment_body("svc")).deployment_mode == DeploymentMode.MANAGED
+
+    def test_unknown_deployment_mode_defaults_to_managed(self) -> None:
+        body = {**_deployment_body("svc"), "deployment_mode": "WAT"}
+        assert Deployment.from_response(body).deployment_mode == DeploymentMode.MANAGED

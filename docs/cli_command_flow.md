@@ -104,16 +104,19 @@ haystack-enterprise run pipeline.py --inputs @inputs.json --output result.json
 ## 4. Deploy to a service
 
 `deploy` pushes your pipeline as a new **revision** of a service deployment. By default it activates
-the revision and waits for the rollout to finish.
+the revision, and for a managed service it also waits for the rollout to finish.
 
 ```shell
-# create the service if it doesn't exist, then activate and wait for the rollout
+# create the service if it doesn't exist (serverless), then activate the revision
 haystack-enterprise deploy pipeline.py my-service --create
 ```
 
 Useful variants:
 
 ```shell
+# create a managed (provisioned) service with explicit sizing
+haystack-enterprise deploy pipeline.py my-service --create --managed --service-level PRODUCTION --cpu 2
+
 # push a revision without rolling it out
 haystack-enterprise deploy pipeline.py my-service --skip-activation
 
@@ -123,9 +126,12 @@ haystack-enterprise deploy pipeline.py my-service --dry-run --output out.yaml
 
 Common options:
 
-- `--create` creates the service if it does not exist (Development sizing unless overridden with
-  `--service-level`, `--min-replicas`, `--max-replicas`, `--cpu`, `--memory`, `--gpu`,
-  `--idle-timeout`).
+- `--create` creates the service if it does not exist. New services are **serverless**: they
+  provision no workload and run the active revision per request, so there is no rollout to wait for.
+- `--managed` creates a managed (provisioned) service instead. Only managed services can be sized, so
+  `--service-level`, `--min-replicas`, `--max-replicas`, `--cpu`, `--memory`, `--gpu` and
+  `--idle-timeout` require `--create --managed`; passing them without `--managed` is an error rather
+  than a silently ignored flag.
 - `--skip-activation` pushes the revision as `PENDING` without rolling it out.
 - `--skip-validation` skips the pre-deploy YAML validation (validation runs by default and aborts on
   blocking issues).
@@ -179,7 +185,7 @@ incrementally.
 | 1. Build | *(Haystack, no CLI)* | Build & test your pipeline/agent locally | No |
 | 2. Validate | `haystack-enterprise validate pipeline.py` | Transform + validate the YAML; confirm it's deployable | Yes |
 | 3. Run | `haystack-enterprise run pipeline.py --query "..."` | Transform + run in the platform sandbox, results in your terminal | Yes |
-| 4. Deploy | `haystack-enterprise deploy pipeline.py my-service --create` | Push & activate a service revision; optional share link | Yes |
+| 4. Deploy | `haystack-enterprise deploy pipeline.py my-service --create` | Create a serverless service (or `--managed`), push & activate a revision; optional share link | Yes |
 | — | `haystack-enterprise service-status my-service` | Check a service's current status | Yes |
 
 > On Windows, replace `haystack-enterprise` with `python -m haystack_enterprise_sdk.cli`.
