@@ -1,3 +1,5 @@
+import base64
+import json
 from unittest.mock import Mock
 
 import httpx
@@ -7,8 +9,18 @@ from httpx import codes
 from haystack_enterprise_sdk._api.config import CommonConfig, normalize_base_url
 from haystack_enterprise_sdk._api.haystack_enterprise_api import (
     HaystackEnterpriseAPI,
+    HaystackEnterpriseAPIError,
     WorkspaceNotDefinedError,
 )
+
+
+def _fake_jwt(exp: float) -> str:
+    """Build an ``api_``-prefixed, JWT-shaped API key with the given ``exp`` claim.
+
+    The signature is not verified by ``_decode_jwt_expiry``, so it can be a dummy.
+    """
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+    return f"api_header.{payload}.signature"
 
 
 @pytest.mark.asyncio
@@ -355,3 +367,87 @@ class TestCRUDForHaystackEnterpriseAPI:
             },
             timeout=123,
         )
+
+
+@pytest.mark.asyncio
+class TestProxyErrorHandling:
+    """A reverse proxy in front of the API can return HTML error pages for 401/504 etc.
+
+    These should surface as a friendly ``HaystackEnterpriseAPIError``, not the raw HTML body.
+    """
+
+    @pytest.mark.parametrize("status_code", [codes.UNAUTHORIZED, codes.GATEWAY_TIMEOUT])
+    async def test_known_proxy_status_codes_raise_friendly_error(
+        self, haystack_enterprise_api: HaystackEnterpriseAPI, mocked_client: Mock, status_code: int
+    ) -> None:
+        mocked_client.get.return_value = httpx.Response(
+            status_code=status_code,
+            content=b"<html><body>nginx error page</body></html>",
+            headers={"content-type": "text/html"},
+        )
+
+        with pytest.raises(HaystackEnterpriseAPIError) as exc_info:
+            await haystack_enterprise_api.get("default", "endpoint")
+
+        assert exc_info.value.status_code == status_code
+        assert "<html>" not in str(exc_info.value)
+
+    async def test_unknown_status_code_with_html_body_raises_generic_friendly_error(
+        self, haystack_enterprise_api: HaystackEnterpriseAPI, mocked_client: Mock
+    ) -> None:
+        mocked_client.get.return_value = httpx.Response(
+            status_code=codes.BAD_GATEWAY,
+            content=b"<html><body>bad gateway</body></html>",
+            headers={"content-type": "text/html"},
+        )
+
+        with pytest.raises(HaystackEnterpriseAPIError) as exc_info:
+            await haystack_enterprise_api.get("default", "endpoint")
+
+        assert "<html>" not in str(exc_info.value)
+
+    async def test_json_error_body_is_not_intercepted(
+        self, haystack_enterprise_api: HaystackEnterpriseAPI, mocked_client: Mock
+    ) -> None:
+        mocked_client.get.return_value = httpx.Response(status_code=codes.NOT_FOUND, json={"detail": "not found"})
+
+        result = await haystack_enterprise_api.get("default", "endpoint")
+
+        assert result.status_code == codes.NOT_FOUND
+        assert result.json() == {"detail": "not found"}
+
+
+@pytest.mark.asyncio
+class TestUnauthorizedMessage:
+    """The API key is a JWT, so a 401 message can tell an expired key apart from an invalid one."""
+
+    async def test_expired_jwt_names_the_expiry_time(self, mocked_client: Mock) -> None:
+        config = CommonConfig(api_key=_fake_jwt(exp=1), api_url="https://fake.dc.api/api/v1")
+        api = HaystackEnterpriseAPI(config=config, client=mocked_client)
+        mocked_client.get.return_value = httpx.Response(status_code=codes.UNAUTHORIZED, text="<html>login</html>")
+
+        with pytest.raises(HaystackEnterpriseAPIError) as exc_info:
+            await api.get("default", "endpoint")
+
+        assert "expired on 1970-01-01T00:00:01+00:00" in str(exc_info.value)
+
+    async def test_not_yet_expired_jwt_says_invalid_rather_than_expired(self, mocked_client: Mock) -> None:
+        config = CommonConfig(api_key=_fake_jwt(exp=9999999999), api_url="https://fake.dc.api/api/v1")
+        api = HaystackEnterpriseAPI(config=config, client=mocked_client)
+        mocked_client.get.return_value = httpx.Response(status_code=codes.UNAUTHORIZED, text="<html>login</html>")
+
+        with pytest.raises(HaystackEnterpriseAPIError) as exc_info:
+            await api.get("default", "endpoint")
+
+        assert str(exc_info.value) == "Authentication failed. Your API key may be invalid, revoked, or issued for a different environment."
+        assert "expired on" not in str(exc_info.value)
+
+    async def test_non_jwt_api_key_falls_back_to_generic_message(
+        self, haystack_enterprise_api: HaystackEnterpriseAPI, mocked_client: Mock
+    ) -> None:
+        mocked_client.get.return_value = httpx.Response(status_code=codes.UNAUTHORIZED, text="<html>login</html>")
+
+        with pytest.raises(HaystackEnterpriseAPIError) as exc_info:
+            await haystack_enterprise_api.get("default", "endpoint")
+
+        assert str(exc_info.value) == "Authentication failed. Your API key may be missing, invalid, or expired."
