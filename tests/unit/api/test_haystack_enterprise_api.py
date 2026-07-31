@@ -396,8 +396,8 @@ class TestProxyErrorHandling:
         self, haystack_enterprise_api: HaystackEnterpriseAPI, mocked_client: Mock
     ) -> None:
         mocked_client.get.return_value = httpx.Response(
-            status_code=codes.BAD_GATEWAY,
-            content=b"<html><body>bad gateway</body></html>",
+            status_code=codes.INTERNAL_SERVER_ERROR,
+            content=b"<html><body>internal server error</body></html>",
             headers={"content-type": "text/html"},
         )
 
