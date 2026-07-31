@@ -439,7 +439,10 @@ class TestUnauthorizedMessage:
         with pytest.raises(HaystackEnterpriseAPIError) as exc_info:
             await api.get("default", "endpoint")
 
-        assert str(exc_info.value) == "Authentication failed. Your API key may be invalid, revoked, or issued for a different environment."
+        assert (
+            str(exc_info.value)
+            == "Authentication failed. Your API key may be invalid, revoked, or issued for a different environment."
+        )
         assert "expired on" not in str(exc_info.value)
 
     async def test_non_jwt_api_key_falls_back_to_generic_message(

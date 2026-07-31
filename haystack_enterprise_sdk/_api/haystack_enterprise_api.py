@@ -106,7 +106,9 @@ def _raise_for_proxy_error(response: Response, api_key: str) -> None:
         if not _looks_like_html(response):
             return
         message = f"The Haystack Enterprise Platform returned an unexpected error (status code {response.status_code})."
-    logger.error("Haystack Enterprise Platform API returned a proxy/infrastructure error.", status_code=response.status_code)
+    logger.error(
+        "Haystack Enterprise Platform API returned a proxy/infrastructure error.", status_code=response.status_code
+    )
     raise HaystackEnterpriseAPIError(response.status_code, message)
 
 
