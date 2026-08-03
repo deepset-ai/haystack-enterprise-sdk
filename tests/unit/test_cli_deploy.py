@@ -912,6 +912,53 @@ class TestEnsureQueryInput:
         assert result.exit_code == 130
         assert "Cancelled" in result.stdout
 
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_run_parses_repeated_set_options(self, client_cls: Mock) -> None:
+        client_cls.return_value.run.return_value = {}
+        result = runner.invoke(
+            cli_app,
+            ["run", FIXTURE, "--query", "q", "--set", "github_token=ghs_abc", "--set", "top_k=5"],
+        )
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.run.call_args
+        assert kwargs["named_inputs"] == {"github_token": "ghs_abc", "top_k": "5"}
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_run_reads_set_value_from_file(self, client_cls: Mock, tmp_path: Path) -> None:
+        client_cls.return_value.run.return_value = {}
+        prompt_file = tmp_path / "security.md"
+        prompt_file.write_text("Be thorough.", encoding="utf-8")
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--query", "q", "--set", f"security_prompt=@{prompt_file}"])
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.run.call_args
+        assert kwargs["named_inputs"] == {"security_prompt": "Be thorough."}
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_run_set_missing_file_exits(self, client_cls: Mock, tmp_path: Path) -> None:
+        missing = tmp_path / "missing.md"
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--set", f"security_prompt=@{missing}"])
+        assert result.exit_code == 1
+        assert "Could not read --set" in result.stdout
+        client_cls.return_value.run.assert_not_called()
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_run_set_without_equals_exits(self, client_cls: Mock) -> None:
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--set", "github_token"])
+        assert result.exit_code == 1
+        assert "not in KEY=VALUE form" in result.stdout
+        client_cls.return_value.run.assert_not_called()
+
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_run_set_suppresses_the_interactive_query_prompt(self, client_cls: Mock, _tty: Mock) -> None:
+        # --set alone is a valid, complete input source (e.g. a chat pipeline whose only mandatory
+        # input is a custom one) -- it must not still prompt for a --query nobody asked for.
+        client_cls.return_value.run.return_value = {}
+        result = runner.invoke(cli_app, ["run", FIXTURE, "--set", "github_token=ghs_abc"])
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.run.call_args
+        assert kwargs["query"] is None
+
 
 def _typed_bundle() -> ExtractionBundle:
     """A bundle with typed available sockets and a fully inferred mapping, for review-flow tests."""

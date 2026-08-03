@@ -388,6 +388,7 @@ class DeploymentService:
         python_executable: Optional[str] = None,
         query: Optional[str] = None,
         filters: Optional[Any] = None,
+        named_inputs: Optional[Dict[str, Any]] = None,
         extra_inputs: Optional[Dict[str, Dict[str, Any]]] = None,
         include_outputs_from: Optional[List[str]] = None,
         retries: int = DEFAULT_RUN_RETRIES,
@@ -407,12 +408,14 @@ class DeploymentService:
         :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
         :param query: Query text routed to the sockets mapped under the ``query`` input key.
         :param filters: Optional filters routed to the ``filters`` input key.
+        :param named_inputs: Values for input keys beyond ``query``/``filters``/``files``, each routed
+            through the same ``inputs:`` mapping (see :func:`build_run_inputs`).
         :param extra_inputs: Explicit ``{component: {socket: value}}`` run inputs, merged last (wins).
         :param include_outputs_from: Component names whose outputs to include (defaults to all).
         :param retries: Number of retry attempts after a transient failure. ``0`` disables retrying.
         :param on_retry: Optional callback invoked as ``(next_attempt, total_attempts, reason)``
             before each backoff sleep.
-        :raises PipelineRunError: If the run fails or the query cannot be mapped to any input.
+        :raises PipelineRunError: If the run fails or nothing could be mapped to any input.
         :return: The pipeline output, a dict keyed by component name.
         """
         config_yaml = pipeline_transform.build_config_yaml(
@@ -432,6 +435,7 @@ class DeploymentService:
             pipeline_config,
             query=query,
             filters=filters,
+            named_inputs=named_inputs,
             extra_inputs=extra_inputs,
         )
         return await HaystackRunAPI(self._api).run_pipeline(

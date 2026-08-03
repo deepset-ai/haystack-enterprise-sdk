@@ -301,7 +301,9 @@ def extract_via_subprocess(
 
     This is the decoupling that lets the CLI/SDK environment stay free of the pipeline's dependencies:
     the extractor is executed by ``python_executable`` (which has Haystack and the pipeline deps), and
-    only its JSON result crosses back.
+    only its JSON result crosses back. Anything the extractor itself logged (e.g. a silent-but-notable
+    adjustment for platform compatibility) is forwarded through the SDK's own logger -- see
+    :func:`_forward_extractor_warnings`.
 
     :param target: Path to the pipeline ``.py`` file.
     :param entrypoint: Pipeline instance/factory name (when the file is ambiguous).
@@ -323,8 +325,29 @@ def extract_via_subprocess(
         if completed.returncode != 0:
             message = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
             raise PipelineTransformError(f"Failed to load the pipeline using interpreter '{python}':\n{message}")
+        _forward_extractor_warnings(completed.stderr)
         out_file.seek(0)
         return ExtractionBundle.from_dict(json.load(out_file))
+
+
+def _forward_extractor_warnings(stderr: str) -> None:
+    """Surface the extractor subprocess's own log lines after a run that otherwise SUCCEEDED.
+
+    ``pipeline_extract.py`` deliberately depends on nothing but the standard library plus Haystack (see
+    its module docstring), so it logs through stdlib ``logging`` rather than the SDK's ``structlog`` --
+    unconfigured, which means WARNING+ records reach ``stderr`` via Python's own default
+    (``logging.lastResort``). That is exactly how it reports something it silently adjusted for
+    platform compatibility, e.g. stripping an Agent's ``hooks`` because the platform Agent does not
+    accept them (see ``_sanitize_agent_init_params``). Only a FAILING run read ``stderr`` before this,
+    so on success that warning shipped with the deployed pipeline and nothing said so.
+
+    :param stderr: The subprocess's captured stderr from a run whose exit code was already 0.
+    """
+    text = stderr.strip()
+    if not text:
+        return
+    for line in text.splitlines():
+        logger.warning("pipeline_extract: %s", line)
 
 
 def detect_project_python(target: Path) -> str:

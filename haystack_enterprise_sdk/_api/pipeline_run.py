@@ -124,6 +124,7 @@ def build_run_inputs(
     query: Optional[str] = None,
     filters: Optional[Any] = None,
     files: Optional[List[Any]] = None,
+    named_inputs: Optional[Dict[str, Any]] = None,
     extra_inputs: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Build the ``inputs`` dict for a run from the config's platform ``inputs:`` mapping.
@@ -140,6 +141,12 @@ def build_run_inputs(
         wrapped into a single user ``ChatMessage`` and routed there instead.
     :param filters: Optional filters to route to the ``filters`` input key.
     :param files: Optional files to route to the ``files`` input key.
+    :param named_inputs: Values for input keys beyond ``query``/``filters``/``files`` (e.g. a pipeline's
+        own custom platform inputs), each routed through the same ``inputs:`` mapping. Unlike ``query``,
+        a named input is sent exactly as given -- no chat-message wrapping -- since the caller already
+        supplied the raw value for a key it explicitly named. A key here wins over ``query``/``filters``/
+        ``files`` for the same input key, e.g. an explicit ``named_inputs={"query": ...}`` overrides
+        ``query=...``.
     :param extra_inputs: Explicit ``{component: {socket: value}}`` inputs, merged last (wins).
     :raises PipelineRunError: If there is nothing to route (no mapping for the given values and no
         ``extra_inputs``) -- typically a query with no ``inputs:`` section in the config.
@@ -159,6 +166,8 @@ def build_run_inputs(
         values["filters"] = filters
     if files is not None:
         values["files"] = files
+    if named_inputs:
+        values.update(named_inputs)
 
     inputs: Dict[str, Dict[str, Any]] = {}
     for input_key, value in values.items():
@@ -177,8 +186,8 @@ def build_run_inputs(
 
     if not inputs:
         raise PipelineRunError(
-            "No pipeline inputs to send. The query could not be mapped to any component "
-            "(the config has no 'inputs' section). Pass explicit inputs with --inputs."
+            "No pipeline inputs to send. Nothing could be mapped to any component (the config has no "
+            "matching 'inputs' entry). Pass explicit inputs with --set KEY=VALUE or --inputs."
         )
     return inputs
 

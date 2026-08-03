@@ -73,6 +73,48 @@ class TestBuildRunInputs:
         inputs = build_run_inputs(config, query="hi")
         assert inputs == {"retriever": {"query": "hi"}}
 
+    def test_named_inputs_route_through_the_same_mapping_as_query(self) -> None:
+        # A pipeline's own custom platform inputs (e.g. a per-agent system prompt) are just more
+        # entries in the same 'inputs:' mapping query/filters/files already route through.
+        config = {
+            "inputs": {
+                "query": ["retriever.query"],
+                "security_prompt": ["review_security.system_prompt", "ctx_security.system_prompt"],
+            }
+        }
+        inputs = build_run_inputs(config, query="hi", named_inputs={"security_prompt": "be thorough"})
+        assert inputs == {
+            "retriever": {"query": "hi"},
+            "review_security": {"system_prompt": "be thorough"},
+            "ctx_security": {"system_prompt": "be thorough"},
+        }
+
+    def test_named_inputs_only_without_query(self) -> None:
+        config = {"inputs": {"github_token": ["payload.github_token"]}}
+        inputs = build_run_inputs(config, named_inputs={"github_token": "ghs_abc"})
+        assert inputs == {"payload": {"github_token": "ghs_abc"}}
+
+    def test_named_inputs_are_sent_as_given_not_wrapped(self) -> None:
+        # Unlike --query, a named input is never wrapped into a ChatMessage: the caller already
+        # supplied the raw value for a key it explicitly named.
+        config = {"inputs": {"messages": ["agent.messages"]}}
+        inputs = build_run_inputs(config, named_inputs={"messages": ["raw-value"]})
+        assert inputs == {"agent": {"messages": ["raw-value"]}}
+
+    def test_named_inputs_win_over_query_for_the_same_key(self) -> None:
+        config = {"inputs": {"query": ["retriever.query"]}}
+        inputs = build_run_inputs(config, query="from-query", named_inputs={"query": "from-set"})
+        assert inputs == {"retriever": {"query": "from-set"}}
+
+    def test_named_inputs_merge_with_extra_inputs_and_lose_to_them(self) -> None:
+        config = {"inputs": {"github_token": ["payload.github_token"]}}
+        inputs = build_run_inputs(
+            config,
+            named_inputs={"github_token": "from-set"},
+            extra_inputs={"payload": {"github_token": "from-inputs"}},
+        )
+        assert inputs == {"payload": {"github_token": "from-inputs"}}
+
 
 @pytest.mark.asyncio
 class TestRunPipeline:
