@@ -53,12 +53,18 @@ def test_run_forwards_to_async_client(async_cls: Mock) -> None:
     async_instance.run = AsyncMock(return_value={"llm": {"replies": ["hi"]}})
 
     client = DeploymentClient(api_key="k", workspace_name="ws", api_url="https://api")
-    result = client.run(Path("pipeline.py"), query="who?", extra_inputs={"retriever": {"top_k": 3}})
+    result = client.run(
+        Path("pipeline.py"),
+        query="who?",
+        named_inputs={"github_token": "ghs_abc"},
+        extra_inputs={"retriever": {"top_k": 3}},
+    )
 
     assert result == {"llm": {"replies": ["hi"]}}
     async_instance.run.assert_awaited_once()
     _, kwargs = async_instance.run.call_args
     assert kwargs["query"] == "who?"
+    assert kwargs["named_inputs"] == {"github_token": "ghs_abc"}
     assert kwargs["extra_inputs"] == {"retriever": {"top_k": 3}}
 
 

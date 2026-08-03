@@ -222,6 +222,27 @@ class TestRun:
         _, kwargs = post.call_args
         assert kwargs["json"]["include_outputs_from"] == ["retriever"]
 
+    async def test_run_maps_named_inputs_through_the_config(
+        self, service: MockedDeploymentService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # named_inputs routes through the SAME 'inputs:' mapping as query -- it isn't limited to the
+        # standard query/filters/files keys, so a pipeline's own custom platform inputs work too.
+        monkeypatch.setattr(
+            "haystack_enterprise_sdk._service.pipeline_transform.build_config_yaml",
+            lambda *a, **k: (
+                "components: {}\ninputs:\n  query:\n  - retriever.query\n  github_token:\n  - payload.github_token\n"
+            ),
+        )
+        post = self._mock_run_response(service, {})
+
+        await service.run(FIXTURE, query="q", named_inputs={"github_token": "ghs_abc"})
+
+        _, kwargs = post.call_args
+        assert kwargs["json"]["inputs"] == {
+            "retriever": {"query": "q"},
+            "payload": {"github_token": "ghs_abc"},
+        }
+
 
 @pytest.mark.asyncio
 class TestActivateAndPoll:
