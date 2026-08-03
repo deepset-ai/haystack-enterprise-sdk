@@ -1,6 +1,7 @@
 """Tests for the pipeline transform (local .py -> deployable platform YAML)."""
 
 import ast
+import json
 import os
 import sys
 import textwrap
@@ -724,6 +725,45 @@ class TestSubprocessExtraction:
         path = _write_project(tmp_path, {"pipeline.py": "import a_missing_module_xyz\n"})
         with pytest.raises(PipelineTransformError, match="a_missing_module_xyz"):
             extract_via_subprocess(path, python_executable=sys.executable)
+
+    def test_extract_via_subprocess_forwards_stderr_on_success(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # pipeline_extract.py logs through stdlib logging (unconfigured -> stderr by default) when it
+        # silently adjusts something for platform compatibility, e.g. stripping an Agent's unsupported
+        # 'hooks'. That warning must reach the caller even though the run itself succeeded -- a failing
+        # run already read stderr; a passing one used to discard it outright.
+        path = _write_project(tmp_path, {"pipeline.py": ""})
+
+        def fake_run(cmd: list, **_: object) -> Mock:
+            out_path = Path(cmd[cmd.index("--out") + 1])
+            out_path.write_text(json.dumps({"pipeline": {"components": {}}}), encoding="utf-8")
+            return Mock(returncode=0, stdout="", stderr="Removed unsupported 'hooks' from agent 'x'.\n")
+
+        monkeypatch.setattr("haystack_enterprise_sdk._service.pipeline_transform.subprocess.run", fake_run)
+
+        with caplog.at_level("WARNING"):
+            extraction = extract_via_subprocess(path, python_executable=sys.executable)
+
+        assert extraction.pipeline == {"components": {}}
+        assert "Removed unsupported 'hooks'" in caplog.text
+
+    def test_extract_via_subprocess_success_with_empty_stderr_logs_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        path = _write_project(tmp_path, {"pipeline.py": ""})
+
+        def fake_run(cmd: list, **_: object) -> Mock:
+            out_path = Path(cmd[cmd.index("--out") + 1])
+            out_path.write_text(json.dumps({"pipeline": {"components": {}}}), encoding="utf-8")
+            return Mock(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("haystack_enterprise_sdk._service.pipeline_transform.subprocess.run", fake_run)
+
+        with caplog.at_level("WARNING"):
+            extract_via_subprocess(path, python_executable=sys.executable)
+
+        assert caplog.text == ""
 
     def test_detect_project_python_finds_venv(self, tmp_path: Path) -> None:
         venv_python = tmp_path / "proj" / ".venv" / "bin" / "python"
