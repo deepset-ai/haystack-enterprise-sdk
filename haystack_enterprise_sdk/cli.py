@@ -25,6 +25,7 @@ from haystack_enterprise_sdk._api.deployments import (
     DeploymentServiceLevel,
     PipelineValidationError,
 )
+from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPIError
 from haystack_enterprise_sdk._api.pipeline_run import PipelineRunError
 from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
@@ -1335,8 +1336,12 @@ def run_packaged() -> None:
     Example:
     `haystack-enterprise run-packaged`
     """
-    cli_app()
+    try:
+        cli_app()
+    except HaystackEnterpriseAPIError as err:
+        typer.echo(str(err))
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    cli_app()
+    run_packaged()
