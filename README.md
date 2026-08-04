@@ -48,15 +48,43 @@ haystack-enterprise download
 # Validate a local pipeline against the platform
 haystack-enterprise validate ./pipeline.py
 
-# Run a local pipeline in the platform sandbox
+# Run a local pipeline in the platform sandbox (shows a spinner with the elapsed time while it waits)
 haystack-enterprise run ./pipeline.py
 
-# Deploy a local pipeline as a service deployment
+# Transient failures (network errors, timeouts, 429, 5xx) are retried twice by default; 0 disables it.
+# Config and input errors always fail immediately.
+haystack-enterprise run ./pipeline.py --retries 0
+
+# Deploy a local pipeline as a service deployment (reused if it exists, otherwise created serverless).
+# Asks at most which socket receives the query and which is the main output -- and nothing at all when
+# your socket names already say so. Prints the service's chat-completions endpoint once it is serving.
 haystack-enterprise deploy ./pipeline.py my-service
+
+# Create a managed (provisioned) service instead, with explicit sizing
+haystack-enterprise deploy ./pipeline.py my-service --managed --cpu 2 --memory 4Gi
+
+# Deploy and get a shareable prototype link (a chat UI). Because that UI routes through the pipeline's
+# input/output mapping, --share is also what asks you to review the mapping.
+haystack-enterprise deploy ./pipeline.py my-service --share
 
 # Check the status of a service deployment
 haystack-enterprise service-status my-service
 ```
+
+### Calling a deployed service
+
+A deployed service is served over an OpenAI-compatible chat-completions endpoint, which `deploy` prints
+once the service is running:
+
+```bash
+curl -N https://api.cloud.deepset.ai/api/v1/workspaces/<workspace>/deployments/<deployment-id>/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "<workspace>/<service-name>", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+The response is a server-sent-event stream of `chat.completion.chunk` objects. Any OpenAI client works —
+point its `base_url` at everything up to and including `/deployments/<deployment-id>`.
 
 Pass `--verbose` to any command for INFO/DEBUG logs, and `<command> --help` for its arguments.
 

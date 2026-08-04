@@ -1,6 +1,7 @@
 import base64
 import json
 from unittest.mock import Mock
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -11,6 +12,7 @@ from haystack_enterprise_sdk._api.haystack_enterprise_api import (
     HaystackEnterpriseAPI,
     HaystackEnterpriseAPIError,
     WorkspaceNotDefinedError,
+    deployment_base_url,
 )
 
 
@@ -163,6 +165,31 @@ class TestNormalizeBaseUrl:
     )
     def test_normalize_base_url(self, given: str, expected: str) -> None:
         assert normalize_base_url(given) == expected
+
+
+class TestDeploymentBaseUrl:
+    """The OpenAI-compatible base URL of a deployment, which the CLI prints after a deploy."""
+
+    def test_builds_the_versioned_workspace_scoped_path(self) -> None:
+        assert (
+            deployment_base_url("https://fake.dc.api", "my-ws", "dep-1")
+            == "https://fake.dc.api/api/v1/workspaces/my-ws/deployments/dep-1"
+        )
+
+    def test_omits_the_chat_completions_suffix(self) -> None:
+        # An OpenAI client appends /chat/completions itself, so the suffix must not be baked in.
+        assert not deployment_base_url("https://fake.dc.api", "my-ws", "dep-1").endswith("chat/completions")
+
+    @pytest.mark.parametrize("given", ["https://fake.dc.api/", "https://fake.dc.api/api/v1"])
+    def test_a_denormalized_api_url_is_normalized_first(self, given: str) -> None:
+        # CommonConfig normalizes on the way in; this documents that the builder relies on that rather
+        # than producing a doubled version segment.
+        url = deployment_base_url(normalize_base_url(given), "my-ws", "dep-1")
+        assert url == "https://fake.dc.api/api/v1/workspaces/my-ws/deployments/dep-1"
+
+    def test_uuid_deployment_ids_render_as_their_string_form(self) -> None:
+        deployment_id = uuid4()
+        assert deployment_base_url("https://fake.dc.api", "my-ws", deployment_id).endswith(f"/{deployment_id}")
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@ from httpx import Request, Response, codes
 
 from haystack_enterprise_sdk._api.deployments import (
     Deployment,
+    DeploymentMode,
     DeploymentRevision,
     DeploymentRevisionStatus,
     DeploymentsAPI,
@@ -20,6 +21,7 @@ from haystack_enterprise_sdk._api.deployments import (
     FailedToValidatePipelineError,
     PipelineValidationResult,
 )
+from haystack_enterprise_sdk.models import PipelineOutputType
 
 _REQUEST = Request("GET", "https://test.deepset.ai")
 
@@ -113,6 +115,7 @@ class TestCreate:
         result = await deployments_api.create_deployment(
             "ws",
             name="svc",
+            deployment_mode=DeploymentMode.MANAGED,
             service_level=DeploymentServiceLevel.PRODUCTION,
             cpu_limit="2",
             max_query_replica_count=3,
@@ -124,19 +127,25 @@ class TestCreate:
             json={
                 "name": "svc",
                 "source_type": "EXTERNAL_PIPELINE",
+                "deployment_mode": "MANAGED",
                 "service_level": "PRODUCTION",
                 "max_query_replica_count": 3,
                 "cpu_limit": "2",
             },
         )
 
-    async def test_create_deployment_minimal_payload(
+    async def test_create_deployment_minimal_payload_is_serverless(
         self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=_deployment_body("svc"))
         await deployments_api.create_deployment("ws", name="svc")
         _, kwargs = mocked_haystack_enterprise_api.post.call_args
-        assert kwargs["json"] == {"name": "svc", "source_type": "EXTERNAL_PIPELINE"}
+        # The platform itself defaults to MANAGED, so the serverless default has to be sent explicitly.
+        assert kwargs["json"] == {
+            "name": "svc",
+            "source_type": "EXTERNAL_PIPELINE",
+            "deployment_mode": "SERVERLESS",
+        }
 
     async def test_create_deployment_failure_raises(
         self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
@@ -151,13 +160,19 @@ class TestRevisions:
     async def test_push_revision(self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock) -> None:
         deployment_id = uuid4()
         mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=_revision_body(str(deployment_id)))
-        revision = await deployments_api.push_revision("ws", deployment_id, config_yaml="components: {}")
+        revision = await deployments_api.push_revision(
+            "ws", deployment_id, config_yaml="components: {}", comment="Bump embedder"
+        )
         assert isinstance(revision, DeploymentRevision)
         assert revision.status == DeploymentRevisionStatus.PENDING
         mocked_haystack_enterprise_api.post.assert_called_once_with(
             workspace_name="ws",
             endpoint=f"deployments/{deployment_id}/revisions",
-            json={"config_yaml": "components: {}", "source_type": "EXTERNAL_PIPELINE"},
+            json={
+                "comment": "Bump embedder",
+                "config_yaml": "components: {}",
+                "source_type": "EXTERNAL_PIPELINE",
+            },
         )
 
     async def test_push_revision_tolerates_missing_status(
@@ -166,7 +181,7 @@ class TestRevisions:
         deployment_id = uuid4()
         body = {"revision_id": str(uuid4()), "deployment_id": str(deployment_id)}  # no "status"/"config_hash"
         mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=body)
-        revision = await deployments_api.push_revision("ws", deployment_id, config_yaml="components: {}")
+        revision = await deployments_api.push_revision("ws", deployment_id, config_yaml="components: {}", comment="c")
         assert revision.status == DeploymentRevisionStatus.PENDING
         assert revision.config_hash == ""
 
@@ -175,7 +190,7 @@ class TestRevisions:
     ) -> None:
         mocked_haystack_enterprise_api.post.return_value = _resp(codes.UNPROCESSABLE_ENTITY, text="empty")
         with pytest.raises(FailedToPushRevisionError):
-            await deployments_api.push_revision("ws", uuid4(), config_yaml="")
+            await deployments_api.push_revision("ws", uuid4(), config_yaml="", comment="c")
 
     async def test_activate_revision(
         self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
@@ -301,3 +316,37 @@ class TestGetAndActivity:
         )
         events = await deployments_api.list_activity("ws", uuid4())
         assert events == [{"event_type": "REVISION_CREATED"}]
+
+
+class TestDeploymentModeParsing:
+    def test_reads_deployment_mode(self) -> None:
+        body = {**_deployment_body("svc"), "deployment_mode": "SERVERLESS"}
+        assert Deployment.from_response(body).deployment_mode == DeploymentMode.SERVERLESS
+
+    def test_missing_deployment_mode_defaults_to_managed(self) -> None:
+        assert Deployment.from_response(_deployment_body("svc")).deployment_mode == DeploymentMode.MANAGED
+
+    def test_unknown_deployment_mode_defaults_to_managed(self) -> None:
+        body = {**_deployment_body("svc"), "deployment_mode": "WAT"}
+        assert Deployment.from_response(body).deployment_mode == DeploymentMode.MANAGED
+
+
+class TestOutputTypeParsing:
+    """The platform's own answer to "is this a chat pipeline?", derived from the active revision."""
+
+    def test_reads_output_type(self) -> None:
+        body = {**_deployment_body("svc"), "output_type": "chat"}
+        assert Deployment.from_response(body).output_type is PipelineOutputType.CHAT
+
+    def test_missing_output_type_is_none(self) -> None:
+        # Absent until a revision is active, which is the normal case for a freshly pushed revision.
+        assert Deployment.from_response(_deployment_body("svc")).output_type is None
+
+    def test_null_output_type_is_none(self) -> None:
+        body = {**_deployment_body("svc"), "output_type": None}
+        assert Deployment.from_response(body).output_type is None
+
+    def test_unknown_output_type_is_none(self) -> None:
+        # The platform has values this SDK does not model (e.g. "unknown"); they must not crash a deploy.
+        body = {**_deployment_body("svc"), "output_type": "unknown"}
+        assert Deployment.from_response(body).output_type is None

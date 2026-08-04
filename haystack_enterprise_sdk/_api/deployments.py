@@ -20,6 +20,7 @@ from haystack_enterprise_sdk._api.haystack_enterprise_api import (
     HaystackEnterpriseAPI,
     raise_for_unexpected_status,
 )
+from haystack_enterprise_sdk.models import PipelineOutputType
 
 logger = structlog.get_logger(__name__)
 
@@ -54,6 +55,18 @@ class DeploymentServiceLevel(str, enum.Enum):
     CUSTOM = "CUSTOM"
 
 
+class DeploymentMode(str, enum.Enum):
+    """How a deployment is hosted.
+
+    ``SERVERLESS`` deployments provision no workload: the active revision's config is run ad-hoc per
+    request, so the sizing options (service level, replica counts, CPU/memory/GPU, idle timeout) do not
+    apply to them. ``MANAGED`` deployments run as a provisioned service and are sized by those options.
+    """
+
+    MANAGED = "MANAGED"
+    SERVERLESS = "SERVERLESS"
+
+
 class DeploymentSourceType(str, enum.Enum):
     """Type of artifact a deployment revision was created from.
 
@@ -76,6 +89,11 @@ class Deployment:
     service_level: DeploymentServiceLevel
     active_revision_id: Optional[UUID]
     pending_revision_id: Optional[UUID]
+    deployment_mode: DeploymentMode = DeploymentMode.MANAGED
+    # How the platform classifies what this deployment returns. Derived server-side from the *active*
+    # revision, so it stays None until a revision is activated. This is the platform's own answer to
+    # "is this a chat pipeline?" -- the CLI reads it rather than guessing from components or sockets.
+    output_type: Optional[PipelineOutputType] = None
 
     @classmethod
     def from_response(cls, body: Dict[str, Any]) -> "Deployment":
@@ -93,6 +111,12 @@ class Deployment:
             ),
             active_revision_id=_optional_uuid(body.get("active_revision_id")),
             pending_revision_id=_optional_uuid(body.get("pending_revision_id")),
+            # A server that does not report the mode is read as managed: that is the platform default,
+            # and treating an unknown deployment as managed keeps the rollout polling in place.
+            deployment_mode=_enum_or_default(DeploymentMode, body.get("deployment_mode"), DeploymentMode.MANAGED),
+            # The platform enum has values this SDK does not model (e.g. "unknown"), and the field is
+            # absent until a revision is active, so anything unrecognized degrades to None.
+            output_type=_enum_or_none(PipelineOutputType, body.get("output_type")),
         )
 
 
@@ -278,10 +302,11 @@ class DeploymentsAPI:
                 return None
             page_number += 1
 
-    async def create_deployment(
+    async def create_deployment(  # pylint: disable=too-many-arguments
         self,
         workspace_name: str,
         name: str,
+        deployment_mode: DeploymentMode = DeploymentMode.SERVERLESS,
         service_level: Optional[DeploymentServiceLevel] = None,
         idle_timeout_in_seconds: Optional[int] = None,
         min_query_replica_count: Optional[int] = None,
@@ -290,10 +315,15 @@ class DeploymentsAPI:
         memory_limit: Optional[str] = None,
         gpu_limit_gigabyte: Optional[int] = None,
     ) -> Deployment:
-        """Create a service deployment. Sizing defaults to the Development tier unless overridden.
+        """Create a service deployment. Serverless unless a managed mode is requested.
+
+        The platform itself defaults to ``MANAGED``, so the mode is always sent explicitly: a service
+        created through this SDK provisions no workload unless it was asked for. The sizing parameters
+        only apply to ``MANAGED`` deployments.
 
         :param workspace_name: Name of the workspace.
         :param name: Deployment name.
+        :param deployment_mode: How the deployment is hosted. Defaults to serverless.
         :param service_level: Service sizing tier. Defaults to Development server-side.
         :param idle_timeout_in_seconds: Idle timeout before scale-down.
         :param min_query_replica_count: Minimum query replicas.
@@ -304,7 +334,11 @@ class DeploymentsAPI:
         :raises FailedToCreateDeploymentError: If the deployment could not be created.
         :return: The created deployment.
         """
-        payload: Dict[str, Any] = {"name": name, "source_type": self._SOURCE_TYPE}
+        payload: Dict[str, Any] = {
+            "name": name,
+            "source_type": self._SOURCE_TYPE,
+            "deployment_mode": deployment_mode.value,
+        }
         if service_level is not None:
             payload["service_level"] = service_level.value
         for key, value in {
@@ -347,19 +381,21 @@ class DeploymentsAPI:
         workspace_name: str,
         deployment_id: UUID,
         config_yaml: str,
+        comment: str,
     ) -> DeploymentRevision:
         """Push a new revision from raw ``config_yaml``. The revision starts as ``PENDING``.
 
         :param workspace_name: Name of the workspace.
         :param deployment_id: Deployment id.
         :param config_yaml: The platform-ready pipeline YAML.
+        :param comment: Comment stored on the revision. The platform requires one.
         :raises FailedToPushRevisionError: If the revision could not be created.
         :return: The created revision.
         """
         response = await self._haystack_enterprise_api.post(
             workspace_name=workspace_name,
             endpoint=f"{self._ENDPOINT}/{deployment_id}/revisions",
-            json={"config_yaml": config_yaml, "source_type": self._SOURCE_TYPE},
+            json={"comment": comment, "config_yaml": config_yaml, "source_type": self._SOURCE_TYPE},
         )
         raise_for_unexpected_status(
             response,
@@ -489,6 +525,17 @@ def _parse_validation_issues(body: Any) -> List[PipelineValidationIssue]:
 
 def _optional_uuid(value: Optional[str]) -> Optional[UUID]:
     return UUID(value) if value else None
+
+
+def _enum_or_none(enum_cls: Type[_E], value: Any) -> Optional[_E]:
+    """Return ``enum_cls(value)`` or None if ``value`` is missing/unknown (logs on unknown)."""
+    if value is None:
+        return None
+    try:
+        return enum_cls(value)
+    except ValueError:
+        logger.warning("Unknown enum value; ignoring.", enum=enum_cls.__name__, value=value)
+        return None
 
 
 def _enum_or_default(enum_cls: Type[_E], value: Any, default: _E) -> _E:

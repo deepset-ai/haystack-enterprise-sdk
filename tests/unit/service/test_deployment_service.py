@@ -1,7 +1,8 @@
 """Tests for the deployment service orchestration."""
 
+import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Dict, Optional, Tuple, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
@@ -9,6 +10,7 @@ import pytest
 
 from haystack_enterprise_sdk._api.deployments import (
     Deployment,
+    DeploymentMode,
     DeploymentRevision,
     DeploymentRevisionStatus,
     DeploymentServiceLevel,
@@ -22,12 +24,19 @@ from haystack_enterprise_sdk._service.deployment_service import (
     DeploymentFailedError,
     DeploymentService,
     ServiceNotFoundError,
+    _commit_url,
+    _git,
+    default_revision_comment,
 )
 
 FIXTURE = Path(__file__).parent.parent.parent / "test_data" / "deploy" / "pipeline.py"
 
 
-def _deployment(name: str = "svc", status: DeploymentStatus = DeploymentStatus.UNDEPLOYED) -> Deployment:
+def _deployment(
+    name: str = "svc",
+    status: DeploymentStatus = DeploymentStatus.UNDEPLOYED,
+    mode: DeploymentMode = DeploymentMode.MANAGED,
+) -> Deployment:
     return Deployment(
         deployment_id=uuid4(),
         name=name,
@@ -35,6 +44,7 @@ def _deployment(name: str = "svc", status: DeploymentStatus = DeploymentStatus.U
         service_level=DeploymentServiceLevel.DEVELOPMENT,
         active_revision_id=None,
         pending_revision_id=None,
+        deployment_mode=mode,
     )
 
 
@@ -87,12 +97,24 @@ class TestResolveAndPush:
         service._deployments.find_by_name.return_value = deployment
         service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
 
-        result = await service.deploy(FIXTURE, "svc")
+        result = await service.deploy(FIXTURE, "svc", comment="Bump embedder")
 
         assert result.activated is False
         assert result.timed_out is False
-        service._deployments.push_revision.assert_awaited_once_with("ws", deployment.deployment_id, "components: {}\n")
+        service._deployments.push_revision.assert_awaited_once_with(
+            "ws", deployment.deployment_id, "components: {}\n", "Bump embedder"
+        )
         service._deployments.activate_revision.assert_not_called()
+
+    async def test_push_without_comment_generates_one(self, service: MockedDeploymentService) -> None:
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+
+        await service.deploy(FIXTURE, "svc")
+
+        comment = service._deployments.push_revision.await_args.args[3]
+        assert comment.startswith("Deployed pipeline.py via haystack-enterprise CLI")
 
     async def test_missing_service_without_create_raises(self, service: MockedDeploymentService) -> None:
         service._deployments.find_by_name.return_value = None
@@ -109,14 +131,51 @@ class TestResolveAndPush:
             FIXTURE,
             "svc",
             create=True,
-            create_options=CreateOptions(service_level=DeploymentServiceLevel.PRODUCTION, cpu_limit="2"),
+            create_options=CreateOptions(
+                deployment_mode=DeploymentMode.MANAGED,
+                service_level=DeploymentServiceLevel.PRODUCTION,
+                cpu_limit="2",
+            ),
         )
 
         assert result.deployment is created
         service._deployments.create_deployment.assert_awaited_once()
         _, kwargs = service._deployments.create_deployment.call_args
+        assert kwargs["deployment_mode"] == DeploymentMode.MANAGED
         assert kwargs["service_level"] == DeploymentServiceLevel.PRODUCTION
         assert kwargs["cpu_limit"] == "2"
+
+    async def test_create_defaults_to_serverless(self, service: MockedDeploymentService) -> None:
+        created = _deployment("svc", mode=DeploymentMode.SERVERLESS)
+        service._deployments.find_by_name.return_value = None
+        service._deployments.create_deployment.return_value = created
+        service._deployments.push_revision.return_value = _revision(created.deployment_id)
+
+        await service.deploy(FIXTURE, "svc", create=True)
+
+        _, kwargs = service._deployments.create_deployment.call_args
+        assert kwargs["deployment_mode"] == DeploymentMode.SERVERLESS
+        assert kwargs["service_level"] is None
+        assert kwargs["cpu_limit"] is None
+
+
+class TestCreateOptions:
+    def test_serverless_rejects_sizing_options(self) -> None:
+        with pytest.raises(ValueError, match="cpu_limit"):
+            CreateOptions(cpu_limit="2")
+
+    def test_serverless_names_every_offending_option(self) -> None:
+        with pytest.raises(ValueError) as exc:
+            CreateOptions(service_level=DeploymentServiceLevel.PRODUCTION, max_query_replica_count=3)
+        assert "service_level" in str(exc.value)
+        assert "max_query_replica_count" in str(exc.value)
+
+    def test_managed_accepts_sizing_options(self) -> None:
+        options = CreateOptions(deployment_mode=DeploymentMode.MANAGED, cpu_limit="2")
+        assert options.cpu_limit == "2"
+
+    def test_default_mode_is_serverless(self) -> None:
+        assert CreateOptions().deployment_mode is DeploymentMode.SERVERLESS
 
 
 @pytest.mark.asyncio
@@ -296,6 +355,48 @@ class TestActivateAndPoll:
         assert result.timed_out is True
         assert result.activated is True
 
+    async def test_serverless_activates_without_polling(self, service: MockedDeploymentService) -> None:
+        # Serverless provisions no workload, so there is no rollout status to poll for: the activated
+        # revision is what runs, and waiting would only burn the timeout.
+        deployment = _deployment(mode=DeploymentMode.SERVERLESS)
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+        service._deployments.activate_revision.return_value = _deployment(
+            status=DeploymentStatus.DEPLOYMENT_IN_PROGRESS, mode=DeploymentMode.SERVERLESS
+        )
+
+        result = await service.deploy(FIXTURE, "svc", activate=True, poll_interval_s=0)
+
+        service._deployments.activate_revision.assert_awaited_once()
+        service._deployments.get_deployment.assert_not_called()
+        assert result.activated is True
+        assert result.timed_out is False
+        # The status never settles for serverless, so activation alone counts as serving.
+        assert result.is_deployed is True
+
+    async def test_serverless_push_without_activate_is_not_serving(self, service: MockedDeploymentService) -> None:
+        deployment = _deployment(mode=DeploymentMode.SERVERLESS)
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+
+        result = await service.deploy(FIXTURE, "svc")
+
+        assert result.activated is False
+        assert result.is_deployed is False
+
+
+@pytest.mark.asyncio
+class TestFindService:
+    async def test_find_service_returns_match(self, service: MockedDeploymentService) -> None:
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        assert await service.find_service("svc") is deployment
+        service._deployments.find_by_name.assert_awaited_once_with("ws", "svc")
+
+    async def test_find_service_returns_none_when_missing(self, service: MockedDeploymentService) -> None:
+        service._deployments.find_by_name.return_value = None
+        assert await service.find_service("svc") is None
+
 
 @pytest.mark.asyncio
 class TestGetServiceStatus:
@@ -349,3 +450,104 @@ class TestCreateSharedPrototype:
         expiry = datetime.fromisoformat(kwargs["expiration_date"])
         delta_days = (expiry - datetime.now(timezone.utc)).total_seconds() / 86400
         assert 6.9 < delta_days < 7.1
+
+
+class TestCommitUrl:
+    @pytest.mark.parametrize(
+        ("remote", "expected"),
+        [
+            ("git@github.com:org/repo.git", "https://github.com/org/repo/commit/" + "a" * 40),
+            ("https://github.com/org/repo.git", "https://github.com/org/repo/commit/" + "a" * 40),
+            ("https://user@github.com/org/repo", "https://github.com/org/repo/commit/" + "a" * 40),
+            ("ssh://git@gitlab.com/group/sub/repo.git", "https://gitlab.com/group/sub/repo/-/commit/" + "a" * 40),
+            ("https://bitbucket.org/org/repo", "https://bitbucket.org/org/repo/commits/" + "a" * 40),
+            ("git@git.internal.example.com:org/repo.git", None),
+            ("/srv/git/repo.git", None),
+        ],
+    )
+    def test_commit_url(self, remote: str, expected: Optional[str]) -> None:
+        assert _commit_url(remote, "a" * 40) == expected
+
+
+class TestDefaultRevisionComment:
+    @staticmethod
+    def _patch_git(monkeypatch: pytest.MonkeyPatch, outputs: Dict[Tuple[str, ...], str]) -> None:
+        """Replace _git with a stand-in answering from ``outputs``, keyed by the git arguments."""
+
+        def _fake_git(_target_dir: Path, *args: str) -> Optional[str]:
+            return outputs.get(args)
+
+        monkeypatch.setattr("haystack_enterprise_sdk._service.deployment_service._git", _fake_git)
+
+    def test_includes_branch_and_commit_link(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(
+            monkeypatch,
+            {
+                ("rev-parse", "HEAD"): "a1b2c3d4" + "0" * 32,
+                ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+                ("remote", "get-url", "origin"): "git@github.com:org/repo.git",
+            },
+        )
+        comment = default_revision_comment(FIXTURE)
+        assert comment == (
+            "Deployed pipeline.py via haystack-enterprise CLI (main@a1b2c3d) "
+            f"https://github.com/org/repo/commit/a1b2c3d4{'0' * 32}"
+        )
+
+    def test_unknown_remote_host_omits_link(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(
+            monkeypatch,
+            {
+                ("rev-parse", "HEAD"): "a1b2c3d4" + "0" * 32,
+                ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+                ("remote", "get-url", "origin"): "git@git.internal.example.com:org/repo.git",
+            },
+        )
+        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI (main@a1b2c3d)"
+
+    def test_no_origin_remote_omits_link(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(
+            monkeypatch,
+            {
+                ("rev-parse", "HEAD"): "a1b2c3d4" + "0" * 32,
+                ("rev-parse", "--abbrev-ref", "HEAD"): "main",
+            },
+        )
+        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI (main@a1b2c3d)"
+
+    def test_detached_head_shows_sha_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(
+            monkeypatch,
+            {
+                ("rev-parse", "HEAD"): "a1b2c3d4" + "0" * 32,
+                ("rev-parse", "--abbrev-ref", "HEAD"): "HEAD",
+            },
+        )
+        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI (a1b2c3d)"
+
+    def test_without_git_falls_back_to_plain_comment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(monkeypatch, {})
+        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI"
+
+
+class TestGitHelper:
+    def test_missing_git_binary_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _raise(*_args: object, **_kwargs: object) -> None:
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr("subprocess.run", _raise)
+        assert _git(Path("."), "rev-parse", "HEAD") is None
+
+    def test_timeout_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _raise(*_args: object, **_kwargs: object) -> None:
+            raise subprocess.TimeoutExpired(cmd="git", timeout=1)
+
+        monkeypatch.setattr("subprocess.run", _raise)
+        assert _git(Path("."), "rev-parse", "HEAD") is None
+
+    def test_non_zero_exit_returns_none(self) -> None:
+        # A real call outside any repository: git exits non-zero.
+        assert _git(Path("/"), "rev-parse", "HEAD") is None
+
+    def test_returns_stripped_stdout(self) -> None:
+        assert _git(Path(__file__).parent, "rev-parse", "--abbrev-ref", "HEAD")

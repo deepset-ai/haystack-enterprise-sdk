@@ -39,12 +39,13 @@ def test_deploy_forwards_to_async_client(async_cls: Mock) -> None:
     async_instance.deploy = AsyncMock(return_value=_result())
 
     client = DeploymentClient(api_key="k", workspace_name="ws", api_url="https://api")
-    result = client.deploy(Path("pipeline.py"), "svc", activate=True)
+    result = client.deploy(Path("pipeline.py"), "svc", activate=True, comment="Bump embedder")
 
     assert isinstance(result, DeployResult)
     async_instance.deploy.assert_awaited_once()
     _, kwargs = async_instance.deploy.call_args
     assert kwargs["activate"] is True
+    assert kwargs["comment"] == "Bump embedder"
 
 
 @patch("haystack_enterprise_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
@@ -66,6 +67,19 @@ def test_run_forwards_to_async_client(async_cls: Mock) -> None:
     assert kwargs["query"] == "who?"
     assert kwargs["named_inputs"] == {"github_token": "ghs_abc"}
     assert kwargs["extra_inputs"] == {"retriever": {"top_k": 3}}
+
+
+@patch("haystack_enterprise_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
+def test_find_service_forwards(async_cls: Mock) -> None:
+    async_instance = async_cls.return_value
+    deployment = _result().deployment
+    async_instance.find_service = AsyncMock(return_value=deployment)
+
+    client = DeploymentClient()
+    result = client.find_service("svc")
+
+    assert result is deployment
+    async_instance.find_service.assert_awaited_once_with("svc")
 
 
 @patch("haystack_enterprise_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")

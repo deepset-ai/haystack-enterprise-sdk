@@ -17,7 +17,11 @@ from haystack_enterprise_sdk._api.deployments import (
     DeploymentStatus,
     PipelineValidationResult,
 )
-from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
+from haystack_enterprise_sdk._api.haystack_enterprise_api import (
+    HaystackEnterpriseAPI,
+    deployment_base_url,
+)
+from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, OnRetry
 from haystack_enterprise_sdk._api.shared_prototypes import SharedPrototype
 from haystack_enterprise_sdk._service.deployment_service import (
     DEFAULT_ACTIVATION_TIMEOUT_S,
@@ -66,6 +70,22 @@ class AsyncDeploymentClient:
                 "environment variable."
             )
 
+    @property
+    def workspace_name(self) -> str:
+        """The workspace this client deploys into."""
+        return self._workspace_name
+
+    def deployment_base_url(self, deployment_id: Any) -> str:
+        """The OpenAI-compatible base URL of a deployment in this client's workspace.
+
+        Append ``/chat/completions`` to call it directly, or hand it to an OpenAI client as ``base_url``.
+        Only usable once the deployment has an active revision.
+
+        :param deployment_id: Id of the deployment (e.g. ``DeployResult.deployment.deployment_id``).
+        :return: The deployment's base URL.
+        """
+        return deployment_base_url(self._api_config.api_url, self._workspace_name, deployment_id)
+
     @asynccontextmanager
     async def _service(self) -> AsyncIterator[DeploymentService]:
         """Yield a :class:`DeploymentService` backed by a managed API client."""
@@ -80,6 +100,7 @@ class AsyncDeploymentClient:
         activate: bool = False,
         create: bool = False,
         create_options: Optional[CreateOptions] = None,
+        comment: Optional[str] = None,
         entrypoint: Optional[str] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
@@ -102,6 +123,7 @@ class AsyncDeploymentClient:
                 activate=activate,
                 create=create,
                 create_options=create_options,
+                comment=comment,
                 entrypoint=entrypoint,
                 inputs=inputs,
                 outputs=outputs,
@@ -154,6 +176,8 @@ class AsyncDeploymentClient:
         named_inputs: Optional[Dict[str, Any]] = None,
         extra_inputs: Optional[Dict[str, Dict[str, Any]]] = None,
         include_outputs_from: Optional[List[str]] = None,
+        retries: int = DEFAULT_RUN_RETRIES,
+        on_retry: Optional[OnRetry] = None,
     ) -> Dict[str, Any]:
         """Transform ``target`` and run the generated YAML in the platform sandbox, without deploying.
 
@@ -172,7 +196,14 @@ class AsyncDeploymentClient:
                 named_inputs=named_inputs,
                 extra_inputs=extra_inputs,
                 include_outputs_from=include_outputs_from,
+                retries=retries,
+                on_retry=on_retry,
             )
+
+    async def find_service(self, service_name: str) -> Optional[Deployment]:
+        """Return the service deployment named ``service_name``, or ``None`` if the workspace has none."""
+        async with self._service() as service:
+            return await service.find_service(service_name)
 
     async def get_service_status(self, service_name: str) -> Deployment:
         """Return the current deployment (with live runtime status) for ``service_name``."""

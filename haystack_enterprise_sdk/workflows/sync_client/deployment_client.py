@@ -11,6 +11,7 @@ from haystack_enterprise_sdk._api.deployments import (
     DeploymentStatus,
     PipelineValidationResult,
 )
+from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, OnRetry
 from haystack_enterprise_sdk._api.shared_prototypes import SharedPrototype
 from haystack_enterprise_sdk._service.deployment_service import (
     DEFAULT_ACTIVATION_TIMEOUT_S,
@@ -80,6 +81,7 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
         activate: bool = False,
         create: bool = False,
         create_options: Optional[CreateOptions] = None,
+        comment: Optional[str] = None,
         entrypoint: Optional[str] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
@@ -99,6 +101,7 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
                 activate=activate,
                 create=create,
                 create_options=create_options,
+                comment=comment,
                 entrypoint=entrypoint,
                 inputs=inputs,
                 outputs=outputs,
@@ -150,6 +153,8 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
         named_inputs: Optional[Dict[str, Any]] = None,
         extra_inputs: Optional[Dict[str, Dict[str, Any]]] = None,
         include_outputs_from: Optional[List[str]] = None,
+        retries: int = DEFAULT_RUN_RETRIES,
+        on_retry: Optional[OnRetry] = None,
     ) -> Dict[str, Any]:
         """Transform ``target`` and run the generated YAML in the platform sandbox synchronously."""
         return _run(
@@ -165,8 +170,14 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
                 named_inputs=named_inputs,
                 extra_inputs=extra_inputs,
                 include_outputs_from=include_outputs_from,
+                retries=retries,
+                on_retry=on_retry,
             )
         )
+
+    def find_service(self, service_name: str) -> Optional[Deployment]:
+        """Return the service deployment named ``service_name``, or ``None`` if the workspace has none."""
+        return _run(self._async_client.find_service(service_name))
 
     def get_service_status(self, service_name: str) -> Deployment:
         """Return the current deployment (with live runtime status) for ``service_name``."""
@@ -175,3 +186,12 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
     def create_shared_prototype(self, service_name: str, options: Optional[ShareOptions] = None) -> SharedPrototype:
         """Create a shared prototype (a shareable chat UI link) for a deployed service synchronously."""
         return _run(self._async_client.create_shared_prototype(service_name, options))
+
+    @property
+    def workspace_name(self) -> str:
+        """The workspace this client deploys into."""
+        return self._async_client.workspace_name
+
+    def deployment_base_url(self, deployment_id: Any) -> str:
+        """The OpenAI-compatible base URL of a deployment. See :meth:`AsyncDeploymentClient.deployment_base_url`."""
+        return self._async_client.deployment_base_url(deployment_id)
