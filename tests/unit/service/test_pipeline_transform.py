@@ -430,116 +430,56 @@ class TestSanitizeAgentInitParams:
                 "init_parameters": {some_key: some_default, "system_prompt": "custom"},
             }
         }
-        _sanitize_agent_init_params(components, Path("/nonexistent-project"))
+        _sanitize_agent_init_params(components)
         init = components["agent"]["init_parameters"]
         assert some_key not in init
         assert init["system_prompt"] == "custom"
 
     def test_leaves_non_agent_component_untouched(self) -> None:
         components: dict[str, Any] = {"c": {"type": "haystack.components.foo.Foo", "init_parameters": {"hooks": 1}}}
-        _sanitize_agent_init_params(components, Path("/nonexistent-project"))
+        _sanitize_agent_init_params(components)
         assert components["c"]["init_parameters"]["hooks"] == 1
 
 
 class TestSanitizeAgentHooks:
-    """Per-hook filtering: the platform Agent accepts hooks now (the rendered ``dependencies`` block
-    pins the authoring haystack-ai), so only hooks that genuinely cannot survive a deploy are dropped."""
+    """Hooks are unset wholesale — nothing can be rewritten into a form the platform resolves — but only
+    an Agent that actually registered one is worth warning about."""
+
+    _OFFLOAD_HOOK = {
+        "type": "haystack.hooks.tool_result_offloading.hooks.ToolResultOffloadHook",
+        "init_parameters": {"preview_chars": 200},
+    }
+    _LOCAL_HOOK = {
+        "type": "haystack.hooks.from_function.FunctionHook",
+        "init_parameters": {"function": "myhooks.h", "async_function": None},
+    }
 
     @staticmethod
-    def _agent(hooks: Any) -> dict:
-        return {
+    def _sanitize(hooks: Any) -> dict:
+        components: dict[str, Any] = {
             "agent": {
                 "type": "haystack.components.agents.agent.Agent",
                 "init_parameters": {"system_prompt": "hi", "hooks": hooks},
             }
         }
+        _sanitize_agent_init_params(components)
+        init: dict = components["agent"]["init_parameters"]
+        return init
 
-    def _sanitize(self, hooks: Any, project_root: Path = Path("/nonexistent-project")) -> dict:
-        components = self._agent(hooks)
-        _sanitize_agent_init_params(components, project_root)
-        return components["agent"]["init_parameters"]
+    def test_drops_a_hook_referencing_only_installed_modules(self) -> None:
+        # Even a hook that would import fine on the platform goes: there is no way to tell it apart
+        # from one that would not without guessing, and a wrong guess fails at runtime after deploy.
+        assert "hooks" not in self._sanitize({"after_tool": [self._OFFLOAD_HOOK]})
 
-    @staticmethod
-    def _local_project(tmp_path: Path, files: dict) -> Path:
-        """Write a project AND make it importable, since ``classify_module`` resolves via ``find_spec``.
+    def test_drops_a_local_hook(self) -> None:
+        # The case that most needs dropping: a local @hook serializes under Haystack's own FunctionHook
+        # type with the user's import path, and that module does not exist in the platform runtime.
+        assert "hooks" not in self._sanitize({"on_exit": [self._LOCAL_HOOK]})
 
-        Production gets this from ``load_pipeline_from_file``, which puts the project root on
-        ``sys.path`` before extraction; these tests call the sanitizer directly. The autouse
-        ``clean_import_state`` fixture restores ``sys.path`` afterwards.
-        """
-        _write_project(tmp_path, files)
-        sys.path.insert(0, str(tmp_path))
-        return tmp_path
-
-    def test_keeps_a_non_local_hook(self) -> None:
-        # The whole point of the change: a hook referencing only installed modules reconstructs fine on
-        # the platform, because the pinned dependencies block installs the same Haystack.
-        offload = {
-            "type": "haystack.hooks.tool_result_offloading.hooks.ToolResultOffloadHook",
-            "init_parameters": {
-                "store": {
-                    "type": "haystack.hooks.tool_result_offloading.stores.FileSystemToolResultStore",
-                    "init_parameters": {"root": "/tmp/x"},
-                },
-                "preview_chars": 200,
-            },
-        }
-        init = self._sanitize({"after_tool": [offload]})
-        assert init["hooks"] == {"after_tool": [offload]}
-
-    def test_drops_a_local_function_hook(self, tmp_path: Path) -> None:
-        # A local @hook function serializes under Haystack's own FunctionHook type, so the give-away is
-        # the function import path, not the type.
-        self._local_project(tmp_path, {"myhooks.py": "def h(state):\n    pass\n"})
-        local = {
-            "type": "haystack.hooks.from_function.FunctionHook",
-            "init_parameters": {"function": "myhooks.h", "async_function": None},
-        }
-        assert "hooks" not in self._sanitize({"on_exit": [local]}, tmp_path)
-
-    def test_drops_a_local_class_hook(self, tmp_path: Path) -> None:
-        self._local_project(tmp_path, {"myhooks.py": "class MyHook:\n    pass\n"})
-        local = {"type": "myhooks.MyHook", "init_parameters": {}}
-        assert "hooks" not in self._sanitize({"on_exit": [local]}, tmp_path)
-
-    def test_drops_a_hook_holding_a_local_nested_object(self, tmp_path: Path) -> None:
-        # A hook can be non-local itself yet hold a local collaborator (a custom result store); the
-        # nested type is just as unresolvable on the platform.
-        self._local_project(tmp_path, {"mystore.py": "class MyStore:\n    pass\n"})
-        hook = {
-            "type": "haystack.hooks.tool_result_offloading.hooks.ToolResultOffloadHook",
-            "init_parameters": {"store": {"type": "mystore.MyStore", "init_parameters": {}}},
-        }
-        assert "hooks" not in self._sanitize({"after_tool": [hook]}, tmp_path)
-
-    def test_drops_a_stdin_bound_confirmation_hook(self) -> None:
-        # Nothing reads stdin in a deployed pipeline, so this would block rather than fail.
-        hook = {
-            "type": "haystack.hooks.human_in_the_loop.hooks.ConfirmationHook",
-            "init_parameters": {
-                "confirmation_strategy": {
-                    "type": "haystack.hooks.human_in_the_loop.strategies.BlockingConfirmationStrategy",
-                    "init_parameters": {
-                        "confirmation_ui": {
-                            "type": "haystack.hooks.human_in_the_loop.user_interfaces.RichConsoleUI",
-                            "init_parameters": {},
-                        }
-                    },
-                }
-            },
-        }
-        assert "hooks" not in self._sanitize({"before_tool": [hook]})
-
-    def test_keeps_surviving_hooks_alongside_dropped_ones(self, tmp_path: Path) -> None:
-        self._local_project(tmp_path, {"myhooks.py": "def h(state):\n    pass\n"})
-        local = {
-            "type": "haystack.hooks.from_function.FunctionHook",
-            "init_parameters": {"function": "myhooks.h", "async_function": None},
-        }
-        remote = {"type": "haystack.hooks.tool_result_offloading.hooks.ToolResultOffloadHook", "init_parameters": {}}
-        init = self._sanitize({"on_exit": [local, remote], "after_tool": [remote]}, tmp_path)
-        # The local one is gone, everything else is untouched — including the hook point that had none.
-        assert init["hooks"] == {"on_exit": [remote], "after_tool": [remote]}
+    def test_drops_every_hook_point(self) -> None:
+        init = self._sanitize({"on_exit": [self._LOCAL_HOOK, self._OFFLOAD_HOOK], "after_tool": [self._OFFLOAD_HOOK]})
+        assert "hooks" not in init
+        assert init["system_prompt"] == "hi"  # the rest of the Agent is untouched
 
     def test_default_none_hooks_is_pruned_without_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         # Haystack serializes ``hooks: None`` for EVERY Agent, so warning on key-presence made every
@@ -549,19 +489,18 @@ class TestSanitizeAgentHooks:
         assert "hooks" not in init
         assert caplog.text == ""
 
-    def test_explicitly_empty_hooks_is_normalized_away(self) -> None:
+    def test_explicitly_empty_hooks_is_normalized_away_without_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         # ``{}`` is not the ``None`` default, so default-pruning would keep it; an older platform Agent
-        # predating hooks rejects the kwarg outright, so it is popped instead.
-        assert "hooks" not in self._sanitize({})
-
-    def test_warns_naming_the_dropped_hook(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-        self._local_project(tmp_path, {"myhooks.py": "def h(state):\n    pass\n"})
-        local = {
-            "type": "haystack.hooks.from_function.FunctionHook",
-            "init_parameters": {"function": "myhooks.h", "async_function": None},
-        }
+        # predating hooks rejects the kwarg outright, so it is popped instead. Nothing was registered,
+        # so there is nothing to warn about either.
         with caplog.at_level("WARNING"):
-            self._sanitize({"on_exit": [local]}, tmp_path)
+            init = self._sanitize({})
+        assert "hooks" not in init
+        assert caplog.text == ""
+
+    def test_warns_naming_the_dropped_hooks(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("WARNING"):
+            self._sanitize({"on_exit": [self._LOCAL_HOOK]})
         assert "myhooks.h" in caplog.text
         assert "on_exit" in caplog.text
         assert "agent" in caplog.text

@@ -761,7 +761,7 @@ def _rewrite_local_tools(components: dict, project_root: Path) -> None:
         init["tools"] = [_maybe_rewrite_tool(tool, project_root) for tool in tools]
 
 
-def _sanitize_agent_init_params(components: dict, project_root: Path) -> None:
+def _sanitize_agent_init_params(components: dict) -> None:
     """Make Agent init params portable across a version gap with the platform runtime, in place.
 
     When the authoring Haystack is newer than the platform's, two things break validation:
@@ -771,10 +771,8 @@ def _sanitize_agent_init_params(components: dict, project_root: Path) -> None:
        the authoring ``Agent``'s default — there's no user intent in it and the platform applies its own
        default — which fixes the whole class of "unexpected keyword argument" errors, not one param at a
        time. ``chat_generator`` has no default, so it (and any other explicitly-set param) is kept.
-    2. ``hooks`` needs per-hook filtering rather than a blanket drop — see
-       :func:`_sanitize_agent_hooks`. Note the ordering: hook filtering runs FIRST, so that an Agent
-       whose every hook was dropped is left with an empty mapping the default-pruning below then
-       removes, exactly as if none had been set.
+    2. ``hooks`` cannot be deployed at all and is unset entirely — see :func:`_sanitize_agent_hooks`,
+       which also explains why it runs here rather than being left to the default-pruning below.
     """
     defaults = _agent_init_defaults()
     for comp_name, comp in components.items():
@@ -784,7 +782,7 @@ def _sanitize_agent_init_params(components: dict, project_root: Path) -> None:
         if not isinstance(init, dict):
             continue
 
-        _sanitize_agent_hooks(comp_name, init, project_root)
+        _sanitize_agent_hooks(comp_name, init)
 
         pruned = [key for key in list(init) if key in defaults and _equals_default(init[key], defaults[key])]
         for key in pruned:
@@ -793,138 +791,58 @@ def _sanitize_agent_init_params(components: dict, project_root: Path) -> None:
             logger.debug("Dropped default-valued agent params from '%s': %s", comp_name, ", ".join(sorted(pruned)))
 
 
-# Confirmation UIs that read from stdin. A deployed pipeline has no console attached, so a hook wired to
-# one of these does not fail — it blocks forever waiting for input, which is worse. Matched on the
-# serialized type, so update this if Haystack adds another console-bound UI.
-_STDIN_BOUND_HOOK_TYPES = (
-    "haystack.hooks.human_in_the_loop.user_interfaces.RichConsoleUI",
-    "haystack.hooks.human_in_the_loop.user_interfaces.SimpleConsoleUI",
-)
+def _sanitize_agent_hooks(comp_name: str, init: dict) -> None:
+    """Unset an Agent's ``hooks`` entirely, in place, warning when one was actually registered.
 
+    No hook survives a deploy today, and the ones worth keeping are exactly the ones that cannot:
+    a ``FunctionHook`` serializes its function as an import path (``myhooks.my_hook``) and a
+    class-based hook serializes under its own type, so either way the module is absent from the
+    platform runtime. A local ``@tool`` dodges this by being rewritten into an inlined ``CodeTool``;
+    there is no hook analogue to inline into, so there is nothing to rewrite. Deploying the subset
+    that *looks* importable would only move the failure to runtime, so ``hooks`` is unset wholesale
+    — the safest shape, and exactly what an Agent that never registered one serializes as.
 
-def _sanitize_agent_hooks(comp_name: str, init: dict, project_root: Path) -> None:
-    """Drop only the Agent hooks that cannot work on the platform, in place.
+    ``hooks`` left at its default is dropped *silently*: Haystack serializes ``hooks: None`` for
+    every Agent that has the parameter, so warning on mere key-presence made every agent deploy emit
+    a spurious "removed unsupported hooks" — noise that trains people to ignore the warning, which
+    would then mask a real dropped-hook case.
 
-    Hooks used to be dropped wholesale on the grounds that the platform ``Agent`` did not accept them.
-    It does now — the rendered ``dependencies`` block pins the authoring ``haystack-ai`` version, so the
-    platform reconstructs the same ``Agent`` that serialized the hook. What remains are two cases that
-    genuinely cannot survive a deploy, both dropped with a warning naming the hook, since either was
-    set deliberately:
-
-    1. **A hook that references the user's own project.** ``FunctionHook.to_dict`` stores its function as
-       an import path (``myhooks.my_hook``) and a class-based hook serializes under its own type; either
-       way the module does not exist in the platform runtime. Local *tools* get around this by being
-       rewritten into an inlined ``CodeTool``, but there is no hook analogue to inline into, so a local
-       hook has to go. Lifting this needs platform-side support, not an SDK change.
-    2. **A hook wired to a stdin-bound confirmation UI.** Nothing reads stdin in a deployed pipeline, so
-       it would block rather than fail.
-
-    Anything else passes through untouched and the platform validates it like any other init param.
-
-    ``hooks`` left at its default (``None``, which Haystack serializes for every Agent that has the
-    parameter) is dropped silently — that is what stopped every agent deploy emitting a spurious
-    "removed unsupported hooks". It is popped here rather than left to the caller's default-pruning on
-    purpose: that pass introspects the *authoring* ``Agent.__init__``, and an authoring Haystack whose
-    Agent predates ``hooks`` has no default to compare against, so ``None`` would survive and reach a
-    platform Agent that may reject the kwarg outright.
+    It is popped here rather than left to the caller's default-pruning on purpose: that pass
+    introspects the *authoring* ``Agent.__init__``, so an authoring Haystack whose Agent predates
+    ``hooks`` has no default to compare against and ``None`` would survive, reaching a platform Agent
+    that may reject the kwarg outright.
     """
     if "hooks" not in init:
         return
-    hooks = init["hooks"]
-    if not isinstance(hooks, dict):
-        if hooks is None:
-            init.pop("hooks")
-        return  # any other non-mapping is left alone for the platform to reject on its own terms
-
-    kept: dict[str, list] = {}
-    for hook_point, hook_list in hooks.items():
-        if not isinstance(hook_list, list):
-            kept[hook_point] = hook_list
-            continue
-        surviving = []
-        for entry in hook_list:
-            reason = _unsupported_hook_reason(entry, project_root)
-            if reason is None:
-                surviving.append(entry)
-                continue
-            logger.warning(
-                "Removed hook %s at '%s' from agent '%s': %s",
-                _hook_label(entry),
-                hook_point,
-                comp_name,
-                reason,
-            )
-        if surviving:
-            kept[hook_point] = surviving
-
-    # Nothing survived (or nothing was set): pop rather than leave ``{}`` behind, so the Agent looks
-    # exactly like one that never registered a hook. That matters beyond tidiness — an older platform
-    # Agent predating ``hooks`` rejects the kwarg outright, and ``{}`` would not be caught by the
-    # caller's default-pruning because it is not the ``None`` default.
-    if kept:
-        init["hooks"] = kept
-    else:
-        init.pop("hooks", None)
-
-
-def _unsupported_hook_reason(entry: Any, project_root: Path) -> Optional[str]:
-    """Why a serialized hook cannot be deployed, or ``None`` when it can."""
-    if not isinstance(entry, dict):
-        return None
-    types, functions = _serialized_refs(entry)
-    stdin_bound = sorted(t for t in types if t in _STDIN_BOUND_HOOK_TYPES)
-    if stdin_bound:
-        return (
-            f"it is wired to {', '.join(stdin_bound)}, which reads from stdin; a deployed pipeline has "
-            "no console attached, so the hook would block instead of failing"
-        )
-    local = sorted(
-        ref for ref in (*types, *functions) if classify_module(str(ref).rpartition(".")[0], project_root) == "local"
+    hooks = init.pop("hooks")
+    if not hooks:  # unset (``None``) or explicitly empty — nothing was registered, so nothing to report
+        return
+    logger.warning(
+        "Removed hooks from agent '%s' (%s): hooks are not deployed. Unlike a local @tool, which is "
+        "rewritten into an inlined CodeTool, a hook has no equivalent the platform runtime resolves.",
+        comp_name,
+        _hooks_label(hooks),
     )
-    if local:
-        return (
-            f"it references {', '.join(local)} from your project, which does not exist in the platform "
-            "runtime. Unlike a local @tool (rewritten into an inlined CodeTool), a hook has no inlined "
-            "equivalent to be rewritten into"
-        )
-    return None
 
 
-def _serialized_refs(value: Any) -> tuple[set, set]:
-    """Every ``type`` and every serialized-callable path reachable in a serialized object.
+def _hooks_label(hooks: Any) -> str:
+    """A ``point: Type(function), Type; point: Type`` description of the dropped hooks, for the warning.
 
-    Walks the whole nested structure because a hook's own type is only part of the picture: a
-    ``FunctionHook``'s type is Haystack's while the function it wraps is the user's, and a hook can hold
-    further serialized objects (a result store, an offload policy, a confirmation strategy) that are
-    each independently local or not.
+    Names the function too, not just the type: every ``@hook`` function serializes under the same
+    ``FunctionHook`` type, so the import path is the only thing that tells two of them apart.
     """
-    types: set = set()
-    functions: set = set()
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if key == "type" and isinstance(item, str):
-                types.add(item)
-            elif key in ("function", "async_function") and isinstance(item, str):
-                functions.add(item)
-            else:
-                nested_types, nested_functions = _serialized_refs(item)
-                types |= nested_types
-                functions |= nested_functions
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            nested_types, nested_functions = _serialized_refs(item)
-            types |= nested_types
-            functions |= nested_functions
-    return types, functions
+    if not isinstance(hooks, dict):
+        return repr(hooks)
 
+    def label(hook: Any) -> str:
+        if not isinstance(hook, dict):
+            return repr(hook)
+        hook_type = str(hook.get("type", "")) or "<unknown>"
+        function = (hook.get("init_parameters") or {}).get("function")
+        return f"{hook_type}({function})" if isinstance(function, str) else hook_type
 
-def _hook_label(entry: Any) -> str:
-    """A short identifier for a serialized hook, for log messages."""
-    if not isinstance(entry, dict):
-        return repr(entry)
-    hook_type = str(entry.get("type", "")) or "<unknown>"
-    function = (entry.get("init_parameters") or {}).get("function")
-    return f"{hook_type}({function})" if isinstance(function, str) else hook_type
+    at_point = ((point, entry if isinstance(entry, list) else [entry]) for point, entry in hooks.items())
+    return "; ".join(f"{point}: {', '.join(label(hook) for hook in entries)}" for point, entries in at_point)
 
 
 def _agent_init_defaults() -> dict:
@@ -1412,8 +1330,8 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
     _rewrite_local_tools(components, project_root)
 
     # Make Agent init params portable to the platform runtime: drop default-valued params (which the
-    # older platform Agent may not know) and any hook that cannot survive a deploy.
-    _sanitize_agent_init_params(components, project_root)
+    # older platform Agent may not know) and unsupported ones like ``hooks``.
+    _sanitize_agent_init_params(components)
 
     return {
         "pipeline": pipeline_dict,
