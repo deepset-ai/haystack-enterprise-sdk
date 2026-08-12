@@ -408,17 +408,7 @@ class TestValidateToolCodeBlock:
 
 
 class TestSanitizeAgentInitParams:
-    def test_removes_hooks_from_agent(self) -> None:
-        components: dict[str, Any] = {
-            "agent": {
-                "type": "haystack.components.agents.agent.Agent",
-                "init_parameters": {"system_prompt": "hi", "hooks": {"before_tool": ["x"]}},
-            }
-        }
-        _sanitize_agent_init_params(components)
-        assert "hooks" not in components["agent"]["init_parameters"]
-        # An explicitly-set, non-default param is preserved.
-        assert components["agent"]["init_parameters"]["system_prompt"] == "hi"
+    """The Agent init-param sanitizer. Hook filtering has its own class below."""
 
     def test_prunes_default_valued_params(self) -> None:
         # Unknown-to-the-platform param sitting at the authoring Agent's default is dropped; a custom
@@ -449,6 +439,71 @@ class TestSanitizeAgentInitParams:
         components: dict[str, Any] = {"c": {"type": "haystack.components.foo.Foo", "init_parameters": {"hooks": 1}}}
         _sanitize_agent_init_params(components)
         assert components["c"]["init_parameters"]["hooks"] == 1
+
+
+class TestSanitizeAgentHooks:
+    """Hooks are unset wholesale — nothing can be rewritten into a form the platform resolves — but only
+    an Agent that actually registered one is worth warning about."""
+
+    _OFFLOAD_HOOK = {
+        "type": "haystack.hooks.tool_result_offloading.hooks.ToolResultOffloadHook",
+        "init_parameters": {"preview_chars": 200},
+    }
+    _LOCAL_HOOK = {
+        "type": "haystack.hooks.from_function.FunctionHook",
+        "init_parameters": {"function": "myhooks.h", "async_function": None},
+    }
+
+    @staticmethod
+    def _sanitize(hooks: Any) -> dict:
+        components: dict[str, Any] = {
+            "agent": {
+                "type": "haystack.components.agents.agent.Agent",
+                "init_parameters": {"system_prompt": "hi", "hooks": hooks},
+            }
+        }
+        _sanitize_agent_init_params(components)
+        init: dict = components["agent"]["init_parameters"]
+        return init
+
+    def test_drops_a_hook_referencing_only_installed_modules(self) -> None:
+        # Even a hook that would import fine on the platform goes: there is no way to tell it apart
+        # from one that would not without guessing, and a wrong guess fails at runtime after deploy.
+        assert "hooks" not in self._sanitize({"after_tool": [self._OFFLOAD_HOOK]})
+
+    def test_drops_a_local_hook(self) -> None:
+        # The case that most needs dropping: a local @hook serializes under Haystack's own FunctionHook
+        # type with the user's import path, and that module does not exist in the platform runtime.
+        assert "hooks" not in self._sanitize({"on_exit": [self._LOCAL_HOOK]})
+
+    def test_drops_every_hook_point(self) -> None:
+        init = self._sanitize({"on_exit": [self._LOCAL_HOOK, self._OFFLOAD_HOOK], "after_tool": [self._OFFLOAD_HOOK]})
+        assert "hooks" not in init
+        assert init["system_prompt"] == "hi"  # the rest of the Agent is untouched
+
+    def test_default_none_hooks_is_pruned_without_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        # Haystack serializes ``hooks: None`` for EVERY Agent, so warning on key-presence made every
+        # deploy of every agent pipeline emit a spurious "removed unsupported hooks".
+        with caplog.at_level("WARNING"):
+            init = self._sanitize(None)
+        assert "hooks" not in init
+        assert caplog.text == ""
+
+    def test_explicitly_empty_hooks_is_normalized_away_without_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        # ``{}`` is not the ``None`` default, so default-pruning would keep it; an older platform Agent
+        # predating hooks rejects the kwarg outright, so it is popped instead. Nothing was registered,
+        # so there is nothing to warn about either.
+        with caplog.at_level("WARNING"):
+            init = self._sanitize({})
+        assert "hooks" not in init
+        assert caplog.text == ""
+
+    def test_warns_naming_the_dropped_hooks(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level("WARNING"):
+            self._sanitize({"on_exit": [self._LOCAL_HOOK]})
+        assert "myhooks.h" in caplog.text
+        assert "on_exit" in caplog.text
+        assert "agent" in caplog.text
 
 
 # --------------------------------------------------------------------------- #

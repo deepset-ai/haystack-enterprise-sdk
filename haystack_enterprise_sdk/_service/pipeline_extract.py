@@ -771,9 +771,8 @@ def _sanitize_agent_init_params(components: dict) -> None:
        the authoring ``Agent``'s default — there's no user intent in it and the platform applies its own
        default — which fixes the whole class of "unexpected keyword argument" errors, not one param at a
        time. ``chat_generator`` has no default, so it (and any other explicitly-set param) is kept.
-    2. ``hooks`` (e.g. a human-in-the-loop console confirmation) can't run in a deployed, non-interactive
-       pipeline and the platform Agent doesn't accept it, so it's always dropped — with a warning, since
-       it may have been set deliberately.
+    2. ``hooks`` cannot be deployed at all and is unset entirely — see :func:`_sanitize_agent_hooks`,
+       which also explains why it runs here rather than being left to the default-pruning below.
     """
     defaults = _agent_init_defaults()
     for comp_name, comp in components.items():
@@ -783,19 +782,67 @@ def _sanitize_agent_init_params(components: dict) -> None:
         if not isinstance(init, dict):
             continue
 
-        if "hooks" in init:
-            init.pop("hooks", None)
-            logger.warning(
-                "Removed unsupported 'hooks' from agent '%s': the platform Agent does not accept hooks, "
-                "and interactive hooks (e.g. console confirmation) cannot run in a deployed pipeline.",
-                comp_name,
-            )
+        _sanitize_agent_hooks(comp_name, init)
 
         pruned = [key for key in list(init) if key in defaults and _equals_default(init[key], defaults[key])]
         for key in pruned:
             init.pop(key, None)
         if pruned:
             logger.debug("Dropped default-valued agent params from '%s': %s", comp_name, ", ".join(sorted(pruned)))
+
+
+def _sanitize_agent_hooks(comp_name: str, init: dict) -> None:
+    """Unset an Agent's ``hooks`` entirely, in place, warning when one was actually registered.
+
+    No hook survives a deploy today, and the ones worth keeping are exactly the ones that cannot:
+    a ``FunctionHook`` serializes its function as an import path (``myhooks.my_hook``) and a
+    class-based hook serializes under its own type, so either way the module is absent from the
+    platform runtime. A local ``@tool`` dodges this by being rewritten into an inlined ``CodeTool``;
+    there is no hook analogue to inline into, so there is nothing to rewrite. Deploying the subset
+    that *looks* importable would only move the failure to runtime, so ``hooks`` is unset wholesale
+    — the safest shape, and exactly what an Agent that never registered one serializes as.
+
+    ``hooks`` left at its default is dropped *silently*: Haystack serializes ``hooks: None`` for
+    every Agent that has the parameter, so warning on mere key-presence made every agent deploy emit
+    a spurious "removed unsupported hooks" — noise that trains people to ignore the warning, which
+    would then mask a real dropped-hook case.
+
+    It is popped here rather than left to the caller's default-pruning on purpose: that pass
+    introspects the *authoring* ``Agent.__init__``, so an authoring Haystack whose Agent predates
+    ``hooks`` has no default to compare against and ``None`` would survive, reaching a platform Agent
+    that may reject the kwarg outright.
+    """
+    if "hooks" not in init:
+        return
+    hooks = init.pop("hooks")
+    if not hooks:  # unset (``None``) or explicitly empty — nothing was registered, so nothing to report
+        return
+    logger.warning(
+        "Removed hooks from agent '%s' (%s): hooks are not deployed. Unlike a local @tool, which is "
+        "rewritten into an inlined CodeTool, a hook has no equivalent the platform runtime resolves.",
+        comp_name,
+        _hooks_label(hooks),
+    )
+
+
+def _hooks_label(hooks: Any) -> str:
+    """A ``point: Type(function), Type; point: Type`` description of the dropped hooks, for the warning.
+
+    Names the function too, not just the type: every ``@hook`` function serializes under the same
+    ``FunctionHook`` type, so the import path is the only thing that tells two of them apart.
+    """
+    if not isinstance(hooks, dict):
+        return repr(hooks)
+
+    def label(hook: Any) -> str:
+        if not isinstance(hook, dict):
+            return repr(hook)
+        hook_type = str(hook.get("type", "")) or "<unknown>"
+        function = (hook.get("init_parameters") or {}).get("function")
+        return f"{hook_type}({function})" if isinstance(function, str) else hook_type
+
+    at_point = ((point, entry if isinstance(entry, list) else [entry]) for point, entry in hooks.items())
+    return "; ".join(f"{point}: {', '.join(label(hook) for hook in entries)}" for point, entries in at_point)
 
 
 def _agent_init_defaults() -> dict:
