@@ -15,6 +15,7 @@ from ruamel.yaml import YAML
 
 from haystack_enterprise_sdk._api.config import DEFAULT_WORKSPACE_NAME, CommonConfig
 from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
+from haystack_enterprise_sdk._service.pipeline_transform import NO_WRAP_WIDTH
 from haystack_enterprise_sdk.models import IndexConfig, PipelineConfig
 
 logger = structlog.get_logger(__name__)
@@ -76,6 +77,9 @@ class PipelineService:
         self._yaml = YAML()
         self._yaml.preserve_quotes = True
         self._yaml.indent(mapping=2, sequence=2)
+        # Never wrap: a folded line break reads back as a space and silently rewrites any
+        # scalar it lands inside. See ``NO_WRAP_WIDTH``.
+        self._yaml.width = NO_WRAP_WIDTH
 
     @classmethod
     async def factory(cls, config: CommonConfig, workspace_name: Optional[str] = None) -> PipelineService:

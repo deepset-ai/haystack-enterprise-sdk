@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import builtins
 import copy
 import importlib
 import importlib.metadata
@@ -945,7 +946,7 @@ def _fold_helpers_into_class(
         and isinstance(original_body[0].value.value, str)
     ):
         docstring, original_body = original_body[:1], original_body[1:]
-    new_class.body = [*docstring, *constants, *nested_classes, *static_methods, *original_body]
+    new_class.body = [*docstring, *_order_constants(constants), *nested_classes, *static_methods, *original_body]
 
     # Names that resolve at class-definition time cannot be class-qualified; reject references there to
     # folded functions/classes (a constant value or decorator that calls a helper).
@@ -964,6 +965,57 @@ def _fold_helpers_into_class(
     module = ast.Module(body=[new_class], type_ignores=[])
     ast.fix_missing_locations(module)
     return ast.unparse(module)
+
+
+def _order_constants(constants: list[ast.stmt]) -> list[ast.stmt]:
+    """Order folded constants so each one is emitted after the constants it references.
+
+    A class body executes top to bottom at class-definition time, and a bare name is the only way
+    one class-level constant can reference a sibling — ``ClassName.OTHER`` cannot work there, since
+    the class does not exist yet, which is why :class:`_QualifyReferences` leaves class-level loads
+    alone. So for constants the emission ORDER is the correctness condition, and the incoming
+    ``helpers`` order does not respect it: a constant built from another module's constant
+    (``TRIVIAL = [LOCKFILE_PATTERN, ...]``) could be emitted first and raise ``NameError`` on
+    import of the deployed block.
+
+    A reference cycle is left in the original order: it cannot be satisfied by any ordering, and
+    :func:`_reject_class_level_use_before_definition` reports it against the rendered code rather
+    than this function guessing at a message.
+    """
+    by_name: dict[str, ast.stmt] = {}
+    for node in constants:
+        for name in _assigned_names(node):
+            by_name[name] = node
+
+    ordered: list[ast.stmt] = []
+    visiting: set[int] = set()
+    placed: set[int] = set()
+
+    def place(node: ast.stmt) -> None:
+        if id(node) in placed or id(node) in visiting:
+            return  # already emitted, or a cycle we cannot order
+        visiting.add(id(node))
+        value = getattr(node, "value", None)
+        for name in sorted(_referenced_names(value)) if value is not None else []:
+            dependency = by_name.get(name)
+            if dependency is not None and dependency is not node:
+                place(dependency)
+        visiting.discard(id(node))
+        placed.add(id(node))
+        ordered.append(node)
+
+    for node in constants:
+        place(node)
+    return ordered
+
+
+def _assigned_names(node: ast.stmt) -> set[str]:
+    """Return the names an ``Assign``/``AnnAssign`` statement binds."""
+    if isinstance(node, ast.Assign):
+        return {t.id for t in node.targets if isinstance(t, ast.Name)}
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return {node.target.id}
+    return set()
 
 
 def _class_member_names(class_node: ast.ClassDef) -> set[str]:
@@ -1021,6 +1073,8 @@ def validate_code_block(comp_name: str, code: str) -> None:
         )
     _reject_module_level_definitions(comp_name, tree, component_classes[0])
     _reject_required_init_params(comp_name, component_classes[0])
+    _reject_undefined_names(f"Component '{comp_name}'", tree)
+    _reject_class_level_use_before_definition(f"Component '{comp_name}'", component_classes[0])
 
 
 def _reject_module_level_definitions(comp_name: str, tree: ast.Module, component_class: ast.ClassDef) -> None:
@@ -1080,6 +1134,102 @@ def validate_tool_code_block(tool_name: str, code: str) -> None:
             f"Tool '{tool_name}': the generated code block defines multiple @tool functions ({names}). "
             "A CodeTool must wrap exactly one."
         )
+    _reject_undefined_names(f"Tool '{tool_name}'", tree)
+
+
+def _reject_undefined_names(label: str, tree: ast.Module) -> None:
+    """Raise if the generated block loads a name it never binds.
+
+    Folding flattens several of the user's modules into one block, and what does NOT come along
+    is the failure mode this catches: module-level constants are not folded, an aliased import
+    (``from x import dumps as js_dumps``) leaves the alias unbound, and an annotation naming a
+    helper stays bare while the helper is folded in as a nested class.
+
+    The platform runs ``exec(code, {})`` on an empty namespace, so anything not bound in the
+    block and not a builtin is a ``NameError`` there. Whether it *surfaces* depends on where the
+    name is used: at class-definition time it fails on import (visible as a deploy error), but
+    inside a method body it survives until that line runs on a real query.
+
+    Deliberately over-approximates what counts as bound — any binding anywhere in the block
+    satisfies a load anywhere, with no scope or ordering analysis. That direction only ever
+    misses a real problem; it cannot invent one, which is what makes this safe to raise on.
+    """
+    bound: set[str] = set()
+    loaded: dict[str, ast.Name] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            if isinstance(node.ctx, ast.Load):
+                loaded.setdefault(node.id, node)
+            else:
+                bound.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, ast.alias):
+            # ``import a.b`` binds ``a``; everything else binds the alias or the bare name.
+            bound.add(node.asname or node.name.split(".")[0])
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound.update(node.names)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bound.add(node.rest)
+
+    undefined = sorted(set(loaded) - bound - _EXEC_NAMESPACE_NAMES)
+    if not undefined:
+        return
+    lines = ", ".join(f"'{name}' (line {loaded[name].lineno})" for name in undefined)
+    raise PipelineTransformError(
+        f"{label}: the generated code block uses {lines}, which nothing in the block defines. "
+        "Folding does not carry module-level constants across, and it does not resolve aliased "
+        "imports (`from x import y as z`) or annotations that name a folded helper class. Inline "
+        "the value, import the symbol under its own name, or drop the annotation."
+    )
+
+
+def _reject_class_level_use_before_definition(label: str, component_class: ast.ClassDef) -> None:
+    """Raise if a class-level statement loads a sibling member defined further down the body.
+
+    The postcondition for :func:`_order_constants`. A class body runs top to bottom while the class
+    is being created, so a class-level value referencing a member assigned below it is a definite
+    ``NameError`` on import of the deployed block — and one that :func:`_reject_undefined_names`
+    cannot see, because the name *is* bound in the block, just too late.
+
+    Only class-level statements are examined. A method body runs long after the class exists, so
+    ordering is irrelevant there.
+    """
+    members = _class_member_names(component_class)
+    defined: set[str] = set()
+    for stmt in component_class.body:
+        value = getattr(stmt, "value", None)
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign)) and value is not None:
+            for name in sorted(_referenced_names(value)):
+                if name in members and name not in defined:
+                    raise PipelineTransformError(
+                        f"{label}: class-level '{', '.join(sorted(_assigned_names(stmt))) or '<assignment>'}' "
+                        f"references '{name}', which is defined further down the class body. A class body "
+                        "runs top to bottom, so the deployed block would raise NameError on import."
+                    )
+        defined |= _assigned_names(stmt)
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defined.add(stmt.name)
+
+
+#: Names the platform's ``exec(code, {})`` resolves without the block binding them. Nothing is
+#: injected into that namespace, so this is the builtins plus the dunders CPython adds itself.
+_EXEC_NAMESPACE_NAMES = frozenset(dir(builtins)) | {
+    "__builtins__",
+    "__debug__",
+    "__doc__",
+    "__file__",
+    "__loader__",
+    "__name__",
+    "__package__",
+    "__spec__",
+}
 
 
 def _has_tool_decorator(node: Any) -> bool:

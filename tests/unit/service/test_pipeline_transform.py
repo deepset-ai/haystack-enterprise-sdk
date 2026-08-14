@@ -1209,3 +1209,294 @@ class TestModuleLevelInvariant:
             '''
         )
         validate_code_block("c", code)  # must not raise
+
+
+class TestScalarIntegrity:
+    r"""The rendered YAML must read back byte-identical to what the extractor produced.
+
+    ruamel wraps at ``best_width`` and a wrapped line reads back FOLDED — the break becomes a
+    space. A generated ``Code`` block is one long multi-line scalar (so ruamel emits it
+    double-quoted, where a break can land mid-token) nested three levels deep, so its content
+    crosses column 80 almost immediately. A break landing next to a backslash rewrites the
+    escape: ``re.compile('(?:,(\d+))')`` comes back as ``re.compile('(?:,(\ d+))')``.
+
+    Nothing downstream can catch it. The block is still valid Python and still imports; only its
+    behaviour changed, and a regex that silently stops matching drops every result. Which blocks
+    are hit depends on where column 80 falls, so it corrupts some components in a pipeline and
+    not others — hence the alignment sweeps below rather than one fixed sample.
+    """
+
+    @staticmethod
+    def _escaped_code(pad: int) -> str:
+        r"""An escape-dense parser, shifted ``pad`` columns to move the emitter's wrap point.
+
+        The shim comment is the only thing that varies: it slides every following line sideways
+        without changing the code, which is what lets one sample cover the alignment space. The
+        ``@@`` pattern is verbatim from the component this was found in, whose ``\d`` came back
+        as ``\ d`` after a deploy — matching no hunk header, so every result was dropped.
+        """
+        return (
+            f"# alignment shim {'x' * pad}\n"
+            "import re\n"
+            "from haystack import component\n"
+            "\n"
+            "@component\n"
+            "class Parser:\n"
+            "    HUNK = re.compile('^@@ -\\\\d+(?:,\\\\d+)? \\\\+(\\\\d+)(?:,(\\\\d+))? @@')\n"
+            "\n"
+            "    @component.output_types(count=int)\n"
+            "    def run(self, text: str = ''):\n"
+            "        return {'count': len(self.HUNK.findall(text))}\n"
+        )
+
+    def _render(self, code: str) -> str:
+        """Render at the real nesting depth, which is what pushes content past column 80."""
+        bundle = ExtractionBundle.from_dict(
+            {
+                "pipeline": {
+                    "components": {"parser": {"type": CODE_COMPONENT_TYPE, "init_parameters": {"code": code}}},
+                    "connections": [],
+                }
+            }
+        )
+        return render_config_yaml(bundle, inputs={"query": ["parser.text"]}, outputs={"answers": "parser.count"})
+
+    def _loaded_code(self, code: str) -> str:
+        loaded = YAML().load(self._render(code))["components"]["parser"]["init_parameters"]["code"]
+        return str(loaded)
+
+    def test_escaped_code_survives_at_every_alignment(self) -> None:
+        """Swept, not sampled: whether a wrap corrupts depends on where column 80 lands, so any
+        single fixed sample passes or fails by luck. Most of these alignments corrupt when the
+        emitter is allowed to wrap."""
+        corrupted = [pad for pad in range(48) if self._loaded_code(self._escaped_code(pad)) != self._escaped_code(pad)]
+        assert not corrupted, f"the emitter folded the code block at alignments {corrupted}"
+
+    def test_regexes_still_match_after_the_round_trip(self) -> None:
+        """The failure is behavioural, not syntactic: a corrupted block compiles and imports
+        cleanly and simply matches nothing. Swept for the same reason as above — pinning one
+        alignment would leave this passing vacuously as soon as the wrap point moved."""
+        for pad in range(48):
+            namespace: dict = {}
+            exec(compile(self._loaded_code(self._escaped_code(pad)), "<folded>", "exec"), namespace)  # noqa: S102
+            pattern = namespace["Parser"].HUNK
+            assert pattern.match("@@ -1,3 +4,5 @@"), f"stopped matching at alignment {pad}: {pattern.pattern!r}"
+
+    def test_a_long_single_line_scalar_is_not_wrapped_either(self) -> None:
+        """Prompt templates go through the same emitter, and a folded Jinja tag breaks just as
+        quietly, so the fix belongs on the writer rather than on the values it happens to see."""
+        template = "{% message role='system' %}{{ system_prompt }}{% endmessage %}" + " trailing" * 20
+        bundle = ExtractionBundle.from_dict(
+            {"pipeline": {"components": {"builder": {"type": "X", "init_parameters": {"template": template}}}}}
+        )
+        rendered = render_config_yaml(bundle, inputs={}, outputs={})
+        assert YAML().load(rendered)["components"]["builder"]["init_parameters"]["template"] == template
+
+
+class TestConstantOrdering:
+    """Folded constants must be emitted after the constants they reference.
+
+    ``_QualifyReferences`` deliberately leaves class-level loads bare — ``ClassName.OTHER`` cannot
+    work at class-definition time, since the class does not exist yet — so for constants the
+    emission order IS the correctness condition, and the incoming helper order does not respect it.
+
+    The dependency lives in a SEPARATE module on purpose. That is the shape that bites: the source
+    is perfectly ordered (the import precedes the use), and only the fold, which lifts the imported
+    constant into a class attribute, can place it after its consumer. Every constant here is
+    reachable from ``run`` as well, since the extractor only folds what the component actually uses.
+    """
+
+    def _fold(self, tmp_path: Path, limits: str, policy: str = "") -> str:
+        """Fold a project whose ``limits`` module holds the derived constants and the predicate."""
+        modules = {"custom/policy.py": policy} if policy else {}
+        path = _write_project(
+            tmp_path,
+            {
+                "custom/__init__.py": "",
+                **modules,
+                # Passed flat rather than as a dedented block: interpolating multi-line source
+                # defeats the common-prefix calculation `_write_project` relies on.
+                "custom/limits.py": limits,
+                "custom/comp.py": """
+                from haystack import component
+                from custom.limits import is_trivial
+
+                @component
+                class C:
+                    @component.output_types(hit=bool)
+                    def run(self, name: str = ""):
+                        return {"hit": is_trivial(name)}
+                """,
+                "pipeline.py": """
+                from haystack import Pipeline
+                from custom.comp import C
+
+                pipeline = Pipeline()
+                pipeline.add_component("c", C())
+                """,
+            },
+        )
+        pipeline = load_pipeline_from_file(path)
+        return _component_code(transform_to_config_yaml(pipeline, project_root=tmp_path), "c")
+
+    @staticmethod
+    def _attribute_order(code: str) -> list[str]:
+        return [
+            target.id
+            for stmt in _class_def(code, "C").body
+            if isinstance(stmt, ast.Assign)
+            for target in stmt.targets
+            if isinstance(target, ast.Name)
+        ]
+
+    #: A constant imported from another module, and one derived from it where it is used.
+    _POLICY = 'LOCKFILE = "package-lock.json"\n'
+    _LIMITS = (
+        "from custom.policy import LOCKFILE\n\n"
+        'TRIVIAL = [LOCKFILE, "yarn.lock"]\n\n'
+        "def is_trivial(name: str) -> bool:\n"
+        "    return name in TRIVIAL\n"
+    )
+
+    def test_dependency_emitted_before_its_consumer(self, tmp_path: Path) -> None:
+        order = self._attribute_order(self._fold(tmp_path, self._LIMITS, self._POLICY))
+        assert order.index("LOCKFILE") < order.index("TRIVIAL")
+
+    def test_folded_block_imports_cleanly(self, tmp_path: Path) -> None:
+        """The point of the ordering: the platform runs ``exec(code, {})``, so a class-level
+        forward reference raises NameError there while every in-process test still passes."""
+        code = self._fold(tmp_path, self._LIMITS, self._POLICY)
+        namespace: dict = {}
+        exec(compile(code, "<folded>", "exec"), namespace)  # noqa: S102
+        assert namespace["C"]().run(name="package-lock.json") == {"hit": True}
+
+    def test_chained_dependencies_are_ordered(self, tmp_path: Path) -> None:
+        policy = 'PREFIX = "package"\nBASE = PREFIX + "-lock"\n'
+        limits = (
+            "from custom.policy import BASE\n\n"
+            'TRIVIAL = [BASE + ".json"]\n\n'
+            "def is_trivial(name: str) -> bool:\n"
+            "    return name in TRIVIAL\n"
+        )
+        order = self._attribute_order(self._fold(tmp_path, limits, policy))
+        assert order.index("PREFIX") < order.index("BASE") < order.index("TRIVIAL")
+
+    def test_independent_constants_keep_declaration_order(self, tmp_path: Path) -> None:
+        """Nothing references anything, so nothing justifies reshuffling — a guard against a sort
+        that reorders more than the dependencies require."""
+        limits = (
+            'FIRST = ["yarn.lock"]\n\n'
+            'SECOND = ["npm-shrinkwrap.json"]\n\n'
+            "def is_trivial(name: str) -> bool:\n"
+            "    return name in FIRST or name in SECOND\n"
+        )
+        assert self._attribute_order(self._fold(tmp_path, limits)) == ["FIRST", "SECOND"]
+
+
+class TestUnresolvableNames:
+    """``validate_code_block`` rejects blocks whose names cannot resolve on the platform.
+
+    The platform runs ``exec(code, {})`` on an empty namespace, so a name the block never binds is
+    a ``NameError`` there — and one that only surfaces when the line runs, if the use is inside a
+    method body rather than at class-definition time.
+    """
+
+    @staticmethod
+    def _code(body: str) -> str:
+        return textwrap.dedent(
+            f"""
+            from haystack import component
+
+            @component
+            class C:
+            {textwrap.indent(textwrap.dedent(body), " " * 16)}
+            """
+        )
+
+    def test_name_never_bound_is_rejected(self) -> None:
+        code = self._code(
+            """
+            @component.output_types(x=int)
+            def run(self):
+                return {"x": MISSING_CONSTANT}
+            """
+        )
+        with pytest.raises(PipelineTransformError, match="'MISSING_CONSTANT' \\(line"):
+            validate_code_block("c", code)
+
+    def test_aliased_import_left_unbound_is_rejected(self) -> None:
+        """Folding resolves an import to the symbol's own name, so a surviving alias is unbound."""
+        code = self._code(
+            """
+            @component.output_types(x=str)
+            def run(self):
+                return {"x": js_dumps({})}
+            """
+        )
+        with pytest.raises(PipelineTransformError, match="js_dumps"):
+            validate_code_block("c", code)
+
+    def test_class_level_forward_reference_is_rejected(self) -> None:
+        """Bound in the block, but too late — invisible to a binding-only check, and a hard
+        NameError on import because a class body runs top to bottom."""
+        code = self._code(
+            """
+            TRIVIAL = [LOCKFILE]
+            LOCKFILE = "package-lock.json"
+
+            @component.output_types(x=list)
+            def run(self):
+                return {"x": self.TRIVIAL}
+            """
+        )
+        with pytest.raises(PipelineTransformError, match="references 'LOCKFILE', which is defined further down"):
+            validate_code_block("c", code)
+
+    def test_correctly_ordered_class_constants_pass(self) -> None:
+        code = self._code(
+            """
+            LOCKFILE = "package-lock.json"
+            TRIVIAL = [LOCKFILE]
+
+            @component.output_types(x=list)
+            def run(self):
+                return {"x": self.TRIVIAL}
+            """
+        )
+        validate_code_block("c", code)  # must not raise
+
+    def test_builtins_comprehensions_and_annotations_are_not_flagged(self) -> None:
+        """The guard against over-eagerness: everything here binds or resolves legitimately, and a
+        false positive would block a deploy that works."""
+        code = self._code(
+            '''
+            """Docstring."""
+
+            @component.output_types(x=list)
+            def run(self, items: list | None = None, *args: int, **kwargs: str):
+                total = sum(len(str(i)) for i in items or [])
+                try:
+                    [y for y in range(total) if y]
+                except ValueError as err:
+                    raise RuntimeError(str(err)) from err
+                with open(__file__) as handle:
+                    _ = handle.name
+                if (walrus := total) > 0:
+                    total = walrus
+                return {"x": [total, *args, kwargs]}
+            '''
+        )
+        validate_code_block("c", code)  # must not raise
+
+    def test_a_tool_block_is_checked_too(self) -> None:
+        code = textwrap.dedent(
+            """
+            from haystack.tools import tool
+
+            @tool
+            def probe(path: str = "") -> str:
+                return path + SUFFIX
+            """
+        )
+        with pytest.raises(PipelineTransformError, match="SUFFIX"):
+            validate_tool_code_block("probe", code)

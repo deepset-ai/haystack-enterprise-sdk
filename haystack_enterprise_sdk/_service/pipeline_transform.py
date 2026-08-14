@@ -65,6 +65,20 @@ __all__ = [
 # Interpreter names to look for inside a discovered virtual environment.
 _VENV_PYTHONS = ("bin/python", "bin/python3", "Scripts/python.exe")
 
+#: Emitter width for every YAML we render, chosen so ruamel never wraps a scalar.
+#:
+#: ruamel wraps at ``best_width`` (80 by default) and a wrapped line reads back FOLDED — the
+#: break becomes a space. For a multi-line scalar, which ruamel emits double-quoted, that
+#: break can land mid-token, and landing next to a backslash rewrites the escape: a folded
+#: ``re.compile('(?:,(\\d+))')`` loads back as ``re.compile('(?:,(\\ d+))')``, a regex that
+#: compiles fine and matches nothing.
+#:
+#: Generated ``Code`` blocks are exactly that shape — one long multi-line scalar, nested deep
+#: enough that content crosses column 80 quickly. Nothing downstream can detect it: the block
+#: is valid Python, only its behaviour changed. Whether a given block is hit depends on where
+#: column 80 falls, so it corrupts some components and not others in the same pipeline.
+NO_WRAP_WIDTH = 2**31
+
 
 @dataclass(frozen=True)
 class ExtractionBundle:
@@ -225,6 +239,7 @@ def render_config_yaml(
 
     yaml = YAML()
     yaml.indent(mapping=2, sequence=2)
+    yaml.width = NO_WRAP_WIDTH
     buffer = StringIO()
     yaml.dump(pipeline_dict, buffer)
     config_yaml = buffer.getvalue()
