@@ -1209,3 +1209,85 @@ class TestModuleLevelInvariant:
             '''
         )
         validate_code_block("c", code)  # must not raise
+
+
+class TestScalarIntegrity:
+    r"""The rendered YAML must read back byte-identical to what the extractor produced.
+
+    ruamel wraps at ``best_width`` and a wrapped line reads back FOLDED — the break becomes a
+    space. A generated ``Code`` block is one long multi-line scalar (so ruamel emits it
+    double-quoted, where a break can land mid-token) nested three levels deep, so its content
+    crosses column 80 almost immediately. A break landing next to a backslash rewrites the
+    escape: ``re.compile('(?:,(\d+))')`` comes back as ``re.compile('(?:,(\ d+))')``.
+
+    Nothing downstream can catch it. The block is still valid Python and still imports; only its
+    behaviour changed, and a regex that silently stops matching drops every result. Which blocks
+    are hit depends on where column 80 falls, so it corrupts some components in a pipeline and
+    not others — hence the alignment sweeps below rather than one fixed sample.
+    """
+
+    @staticmethod
+    def _escaped_code(pad: int) -> str:
+        r"""An escape-dense parser, shifted ``pad`` columns to move the emitter's wrap point.
+
+        The shim comment is the only thing that varies: it slides every following line sideways
+        without changing the code, which is what lets one sample cover the alignment space. The
+        ``@@`` pattern is verbatim from the component this was found in, whose ``\d`` came back
+        as ``\ d`` after a deploy — matching no hunk header, so every result was dropped.
+        """
+        return (
+            f"# alignment shim {'x' * pad}\n"
+            "import re\n"
+            "from haystack import component\n"
+            "\n"
+            "@component\n"
+            "class Parser:\n"
+            "    HUNK = re.compile('^@@ -\\\\d+(?:,\\\\d+)? \\\\+(\\\\d+)(?:,(\\\\d+))? @@')\n"
+            "\n"
+            "    @component.output_types(count=int)\n"
+            "    def run(self, text: str = ''):\n"
+            "        return {'count': len(self.HUNK.findall(text))}\n"
+        )
+
+    def _render(self, code: str) -> str:
+        """Render at the real nesting depth, which is what pushes content past column 80."""
+        bundle = ExtractionBundle.from_dict(
+            {
+                "pipeline": {
+                    "components": {"parser": {"type": CODE_COMPONENT_TYPE, "init_parameters": {"code": code}}},
+                    "connections": [],
+                }
+            }
+        )
+        return render_config_yaml(bundle, inputs={"query": ["parser.text"]}, outputs={"answers": "parser.count"})
+
+    def _loaded_code(self, code: str) -> str:
+        loaded = YAML().load(self._render(code))["components"]["parser"]["init_parameters"]["code"]
+        return str(loaded)
+
+    def test_escaped_code_survives_at_every_alignment(self) -> None:
+        """Swept, not sampled: whether a wrap corrupts depends on where column 80 lands, so any
+        single fixed sample passes or fails by luck. Most of these alignments corrupt when the
+        emitter is allowed to wrap."""
+        corrupted = [pad for pad in range(48) if self._loaded_code(self._escaped_code(pad)) != self._escaped_code(pad)]
+        assert not corrupted, f"the emitter folded the code block at alignments {corrupted}"
+
+    def test_regexes_still_match_after_the_round_trip(self) -> None:
+        """The failure is behavioural, not syntactic: a corrupted block compiles and imports
+        cleanly and simply matches nothing. Swept for the same reason as above — pinning one
+        alignment would leave this passing vacuously as soon as the wrap point moved."""
+        for pad in range(48):
+            namespace: dict = {}
+            exec(compile(self._loaded_code(self._escaped_code(pad)), "<folded>", "exec"), namespace)  # noqa: S102
+            pattern = namespace["Parser"].HUNK
+            assert pattern.match("@@ -1,3 +4,5 @@"), f"stopped matching at alignment {pad}: {pattern.pattern!r}"
+
+    def test_a_long_single_line_scalar_is_not_wrapped_either(self) -> None:
+        """Prompt templates go through the same emitter, and a folded Jinja tag breaks just as
+        quietly, so the fix belongs on the writer rather than on the values it happens to see."""
+        template = "{% message role='system' %}{{ system_prompt }}{% endmessage %}" + " trailing" * 20
+        bundle = ExtractionBundle.from_dict(
+            {"pipeline": {"components": {"builder": {"type": "X", "init_parameters": {"template": template}}}}}
+        )
+        rendered = render_config_yaml(bundle, inputs={}, outputs={})
+        assert YAML().load(rendered)["components"]["builder"]["init_parameters"]["template"] == template
