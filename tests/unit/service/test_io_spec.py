@@ -33,6 +33,7 @@ class TestRenderIoConfig:
         assert "  # filters:" in content
         assert "  # documents: <component.socket>" in content
         assert "# pipeline_output_type: generative" in content
+        assert "# session_storage: true" in content
 
     def test_rendered_config_roundtrips_through_loader(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         from haystack_enterprise_sdk.cli import _load_io_config
@@ -42,10 +43,10 @@ class TestRenderIoConfig:
             render_io_config(PLATFORM_SERVING_SPEC, {"query": ["retriever.query"]}, {"answers": "reader.answers"}),
             encoding="utf-8",
         )
-        inputs, outputs, output_type = _load_io_config(path)
-        assert inputs == {"query": ["retriever.query"]}
-        assert outputs == {"answers": "reader.answers"}
-        assert output_type is None
+        cfg_io = _load_io_config(path)
+        assert cfg_io.inputs == {"query": ["retriever.query"]}
+        assert cfg_io.outputs == {"answers": "reader.answers"}
+        assert cfg_io.pipeline_output_type is None
 
     def test_rendered_config_with_nothing_mapped_loads_as_absent(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         # All keys commented out: the sections parse as empty and must count as absent, not error.
@@ -53,7 +54,7 @@ class TestRenderIoConfig:
 
         path = tmp_path / "pipeline.io.yaml"
         path.write_text(render_io_config(PLATFORM_SERVING_SPEC, {}, {}), encoding="utf-8")
-        inputs, outputs, output_type = _load_io_config(path)
-        assert inputs is None
-        assert outputs is None
-        assert output_type is None
+        cfg_io = _load_io_config(path)
+        assert cfg_io.inputs is None
+        assert cfg_io.outputs is None
+        assert cfg_io.pipeline_output_type is None

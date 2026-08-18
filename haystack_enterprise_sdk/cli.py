@@ -9,7 +9,7 @@ import time
 from contextlib import contextmanager
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union
 from uuid import UUID
 
 import structlog
@@ -74,6 +74,20 @@ cli_app = typer.Typer(pretty_exceptions_show_locals=False)
 
 # How long a sandbox run has to be waiting before the spinner explains that this is normal.
 _RUN_HINT_AFTER_S = 20
+
+
+class IoConfig(NamedTuple):
+    """Everything an io-config file can pin: the socket mapping, plus platform-level pipeline settings.
+
+    A named tuple rather than a plain one that grows a slot per key: each caller reads a different
+    subset, and `run` deliberately reads fewer than `deploy`, so a new optional key should not have
+    to touch every unpacking site to stay readable.
+    """
+
+    inputs: Optional[dict] = None
+    outputs: Optional[dict] = None
+    pipeline_output_type: Optional[str] = None
+    session_storage: Optional[bool] = None
 
 
 def _configure_cli_logging(verbose: bool) -> None:
@@ -480,9 +494,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         API credentials are needed.
     :param output: With --dry-run, write the transformed YAML to this file instead of stdout.
     :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections (and an
-        optional `pipeline_output_type`) that replace inference and skip all mapping prompts. Defaults
-        to `<target>.io.yaml` next to the pipeline file when that exists (the file the interactive
-        review offers to save).
+        optional `pipeline_output_type` and `session_storage`) that replace inference and skip all
+        mapping prompts. Defaults to `<target>.io.yaml` next to the pipeline file when that exists
+        (the file the interactive review offers to save).
     :param skip_io_validation: Skip all input/output mapping prompts and deploy with whatever was
         inferred, warning about nothing. The platform rejects a pipeline with no query input or no
         output, so expect the deploy to fail validation unless you also pass --skip-validation.
@@ -515,12 +529,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     `deepset-cloud deploy pipeline.py my-service --dry-run --output out.yaml`
     """
     io_config_path = _resolve_io_config_path(target, io_config)
-    io_inputs, io_outputs, io_output_type = (
-        _load_io_config(io_config_path) if io_config_path is not None else (None, None, None)
-    )
+    io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
 
     if dry_run:
-        _deploy_dry_run(target, entrypoint, python, output, skip_io_validation, io_inputs, io_outputs, io_output_type)
+        _deploy_dry_run(target, entrypoint, python, output, skip_io_validation, io_cfg)
         return
 
     # The sizing flags only mean something for a managed service being created, so a combination that
@@ -596,7 +608,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     # reviews the whole mapping, because its chat UI routes through all of it; a plain deploy asks only
     # for the two things the platform requires of a servable pipeline (a query input and one output) and
     # only when inference did not already supply them.
-    if io_inputs is not None or io_outputs is not None:
+    if io_cfg.inputs is not None or io_cfg.outputs is not None:
         io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="warn")
     elif share:
         io_resolver = functools.partial(
@@ -628,9 +640,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     create_options=create_options,
                     comment=comment,
                     entrypoint=entrypoint,
-                    inputs=io_inputs,
-                    outputs=io_outputs,
-                    pipeline_output_type=io_output_type,
+                    inputs=io_cfg.inputs,
+                    outputs=io_cfg.outputs,
+                    pipeline_output_type=io_cfg.pipeline_output_type,
+                    session_storage=io_cfg.session_storage,
                     io_resolver=spinner_resolver,
                     python_executable=python,
                     validate=not skip_validation,
@@ -644,9 +657,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 create_options=create_options,
                 comment=comment,
                 entrypoint=entrypoint,
-                inputs=io_inputs,
-                outputs=io_outputs,
-                pipeline_output_type=io_output_type,
+                inputs=io_cfg.inputs,
+                outputs=io_cfg.outputs,
+                pipeline_output_type=io_cfg.pipeline_output_type,
+                session_storage=io_cfg.session_storage,
                 io_resolver=io_resolver,
                 python_executable=python,
                 validate=not skip_validation,
@@ -720,8 +734,8 @@ def validate(
     :param python: Path to the Python interpreter used to load your pipeline (defaults to an
         auto-detected virtualenv near the target file, else the current interpreter).
     :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections (and an
-        optional `pipeline_output_type`) that replace inference. Defaults to `<target>.io.yaml` next to
-        the pipeline file when that exists.
+        optional `pipeline_output_type` and `session_storage`) that replace inference. Defaults to
+        `<target>.io.yaml` next to the pipeline file when that exists.
     :param skip_io_validation: Skip the warning about mandatory pipeline inputs that aren't mapped to a
         platform input. Validation never prompts for the mapping.
     :param api_key: deepset API key to use for authentication.
@@ -732,9 +746,7 @@ def validate(
     `deepset-cloud validate pipeline.py`
     """
     io_config_path = _resolve_io_config_path(target, io_config)
-    io_inputs, io_outputs, io_output_type = (
-        _load_io_config(io_config_path) if io_config_path is not None else (None, None, None)
-    )
+    io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
     # Validation never sends a query and never serves a chat UI, so the mapping is used as inferred.
     io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="warn")
@@ -742,9 +754,10 @@ def validate(
         result = client.validate(
             target,
             entrypoint=entrypoint,
-            inputs=io_inputs,
-            outputs=io_outputs,
-            pipeline_output_type=io_output_type,
+            inputs=io_cfg.inputs,
+            outputs=io_cfg.outputs,
+            pipeline_output_type=io_cfg.pipeline_output_type,
+            session_storage=io_cfg.session_storage,
             io_resolver=io_resolver,
             python_executable=python,
         )
@@ -837,7 +850,10 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
     named_inputs = _parse_set_option(set_input)
     extra_inputs = _parse_inputs_option(inputs)
     io_config_path = _resolve_io_config_path(target, io_config)
-    io_inputs, io_outputs, _ = _load_io_config(io_config_path) if io_config_path is not None else (None, None, None)
+    # `session_storage` is deliberately not forwarded: it keys off a search session, and an ad-hoc run
+    # carries none, so passing it would suggest an isolation this path does not get. Same reason
+    # `pipeline_output_type` is dropped here — neither describes an ad-hoc invocation.
+    io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
 
     if query is None and named_inputs is None and extra_inputs is None and _stdin_is_tty():
         query = typer.prompt("Query")
@@ -855,8 +871,8 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
         return client.run(
             target,
             entrypoint=entrypoint,
-            inputs=io_inputs,
-            outputs=io_outputs,
+            inputs=io_cfg.inputs,
+            outputs=io_cfg.outputs,
             io_resolver=resolver,
             python_executable=python,
             query=query,
@@ -975,9 +991,7 @@ def _deploy_dry_run(
     python: Optional[str],
     output: Optional[Path],
     skip_io_validation: bool = False,
-    inputs: Optional[dict] = None,
-    outputs: Optional[dict] = None,
-    pipeline_output_type: Optional[str] = None,
+    io_cfg: IoConfig = IoConfig(),
 ) -> None:
     """Transform the pipeline and print/write the YAML without contacting the API.
 
@@ -989,9 +1003,10 @@ def _deploy_dry_run(
         config_yaml = build_config_yaml(
             target,
             entrypoint=entrypoint,
-            inputs=inputs,
-            outputs=outputs,
-            pipeline_output_type=pipeline_output_type,
+            inputs=io_cfg.inputs,
+            outputs=io_cfg.outputs,
+            pipeline_output_type=io_cfg.pipeline_output_type,
+            session_storage=io_cfg.session_storage,
             io_resolver=io_resolver,
             python_executable=python,
         )
@@ -1403,14 +1418,14 @@ def _resolve_io_config_path(target: Path, io_config: Optional[Path]) -> Optional
     return None
 
 
-def _load_io_config(path: Path) -> Tuple[Optional[dict], Optional[dict], Optional[str]]:
+def _load_io_config(path: Path) -> IoConfig:
     """Load an explicit pipeline I/O mapping from a YAML or JSON io-config file.
 
-    The file may contain optional ``inputs:``, ``outputs:``, and ``pipeline_output_type:`` sections.
-    Input values may be a string or a list of strings (coerced to a list); output values are single
-    ``"component.socket"`` strings. Keys beyond the standard platform keys are passed through with a
-    note. Returns ``(inputs, outputs, pipeline_output_type)`` with ``None`` for absent sections (a
-    section that is present but empty — e.g. fully commented out — also counts as absent).
+    The file may contain optional ``inputs:``, ``outputs:``, ``pipeline_output_type:`` and
+    ``session_storage:`` sections. Input values may be a string or a list of strings (coerced to a
+    list); output values are single ``"component.socket"`` strings. Keys beyond the standard platform
+    keys are passed through with a note. Absent sections come back as ``None`` (a section that is
+    present but empty — e.g. fully commented out — also counts as absent).
 
     :raises typer.Exit: On a missing/unreadable file, invalid YAML/JSON, or a bad shape.
     """
@@ -1465,7 +1480,15 @@ def _load_io_config(path: Path) -> Tuple[Optional[dict], Optional[dict], Optiona
         if output_type not in valid:
             typer.echo(f"--io-config 'pipeline_output_type' must be one of: {', '.join(valid)}.")
             raise typer.Exit(1)
-    return inputs, outputs, output_type
+
+    session_storage: Optional[bool] = data.get("session_storage")
+    # Rejected rather than coerced: YAML turns an unquoted `yes`/`on` into a bool already, so anything
+    # left over is a string or a number the author did not mean to write here.
+    if session_storage is not None and not isinstance(session_storage, bool):
+        typer.echo("--io-config 'session_storage' must be true or false.")
+        raise typer.Exit(1)
+
+    return IoConfig(inputs, outputs, output_type, session_storage)
 
 
 def _socket_menu_label(option: Union[str, SocketOption]) -> str:

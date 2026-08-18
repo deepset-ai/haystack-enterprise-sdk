@@ -278,6 +278,17 @@ class TestAgentCompile:
         # A compiled agent is chat-shaped, so the output type defaults to chat (matching the platform).
         assert doc["pipeline_output_type"] == "chat"
 
+    def test_session_storage_is_emitted_only_when_requested(self, tmp_path: Path) -> None:
+        """A per-session workspace is opt-in, and the platform reads the key as a truthy flag, so
+        `False` must render the same absent key as `None` rather than an explicit `false`."""
+        path = _write_project(tmp_path, {"pipeline.py": "from haystack import Pipeline\npipeline = Pipeline()\n"})
+        pipeline = load_pipeline_from_file(path)
+        bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, tmp_path))
+
+        assert _load_yaml(render_config_yaml(bundle, session_storage=True))["session_storage"] is True
+        for absent in (None, False):
+            assert "session_storage" not in _load_yaml(render_config_yaml(bundle, session_storage=absent))
+
     def test_non_agent_pipeline_has_no_suggested_output_type(self, tmp_path: Path) -> None:
         path = _write_project(tmp_path, {"pipeline.py": "from haystack import Pipeline\npipeline = Pipeline()\n"})
         pipeline = load_pipeline_from_file(path)

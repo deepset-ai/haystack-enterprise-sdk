@@ -144,4 +144,6 @@ def render_io_config(
             lines.append(f"  # {key.name}: <component.socket>")
     lines.append("# Optional: how the Playground renders results (generative | chat | extractive | document)")
     lines.append("# pipeline_output_type: generative")
+    lines.append("# Optional: give the pipeline a per-session workspace that keeps files between runs")
+    lines.append("# session_storage: true")
     return "\n".join(lines) + "\n"

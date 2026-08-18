@@ -1183,28 +1183,28 @@ class TestLoadIoConfig:
             "  documents: retriever.documents\n",
             encoding="utf-8",
         )
-        inputs, outputs, output_type = _load_io_config(cfg)
-        assert inputs == {"query": ["retriever.query"], "filters": ["retriever.filters"]}
-        assert outputs == {"documents": "retriever.documents"}
-        assert output_type is None
+        cfg_io = _load_io_config(cfg)
+        assert cfg_io.inputs == {"query": ["retriever.query"], "filters": ["retriever.filters"]}
+        assert cfg_io.outputs == {"documents": "retriever.documents"}
+        assert cfg_io.pipeline_output_type is None
 
     def test_loads_json(self, tmp_path: Path) -> None:
         from haystack_enterprise_sdk.cli import _load_io_config
 
         cfg = tmp_path / "io.json"
         cfg.write_text('{"inputs": {"query": ["r.query"]}, "outputs": {"answers": "r.answers"}}', encoding="utf-8")
-        inputs, outputs, _ = _load_io_config(cfg)
-        assert inputs == {"query": ["r.query"]}
-        assert outputs == {"answers": "r.answers"}
+        cfg_io = _load_io_config(cfg)
+        assert cfg_io.inputs == {"query": ["r.query"]}
+        assert cfg_io.outputs == {"answers": "r.answers"}
 
     def test_absent_sections_return_none(self, tmp_path: Path) -> None:
         from haystack_enterprise_sdk.cli import _load_io_config
 
         cfg = tmp_path / "io.yaml"
         cfg.write_text("outputs:\n  answers: r.answers\n", encoding="utf-8")
-        inputs, outputs, _ = _load_io_config(cfg)
-        assert inputs is None
-        assert outputs == {"answers": "r.answers"}
+        cfg_io = _load_io_config(cfg)
+        assert cfg_io.inputs is None
+        assert cfg_io.outputs == {"answers": "r.answers"}
 
     def test_invalid_shape_exits(self, tmp_path: Path) -> None:
         import typer
@@ -1223,10 +1223,28 @@ class TestLoadIoConfig:
 
         cfg = tmp_path / "io.yaml"
         cfg.write_text("outputs:\n  answers: r.answers\npipeline_output_type: generative\n", encoding="utf-8")
-        _, _, output_type = _load_io_config(cfg)
-        assert output_type == "generative"
+        cfg_io = _load_io_config(cfg)
+        assert cfg_io.pipeline_output_type == "generative"
 
         cfg.write_text("outputs:\n  answers: r.answers\npipeline_output_type: bogus\n", encoding="utf-8")
+        with pytest.raises(typer.Exit):
+            _load_io_config(cfg)
+
+    def test_session_storage_validated(self, tmp_path: Path) -> None:
+        import typer
+
+        from haystack_enterprise_sdk.cli import _load_io_config
+
+        cfg = tmp_path / "io.yaml"
+        cfg.write_text("outputs:\n  answers: r.answers\nsession_storage: true\n", encoding="utf-8")
+        assert _load_io_config(cfg).session_storage is True
+
+        # Absent means off, so it stays None rather than defaulting to False.
+        cfg.write_text("outputs:\n  answers: r.answers\n", encoding="utf-8")
+        assert _load_io_config(cfg).session_storage is None
+
+        # Rejected rather than coerced: a non-bool here is a typo, not an intent.
+        cfg.write_text("outputs:\n  answers: r.answers\nsession_storage: sure\n", encoding="utf-8")
         with pytest.raises(typer.Exit):
             _load_io_config(cfg)
 
@@ -1236,8 +1254,8 @@ class TestLoadIoConfig:
 
         cfg = tmp_path / "io.yaml"
         cfg.write_text("outputs:\n  messages: llm.replies\n", encoding="utf-8")
-        _, outputs, _ = _load_io_config(cfg)
-        assert outputs == {"messages": "llm.replies"}
+        cfg_io = _load_io_config(cfg)
+        assert cfg_io.outputs == {"messages": "llm.replies"}
 
     @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_io_config_overrides_inference(self, extract_mock: Mock, tmp_path: Path) -> None:
@@ -1258,6 +1276,20 @@ class TestLoadIoConfig:
         assert "answers: prompt_builder.prompt" in result.stdout
         assert "reader.answers" not in result.stdout
         assert "pipeline_output_type: generative" in result.stdout
+
+    @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
+    def test_dry_run_renders_session_storage_from_io_config(self, extract_mock: Mock, tmp_path: Path) -> None:
+        """The whole point of the key: an io-config asking for a per-session workspace has to reach the
+        deployed YAML, since that is the only place the platform looks for it."""
+        extract_mock.return_value = _bundle(
+            inferred_inputs={"query": ["retriever.query"]},
+            inferred_outputs={"answers": "reader.answers"},
+        )
+        cfg = tmp_path / "io.yaml"
+        cfg.write_text("outputs:\n  answers: reader.answers\nsession_storage: true\n", encoding="utf-8")
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run", "--io-config", str(cfg)])
+        assert result.exit_code == 0
+        assert "session_storage: true" in result.stdout
 
 
 class TestSpinnerPausedResolver:

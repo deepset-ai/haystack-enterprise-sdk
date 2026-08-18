@@ -153,6 +153,7 @@ def build_config_yaml(
     inputs: Optional[dict] = None,
     outputs: Optional[dict] = None,
     pipeline_output_type: Optional[str] = None,
+    session_storage: Optional[bool] = None,
     io_resolver: Optional[IoResolver] = None,
     python_executable: Optional[str] = None,
 ) -> str:
@@ -164,11 +165,18 @@ def build_config_yaml(
 
     Explicit ``inputs``/``outputs`` win; otherwise inferred values are used, and ``io_resolver`` (when
     given) gets the final say — see :func:`resolve_io`.
+
+    :param session_storage: When True, request a per-session workspace for the pipeline — see
+        :func:`render_config_yaml`.
     """
     bundle = extract_via_subprocess(target, entrypoint, python_executable)
     resolved_inputs, resolved_outputs = resolve_io(bundle, inputs, outputs, io_resolver)
     return render_config_yaml(
-        bundle, inputs=resolved_inputs, outputs=resolved_outputs, pipeline_output_type=pipeline_output_type
+        bundle,
+        inputs=resolved_inputs,
+        outputs=resolved_outputs,
+        pipeline_output_type=pipeline_output_type,
+        session_storage=session_storage,
     )
 
 
@@ -202,6 +210,7 @@ def render_config_yaml(
     inputs: Optional[dict] = None,
     outputs: Optional[dict] = None,
     pipeline_output_type: Optional[str] = None,
+    session_storage: Optional[bool] = None,
 ) -> str:
     """Render deployable YAML from an extraction bundle and the final inputs/outputs.
 
@@ -210,9 +219,14 @@ def render_config_yaml(
     :param outputs: The resolved outputs mapping to embed; ``None``/empty omits the ``outputs`` section.
     :param pipeline_output_type: Optional platform ``pipeline_output_type`` hint (``generative``,
         ``chat``, ``extractive``, ``document``); omitted from the YAML when ``None``.
+    :param session_storage: When True, emit ``session_storage: true`` so the platform gives the
+        pipeline a per-session workspace; omitted from the YAML otherwise.
     :return: The platform-ready ``config_yaml`` string.
     """
-    pipeline_dict = bundle.pipeline
+    # Copied, not aliased: every assignment below would otherwise land on the caller's bundle, so
+    # rendering the same bundle twice leaked the first call's keys into the second. A shallow copy is
+    # enough — this function only ever writes top-level keys.
+    pipeline_dict = dict(bundle.pipeline)
 
     if inputs:
         pipeline_dict["inputs"] = inputs
@@ -233,6 +247,13 @@ def render_config_yaml(
     output_type = pipeline_output_type or bundle.suggested_pipeline_output_type
     if output_type:
         pipeline_dict["pipeline_output_type"] = output_type
+
+    # A per-search-session workspace, mounted and snapshotted by the worker gateway, so files a tool
+    # writes are still there on the next run in the same session. The platform reads the key as a plain
+    # truthy flag (``pipeline_config.get("session_storage")``), so a false value means exactly what an
+    # absent one does and is left out rather than written as ``false``.
+    if session_storage:
+        pipeline_dict["session_storage"] = True
 
     if bundle.async_enabled:
         pipeline_dict["async_enabled"] = True
