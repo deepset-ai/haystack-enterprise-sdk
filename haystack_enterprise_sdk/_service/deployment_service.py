@@ -256,8 +256,8 @@ class DeploymentService:
         entrypoint: Optional[str] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
+        settings: Optional[pipeline_transform.PipelineSettings] = None,
         pipeline_output_type: Optional[str] = None,
-        session_storage: Optional[bool] = None,
         io_resolver: Optional[pipeline_transform.IoResolver] = None,
         python_executable: Optional[str] = None,
         validate: bool = True,
@@ -277,8 +277,11 @@ class DeploymentService:
         :param entrypoint: Name of the pipeline instance/factory when the file is ambiguous.
         :param inputs: Optional explicit pipeline inputs (overrides inference).
         :param outputs: Optional explicit pipeline outputs (overrides inference).
-        :param pipeline_output_type: Optional platform ``pipeline_output_type`` hint for the YAML.
-        :param session_storage: When True, give the pipeline a per-session workspace on the platform.
+        :param settings: Top-level ``config_yaml`` keys to declare — output type, session storage,
+            dependency pins, plus any key this SDK has no field for. See
+            :class:`pipeline_transform.PipelineSettings`.
+        :param pipeline_output_type: Shorthand for ``settings.pipeline_output_type``, kept for
+            compatibility; ``settings`` wins when both are given.
         :param io_resolver: Optional callback that gets the final say on the resolved inputs/outputs
             (see :func:`pipeline_transform.resolve_io`); returns ``(inputs, outputs)`` dicts to use.
         :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
@@ -297,8 +300,7 @@ class DeploymentService:
             entrypoint=entrypoint,
             inputs=inputs,
             outputs=outputs,
-            pipeline_output_type=pipeline_output_type,
-            session_storage=session_storage,
+            settings=(settings or pipeline_transform.PipelineSettings()).merged_with_output_type(pipeline_output_type),
             io_resolver=io_resolver,
             python_executable=python_executable,
         )
@@ -351,8 +353,8 @@ class DeploymentService:
         entrypoint: Optional[str] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
+        settings: Optional[pipeline_transform.PipelineSettings] = None,
         pipeline_output_type: Optional[str] = None,
-        session_storage: Optional[bool] = None,
         io_resolver: Optional[pipeline_transform.IoResolver] = None,
         python_executable: Optional[str] = None,
     ) -> PipelineValidationResult:
@@ -365,8 +367,11 @@ class DeploymentService:
         :param entrypoint: Name of the pipeline instance/factory when the file is ambiguous.
         :param inputs: Optional explicit pipeline inputs (overrides inference).
         :param outputs: Optional explicit pipeline outputs (overrides inference).
-        :param pipeline_output_type: Optional platform ``pipeline_output_type`` hint for the YAML.
-        :param session_storage: When True, give the pipeline a per-session workspace on the platform.
+        :param settings: Top-level ``config_yaml`` keys to declare — output type, session storage,
+            dependency pins, plus any key this SDK has no field for. See
+            :class:`pipeline_transform.PipelineSettings`.
+        :param pipeline_output_type: Shorthand for ``settings.pipeline_output_type``, kept for
+            compatibility; ``settings`` wins when both are given.
         :param io_resolver: Optional callback that gets the final say on the resolved inputs/outputs.
         :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
         :return: The validation result (issues split into errors/warnings).
@@ -376,8 +381,7 @@ class DeploymentService:
             entrypoint=entrypoint,
             inputs=inputs,
             outputs=outputs,
-            pipeline_output_type=pipeline_output_type,
-            session_storage=session_storage,
+            settings=(settings or pipeline_transform.PipelineSettings()).merged_with_output_type(pipeline_output_type),
             io_resolver=io_resolver,
             python_executable=python_executable,
         )
@@ -433,10 +437,11 @@ class DeploymentService:
             python_executable=python_executable,
         )
         pipeline_config = dict(YAML().load(config_yaml))
-        # The sandbox run endpoint executes the config in place and does not install dependencies, so a
-        # ``dependencies`` block is meaningless here (it belongs to the deployed revision). Drop it for
-        # the run so the pinned version can't interfere with sandbox execution.
-        pipeline_config.pop("dependencies", None)
+        # The sandbox run endpoint executes the config in place: it installs nothing, has no search
+        # session, and renders no Playground result, so every key that describes a deployed revision is
+        # meaningless here and is dropped rather than left to interfere with sandbox execution.
+        for key in pipeline_transform.DEPLOY_ONLY_KEYS:
+            pipeline_config.pop(key, None)
         run_inputs = build_run_inputs(
             pipeline_config,
             query=query,

@@ -27,7 +27,10 @@ from haystack_enterprise_sdk._service.pipeline_service import (
     ErrorDetail,
     HaystackEnterpriseValidationError,
 )
-from haystack_enterprise_sdk._service.pipeline_transform import PipelineTransformError
+from haystack_enterprise_sdk._service.pipeline_transform import (
+    PipelineSettings,
+    PipelineTransformError,
+)
 from haystack_enterprise_sdk.models import (
     BaseConfig,
     IndexConfig,
@@ -77,6 +80,7 @@ __all__ = [
     "DeploymentFailedError",
     "ServiceNotFoundError",
     "FailedToCreateSharedPrototypeError",
+    "PipelineSettings",
     "PipelineTransformError",
     "PipelineValidationError",
     "PipelineValidationResult",

@@ -68,7 +68,7 @@ haystack-enterprise validate pipeline.py
 from your socket names, so it also tells you when that mapping is not servable ("You need to connect at
 least one of the inputs (`query` or `messages`)…"); `deploy` asks you to fix that interactively. You can
 pin the mapping in a config file (`<target>.io.yaml`, picked up automatically) or supply your own with
-`--io-config`.
+`--io-config` — see [The io-config file](#the-io-config-file).
 
 ```shell
 # validate a specific entrypoint with an explicit interpreter and IO config
@@ -206,6 +206,50 @@ Sharing requires the service to be deployed, so `--share` cannot be combined wit
 If the platform does not classify your pipeline as a chat pipeline, the link is still created but the
 CLI warns that the chat UI may not render the output well — set `pipeline_output_type: chat` in the
 io-config if that classification is wrong.
+
+---
+
+## The io-config file
+
+`<target>.io.yaml` (picked up automatically, or passed with `--io-config`) pins everything the CLI would
+otherwise infer or ask about. `deploy --share` offers to write it for you, fully commented — that
+generated file is the reference; this is the summary.
+
+Two kinds of thing live in it. The `inputs:`/`outputs:` sections are the **mapping** between the
+platform's named keys and your pipeline's sockets. Everything else is a **top-level pipeline setting**,
+written straight through to the deployed config:
+
+| Key | Meaning | Default when absent |
+| --- | ------- | ------------------- |
+| `inputs:` | Platform input key → one or more `component.socket` paths | Inferred from your socket names |
+| `outputs:` | Platform output key → a single `component.socket` path | Inferred from your socket names |
+| `pipeline_output_type:` | How the Playground renders results: `generative`, `chat`, `extractive`, `document` | Inferred from the pipeline shape |
+| `session_storage:` | `true` gives the pipeline a per-session workspace, so files a tool writes survive to the next run in the same search session | Off |
+| `dependencies:` | pip pins the deployed revision installs. **Replaces** the automatic pin rather than adding to it, so include `haystack-ai` yourself if you still want it; `[]` ships no pins at all | The `haystack-ai` version of the interpreter that loaded your pipeline |
+
+```yaml
+# pipeline.io.yaml
+inputs:
+  query:
+    - retriever.query
+outputs:
+  answers: answer_builder.answers
+pipeline_output_type: chat
+session_storage: true
+dependencies:
+  - haystack-ai==2.30.2
+  - my-private-lib==1.4
+```
+
+Any other top-level key is **passed through to the pipeline config unchanged**, with a note telling you
+it was not recognised. That is deliberate: it means a platform config key newer than your installed SDK
+can still be set from here. The note is the only signal that the SDK did not validate it, so read it —
+a typo like `session_storge: true` passes through exactly the same way. Keys the transform derives
+itself (`components`, `connections`, `metadata`, `async_enabled`, and the two mapping sections) are
+rejected instead of passed through.
+
+`run` uses only the mapping. The settings all describe a *deployed revision* — the sandbox installs
+nothing, has no search session, and renders no Playground result — so `run` strips them.
 
 ---
 

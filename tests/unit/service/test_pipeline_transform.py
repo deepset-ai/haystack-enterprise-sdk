@@ -22,7 +22,10 @@ from haystack_enterprise_sdk._service.pipeline_extract import (
 )
 from haystack_enterprise_sdk._service.pipeline_transform import (
     CODE_COMPONENT_TYPE,
+    DEPLOY_ONLY_KEYS,
+    KNOWN_SETTING_KEYS,
     ExtractionBundle,
+    PipelineSettings,
     PipelineTransformError,
     build_config_yaml,
     classify_module,
@@ -124,7 +127,7 @@ class TestTransformFixture:
         # an active dependencies block pinning only the executing haystack-ai version
         assert "\ndependencies:\n" in config_yaml
         block = config_yaml.split("\ndependencies:\n")[1]
-        assert "  - haystack-ai==" in block
+        assert "- haystack-ai==" in block
         # user packages are never listed in the dependency block
         assert "requests" not in block
 
@@ -285,9 +288,62 @@ class TestAgentCompile:
         pipeline = load_pipeline_from_file(path)
         bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, tmp_path))
 
-        assert _load_yaml(render_config_yaml(bundle, session_storage=True))["session_storage"] is True
+        rendered = render_config_yaml(bundle, settings=PipelineSettings(session_storage=True))
+        assert _load_yaml(rendered)["session_storage"] is True
         for absent in (None, False):
-            assert "session_storage" not in _load_yaml(render_config_yaml(bundle, session_storage=absent))
+            settings = PipelineSettings(session_storage=absent)
+            assert "session_storage" not in _load_yaml(render_config_yaml(bundle, settings=settings))
+
+    def test_declared_dependencies_replace_the_inferred_pin(self, tmp_path: Path) -> None:
+        """The auto-detected pin is read off whichever interpreter loaded the pipeline, so an author has
+        to be able to override it -- including with `[]`, which is the only way to ship no pin at all
+        and is why an absent list and an empty one cannot mean the same thing."""
+        path = _write_project(tmp_path, {"pipeline.py": "from haystack import Pipeline\npipeline = Pipeline()\n"})
+        pipeline = load_pipeline_from_file(path)
+        bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, tmp_path))
+        assert bundle.dependencies, "the fixture must carry an inferred pin for the override to mean anything"
+
+        declared = render_config_yaml(bundle, settings=PipelineSettings(dependencies=["haystack-ai==1.2.3", "foo==4"]))
+        assert _load_yaml(declared)["dependencies"] == ["haystack-ai==1.2.3", "foo==4"]
+
+        # Undeclared falls back to the inferred pin; an explicit empty list suppresses it entirely.
+        assert _load_yaml(render_config_yaml(bundle))["dependencies"] == bundle.dependencies
+        assert "dependencies" not in _load_yaml(render_config_yaml(bundle, settings=PipelineSettings(dependencies=[])))
+
+    def test_extra_root_keys_are_passed_through(self, tmp_path: Path) -> None:
+        """The point of the passthrough channel: a top-level key the platform grows reaches the deployed
+        YAML without an SDK release, since the SDK has no way to know it is meaningful."""
+        path = _write_project(tmp_path, {"pipeline.py": "from haystack import Pipeline\npipeline = Pipeline()\n"})
+        pipeline = load_pipeline_from_file(path)
+        bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, tmp_path))
+
+        settings = PipelineSettings(extra={"some_future_key": {"nested": [1, 2]}})
+        assert _load_yaml(render_config_yaml(bundle, settings=settings))["some_future_key"] == {"nested": [1, 2]}
+
+    def test_extra_root_keys_cannot_clobber_what_the_sdk_owns(self, tmp_path: Path) -> None:
+        """Rejected rather than applied: the renderer writes these keys itself, so a passthrough value
+        would be silently overwritten and the config only partly honoured."""
+        path = _write_project(tmp_path, {"pipeline.py": "from haystack import Pipeline\npipeline = Pipeline()\n"})
+        pipeline = load_pipeline_from_file(path)
+        bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, tmp_path))
+
+        for key in ("components", "inputs", "async_enabled", "session_storage", "dependencies"):
+            with pytest.raises(PipelineTransformError, match=key):
+                render_config_yaml(bundle, settings=PipelineSettings(extra={key: "whatever"}))
+
+    def test_every_deploy_only_key_is_a_real_setting(self) -> None:
+        """The one thing the run-path test cannot catch: it both strips and asserts by this same set, so a
+        typo in a name would leave the real key sailing through and still pass. Naming a key that is not
+        a setting is the typo's signature."""
+        assert DEPLOY_ONLY_KEYS <= KNOWN_SETTING_KEYS
+
+    def test_output_type_kwarg_folds_into_settings(self) -> None:
+        """The standalone kwarg predates the container and stays for compatibility, so it has to end up
+        in the same place -- and lose to an explicit setting rather than silently win."""
+        assert PipelineSettings().merged_with_output_type("chat").pipeline_output_type == "chat"
+        declared = PipelineSettings(pipeline_output_type="generative")
+        assert declared.merged_with_output_type("chat").pipeline_output_type == "generative"
+        assert declared.merged_with_output_type(None) == declared
 
     def test_non_agent_pipeline_has_no_suggested_output_type(self, tmp_path: Path) -> None:
         path = _write_project(tmp_path, {"pipeline.py": "from haystack import Pipeline\npipeline = Pipeline()\n"})
@@ -785,7 +841,7 @@ class TestSubprocessExtraction:
         doc = _load_yaml(config_yaml)
         assert "class Greeter" in doc["components"]["greeter"]["init_parameters"]["code"]
         assert "\ndependencies:\n" in config_yaml
-        assert "  - haystack-ai==" in config_yaml
+        assert "- haystack-ai==" in config_yaml
 
     def test_extract_via_subprocess_missing_dep_errors(self, tmp_path: Path) -> None:
         path = _write_project(tmp_path, {"pipeline.py": "import a_missing_module_xyz\n"})

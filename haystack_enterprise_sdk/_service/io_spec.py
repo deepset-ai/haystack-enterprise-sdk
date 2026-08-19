@@ -17,7 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-__all__ = ["IntegrationIoSpec", "PlatformKey", "PLATFORM_SERVING_SPEC", "render_io_config"]
+__all__ = [
+    "IntegrationIoSpec",
+    "PipelineSetting",
+    "PlatformKey",
+    "PIPELINE_SETTINGS",
+    "PLATFORM_SERVING_SPEC",
+    "render_io_config",
+]
 
 
 @dataclass(frozen=True)
@@ -29,6 +36,39 @@ class PlatformKey:
     type_hint: str  # human-readable expected type, e.g. "str", "dict", "list"
     direction: str  # "input" | "output"
     multi: bool  # inputs may fan out to several sockets; outputs map to exactly one
+
+
+@dataclass(frozen=True)
+class PipelineSetting:
+    """One top-level pipeline setting an io-config may declare, for the generated file's stub lines.
+
+    Data rather than literal lines so a single test can assert this list and the set of keys
+    ``cli._load_io_config`` validates (``pipeline_transform.KNOWN_SETTING_KEYS``) never drift: a
+    setting the loader accepts but no generated file documents is a setting nobody finds.
+    """
+
+    name: str  # e.g. "session_storage"
+    description: str  # one-liner written above the stub as a comment
+    example: str  # the value shown in the commented-out stub, valid YAML on its own
+
+
+PIPELINE_SETTINGS = (
+    PipelineSetting(
+        name="pipeline_output_type",
+        description="how the Playground renders results (generative | chat | extractive | document)",
+        example="generative",
+    ),
+    PipelineSetting(
+        name="session_storage",
+        description="give the pipeline a per-session workspace that keeps files between runs",
+        example="true",
+    ),
+    PipelineSetting(
+        name="dependencies",
+        description="pip pins the deployed revision installs; replaces the auto-detected haystack-ai pin",
+        example="[haystack-ai==2.30.2]",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -142,8 +182,7 @@ def render_io_config(
             lines.append(f"  {key.name}: {socket}")
         else:
             lines.append(f"  # {key.name}: <component.socket>")
-    lines.append("# Optional: how the Playground renders results (generative | chat | extractive | document)")
-    lines.append("# pipeline_output_type: generative")
-    lines.append("# Optional: give the pipeline a per-session workspace that keeps files between runs")
-    lines.append("# session_storage: true")
+    for setting in PIPELINE_SETTINGS:
+        lines.append(f"# Optional: {setting.description}")
+        lines.append(f"# {setting.name}: {setting.example}")
     return "\n".join(lines) + "\n"

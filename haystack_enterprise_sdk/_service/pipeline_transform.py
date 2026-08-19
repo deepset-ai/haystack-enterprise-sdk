@@ -17,10 +17,10 @@ import json
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from io import StringIO
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import structlog
 from ruamel.yaml import YAML
@@ -41,9 +41,13 @@ logger = structlog.get_logger(__name__)
 
 __all__ = [
     "CODE_COMPONENT_TYPE",
+    "DEPLOY_ONLY_KEYS",
     "ExtractionBundle",
     "IoResolver",
+    "KNOWN_SETTING_KEYS",
+    "PipelineSettings",
     "PipelineTransformError",
+    "RESERVED_ROOT_KEYS",
     "build_config_yaml",
     "classify_module",
     "detect_project_python",
@@ -60,6 +64,7 @@ __all__ = [
     "resolve_io",
     "unmapped_mandatory_inputs",
     "unmapped_mandatory_warning",
+    "validate_extra_root_keys",
 ]
 
 # Interpreter names to look for inside a discovered virtual environment.
@@ -139,6 +144,86 @@ def _normalize_available(available: dict) -> dict:
     return normalized
 
 
+@dataclass(frozen=True)
+class PipelineSettings:
+    """The top-level ``config_yaml`` keys an author declares, as opposed to the socket mapping.
+
+    One container rather than one kwarg per key: every setting here has to cross
+    :func:`build_config_yaml`, :func:`render_config_yaml`, ``DeploymentService.deploy``/``.validate``
+    and both deployment clients, so a kwarg per key costs six signatures every time the platform grows
+    one. ``extra`` carries root keys this SDK has no field for, so a key the platform adds needs no SDK
+    change at all — it only has to survive :func:`validate_extra_root_keys`.
+
+    ``None`` means "not declared" and defers to what the extractor inferred. That is why
+    ``dependencies=[]`` and ``dependencies=None`` differ: the empty list is an explicit "pin nothing"
+    that suppresses the auto-detected ``haystack-ai`` pin.
+    """
+
+    pipeline_output_type: Optional[str] = None
+    session_storage: Optional[bool] = None
+    dependencies: Optional[List[str]] = None
+    extra: Mapping[str, Any] = field(default_factory=dict)
+
+    def merged_with_output_type(self, pipeline_output_type: Optional[str]) -> "PipelineSettings":
+        """Fold the standalone ``pipeline_output_type`` kwarg into these settings.
+
+        That kwarg predates this container and stays on the public clients for compatibility; an
+        explicit ``self.pipeline_output_type`` wins over it.
+        """
+        if pipeline_output_type is None or self.pipeline_output_type is not None:
+            return self
+        return replace(self, pipeline_output_type=pipeline_output_type)
+
+
+#: The root keys :class:`PipelineSettings` names, and therefore validates, rather than passing through
+#: in ``extra``. Derived from the fields so a new setting cannot fall out of sync with the io-config
+#: loader or with the stubs a generated io-config documents (``io_spec.PIPELINE_SETTINGS``).
+KNOWN_SETTING_KEYS = frozenset(f.name for f in fields(PipelineSettings)) - {"extra"}
+
+#: Root keys the renderer derives rather than accepts, so nothing may pass them through: the first
+#: five come straight out of ``Pipeline.dumps()``, ``inputs``/``outputs`` are the socket mapping (with
+#: their own io-config sections and their own resolution path), and ``async_enabled`` follows the
+#: pipeline class.
+RESERVED_ROOT_KEYS = frozenset(
+    {
+        "components",
+        "connections",
+        "connection_type_validation",
+        "max_runs_per_component",
+        "metadata",
+        "inputs",
+        "outputs",
+        "async_enabled",
+    }
+)
+
+#: Root keys that describe a *deployed revision* and are therefore stripped before a sandbox run: that
+#: endpoint installs nothing (``dependencies``), has no search session to scope a workspace to
+#: (``session_storage``), and renders no Playground result (``pipeline_output_type``).
+DEPLOY_ONLY_KEYS = frozenset({"dependencies", "session_storage", "pipeline_output_type"})
+
+
+def validate_extra_root_keys(extra: Mapping[str, Any]) -> None:
+    """Reject passthrough root keys that collide with something the SDK already owns.
+
+    :param extra: The passthrough keys to check (``PipelineSettings.extra``).
+    :raises PipelineTransformError: If a key is reserved (:data:`RESERVED_ROOT_KEYS`) or has its own
+        :class:`PipelineSettings` field — either way the renderer would overwrite the passthrough
+        value, so accepting it would mean honouring the config silently and partially.
+    """
+    reserved = sorted(set(extra) & RESERVED_ROOT_KEYS)
+    if reserved:
+        raise PipelineTransformError(f"cannot set {_quoted(reserved)} — derived from the pipeline itself.")
+    named = sorted(set(extra) & KNOWN_SETTING_KEYS)
+    if named:
+        raise PipelineTransformError(f"cannot pass {_quoted(named)} through — covered by a dedicated setting.")
+
+
+def _quoted(keys: List[str]) -> str:
+    """Render key names for an error message, e.g. ``'inputs' and 'outputs'``."""
+    return " and ".join(", ".join(f"'{key}'" for key in keys).rsplit(", ", 1))
+
+
 # Callback consulted to finalize inputs/outputs. Receives the bundle plus the already-resolved
 # ``(inputs, outputs)`` and returns the ``(inputs, outputs)`` dicts to use (empty means "leave
 # unset"). Whether/how it interacts (review the full mapping, fill only gaps, or return unchanged)
@@ -152,8 +237,7 @@ def build_config_yaml(
     entrypoint: Optional[str] = None,
     inputs: Optional[dict] = None,
     outputs: Optional[dict] = None,
-    pipeline_output_type: Optional[str] = None,
-    session_storage: Optional[bool] = None,
+    settings: Optional[PipelineSettings] = None,
     io_resolver: Optional[IoResolver] = None,
     python_executable: Optional[str] = None,
 ) -> str:
@@ -166,18 +250,11 @@ def build_config_yaml(
     Explicit ``inputs``/``outputs`` win; otherwise inferred values are used, and ``io_resolver`` (when
     given) gets the final say — see :func:`resolve_io`.
 
-    :param session_storage: When True, request a per-session workspace for the pipeline — see
-        :func:`render_config_yaml`.
+    :param settings: The top-level ``config_yaml`` keys to declare — see :class:`PipelineSettings`.
     """
     bundle = extract_via_subprocess(target, entrypoint, python_executable)
     resolved_inputs, resolved_outputs = resolve_io(bundle, inputs, outputs, io_resolver)
-    return render_config_yaml(
-        bundle,
-        inputs=resolved_inputs,
-        outputs=resolved_outputs,
-        pipeline_output_type=pipeline_output_type,
-        session_storage=session_storage,
-    )
+    return render_config_yaml(bundle, inputs=resolved_inputs, outputs=resolved_outputs, settings=settings)
 
 
 def resolve_io(
@@ -209,24 +286,33 @@ def render_config_yaml(
     bundle: ExtractionBundle,
     inputs: Optional[dict] = None,
     outputs: Optional[dict] = None,
-    pipeline_output_type: Optional[str] = None,
-    session_storage: Optional[bool] = None,
+    settings: Optional[PipelineSettings] = None,
 ) -> str:
     """Render deployable YAML from an extraction bundle and the final inputs/outputs.
+
+    Every top-level key the platform reads is written here, from one of two sources: the author's
+    :class:`PipelineSettings`, or what the extractor inferred for whatever they left undeclared.
 
     :param bundle: The extraction bundle.
     :param inputs: The resolved inputs mapping to embed; ``None``/empty omits the ``inputs`` section.
     :param outputs: The resolved outputs mapping to embed; ``None``/empty omits the ``outputs`` section.
-    :param pipeline_output_type: Optional platform ``pipeline_output_type`` hint (``generative``,
-        ``chat``, ``extractive``, ``document``); omitted from the YAML when ``None``.
-    :param session_storage: When True, emit ``session_storage: true`` so the platform gives the
-        pipeline a per-session workspace; omitted from the YAML otherwise.
+    :param settings: The author-declared top-level keys (see :class:`PipelineSettings`). A declared
+        value replaces the inferred one wholesale — the same override the ``inputs``/``outputs``
+        mappings get; ``extra`` keys are written as they came in.
+    :raises PipelineTransformError: If ``settings.extra`` names a key the SDK owns.
     :return: The platform-ready ``config_yaml`` string.
     """
+    settings = settings or PipelineSettings()
+    validate_extra_root_keys(settings.extra)
+
     # Copied, not aliased: every assignment below would otherwise land on the caller's bundle, so
     # rendering the same bundle twice leaked the first call's keys into the second. A shallow copy is
     # enough — this function only ever writes top-level keys.
     pipeline_dict = dict(bundle.pipeline)
+    # Passthrough keys first, so a validated key of the same name overwrites one of these rather than
+    # the reverse. validate_extra_root_keys has already ruled that collision out; ordering it this way
+    # means the guarantee does not rest on the check alone.
+    pipeline_dict.update(settings.extra)
 
     if inputs:
         pipeline_dict["inputs"] = inputs
@@ -244,7 +330,7 @@ def render_config_yaml(
 
     # An explicit type always wins; otherwise fall back to what the extractor inferred from the
     # pipeline shape (e.g. ``chat`` for a compiled agent).
-    output_type = pipeline_output_type or bundle.suggested_pipeline_output_type
+    output_type = settings.pipeline_output_type or bundle.suggested_pipeline_output_type
     if output_type:
         pipeline_dict["pipeline_output_type"] = output_type
 
@@ -252,23 +338,26 @@ def render_config_yaml(
     # writes are still there on the next run in the same session. The platform reads the key as a plain
     # truthy flag (``pipeline_config.get("session_storage")``), so a false value means exactly what an
     # absent one does and is left out rather than written as ``false``.
-    if session_storage:
+    if settings.session_storage:
         pipeline_dict["session_storage"] = True
 
     if bundle.async_enabled:
         pipeline_dict["async_enabled"] = True
+
+    # Written last so the pins keep their place at the bottom of the file. Declared pins replace the
+    # extractor's auto-detected ``haystack-ai`` pin outright, which is what makes ``dependencies: []``
+    # a way to ship no pin at all — worth having, since that pin is read off whichever interpreter
+    # loaded the pipeline and is not always the one the deployed revision should install.
+    dependencies = bundle.dependencies if settings.dependencies is None else settings.dependencies
+    if dependencies:
+        pipeline_dict["dependencies"] = list(dependencies)
 
     yaml = YAML()
     yaml.indent(mapping=2, sequence=2)
     yaml.width = NO_WRAP_WIDTH
     buffer = StringIO()
     yaml.dump(pipeline_dict, buffer)
-    config_yaml = buffer.getvalue()
-
-    dependency_block = _build_dependency_block(bundle.dependencies)
-    if dependency_block:
-        config_yaml = f"{config_yaml}\n{dependency_block}"
-    return config_yaml
+    return buffer.getvalue()
 
 
 def unmapped_mandatory_inputs(mandatory: dict, inputs: dict) -> List[str]:
@@ -401,17 +490,3 @@ def detect_project_python(target: Path) -> str:
                     logger.debug("Detected project virtualenv interpreter.", python=str(candidate))
                     return str(candidate)
     return sys.executable
-
-
-def _build_dependency_block(dependencies: list) -> str:
-    """Build the ``dependencies`` YAML block pinning the Haystack version, e.g.::
-
-        dependencies:
-          - haystack-ai==2.30.2
-
-    Returns an empty string when there is nothing to pin.
-    """
-    if not dependencies:
-        return ""
-    body = "\n".join(f"  - {line}" for line in dependencies)
-    return f"dependencies:\n{body}\n"
