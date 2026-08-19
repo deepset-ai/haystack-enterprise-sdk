@@ -337,14 +337,6 @@ class TestAgentCompile:
         a setting is the typo's signature."""
         assert DEPLOY_ONLY_KEYS <= KNOWN_SETTING_KEYS
 
-    def test_output_type_kwarg_folds_into_settings(self) -> None:
-        """The standalone kwarg predates the container and stays for compatibility, so it has to end up
-        in the same place -- and lose to an explicit setting rather than silently win."""
-        assert PipelineSettings().merged_with_output_type("chat").pipeline_output_type == "chat"
-        declared = PipelineSettings(pipeline_output_type="generative")
-        assert declared.merged_with_output_type("chat").pipeline_output_type == "generative"
-        assert declared.merged_with_output_type(None) == declared
-
     def test_non_agent_pipeline_has_no_suggested_output_type(self, tmp_path: Path) -> None:
         path = _write_project(tmp_path, {"pipeline.py": "from haystack import Pipeline\npipeline = Pipeline()\n"})
         pipeline = load_pipeline_from_file(path)

@@ -257,7 +257,6 @@ class DeploymentService:
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
         settings: Optional[pipeline_transform.PipelineSettings] = None,
-        pipeline_output_type: Optional[str] = None,
         io_resolver: Optional[pipeline_transform.IoResolver] = None,
         python_executable: Optional[str] = None,
         validate: bool = True,
@@ -280,8 +279,6 @@ class DeploymentService:
         :param settings: Top-level ``config_yaml`` keys to declare — output type, session storage,
             dependency pins, plus any key this SDK has no field for. See
             :class:`pipeline_transform.PipelineSettings`.
-        :param pipeline_output_type: Shorthand for ``settings.pipeline_output_type``, kept for
-            compatibility; ``settings`` wins when both are given.
         :param io_resolver: Optional callback that gets the final say on the resolved inputs/outputs
             (see :func:`pipeline_transform.resolve_io`); returns ``(inputs, outputs)`` dicts to use.
         :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
@@ -300,7 +297,7 @@ class DeploymentService:
             entrypoint=entrypoint,
             inputs=inputs,
             outputs=outputs,
-            settings=(settings or pipeline_transform.PipelineSettings()).merged_with_output_type(pipeline_output_type),
+            settings=settings,
             io_resolver=io_resolver,
             python_executable=python_executable,
         )
@@ -354,7 +351,6 @@ class DeploymentService:
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
         settings: Optional[pipeline_transform.PipelineSettings] = None,
-        pipeline_output_type: Optional[str] = None,
         io_resolver: Optional[pipeline_transform.IoResolver] = None,
         python_executable: Optional[str] = None,
     ) -> PipelineValidationResult:
@@ -370,8 +366,6 @@ class DeploymentService:
         :param settings: Top-level ``config_yaml`` keys to declare — output type, session storage,
             dependency pins, plus any key this SDK has no field for. See
             :class:`pipeline_transform.PipelineSettings`.
-        :param pipeline_output_type: Shorthand for ``settings.pipeline_output_type``, kept for
-            compatibility; ``settings`` wins when both are given.
         :param io_resolver: Optional callback that gets the final say on the resolved inputs/outputs.
         :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
         :return: The validation result (issues split into errors/warnings).
@@ -381,7 +375,7 @@ class DeploymentService:
             entrypoint=entrypoint,
             inputs=inputs,
             outputs=outputs,
-            settings=(settings or pipeline_transform.PipelineSettings()).merged_with_output_type(pipeline_output_type),
+            settings=settings,
             io_resolver=io_resolver,
             python_executable=python_executable,
         )

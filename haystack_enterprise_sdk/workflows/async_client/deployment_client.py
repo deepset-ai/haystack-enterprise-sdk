@@ -105,7 +105,6 @@ class AsyncDeploymentClient:
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
         settings: Optional[PipelineSettings] = None,
-        pipeline_output_type: Optional[str] = None,
         io_resolver: Optional[IoResolver] = None,
         python_executable: Optional[str] = None,
         validate: bool = True,
@@ -129,7 +128,6 @@ class AsyncDeploymentClient:
                 inputs=inputs,
                 outputs=outputs,
                 settings=settings,
-                pipeline_output_type=pipeline_output_type,
                 io_resolver=io_resolver,
                 python_executable=python_executable,
                 validate=validate,
@@ -146,7 +144,6 @@ class AsyncDeploymentClient:
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
         settings: Optional[PipelineSettings] = None,
-        pipeline_output_type: Optional[str] = None,
         io_resolver: Optional[IoResolver] = None,
         python_executable: Optional[str] = None,
     ) -> PipelineValidationResult:
@@ -161,7 +158,6 @@ class AsyncDeploymentClient:
                 inputs=inputs,
                 outputs=outputs,
                 settings=settings,
-                pipeline_output_type=pipeline_output_type,
                 io_resolver=io_resolver,
                 python_executable=python_executable,
             )

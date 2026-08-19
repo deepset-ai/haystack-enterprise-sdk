@@ -17,7 +17,7 @@ import json
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field, fields
 from io import StringIO
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
@@ -148,11 +148,12 @@ def _normalize_available(available: dict) -> dict:
 class PipelineSettings:
     """The top-level ``config_yaml`` keys an author declares, as opposed to the socket mapping.
 
-    One container rather than one kwarg per key: every setting here has to cross
-    :func:`build_config_yaml`, :func:`render_config_yaml`, ``DeploymentService.deploy``/``.validate``
-    and both deployment clients, so a kwarg per key costs six signatures every time the platform grows
-    one. ``extra`` carries root keys this SDK has no field for, so a key the platform adds needs no SDK
-    change at all — it only has to survive :func:`validate_extra_root_keys`.
+    The only way to set a top-level key. One container rather than one kwarg per key: every setting
+    here has to cross :func:`build_config_yaml`, :func:`render_config_yaml`,
+    ``DeploymentService.deploy``/``.validate`` and both deployment clients, so a kwarg per key costs six
+    signatures every time the platform grows one. ``extra`` carries root keys this SDK has no field for,
+    so a key the platform adds needs no SDK change at all — it only has to survive
+    :func:`validate_extra_root_keys`.
 
     ``None`` means "not declared" and defers to what the extractor inferred. That is why
     ``dependencies=[]`` and ``dependencies=None`` differ: the empty list is an explicit "pin nothing"
@@ -163,16 +164,6 @@ class PipelineSettings:
     session_storage: Optional[bool] = None
     dependencies: Optional[List[str]] = None
     extra: Mapping[str, Any] = field(default_factory=dict)
-
-    def merged_with_output_type(self, pipeline_output_type: Optional[str]) -> "PipelineSettings":
-        """Fold the standalone ``pipeline_output_type`` kwarg into these settings.
-
-        That kwarg predates this container and stays on the public clients for compatibility; an
-        explicit ``self.pipeline_output_type`` wins over it.
-        """
-        if pipeline_output_type is None or self.pipeline_output_type is not None:
-            return self
-        return replace(self, pipeline_output_type=pipeline_output_type)
 
 
 #: The root keys :class:`PipelineSettings` names, and therefore validates, rather than passing through
