@@ -9,7 +9,7 @@ import time
 from contextlib import contextmanager
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union
 from uuid import UUID
 
 import structlog
@@ -47,16 +47,19 @@ from haystack_enterprise_sdk._service.io_spec import (
     render_io_config,
 )
 from haystack_enterprise_sdk._service.pipeline_transform import (
+    KNOWN_SETTING_KEYS,
     STANDARD_INPUT_KEYS,
     STANDARD_OUTPUT_KEYS,
     ExtractionBundle,
     IoResolver,
+    PipelineSettings,
     PipelineTransformError,
     SocketOption,
     build_config_yaml,
     socket_options,
     unmapped_mandatory_inputs,
     unmapped_mandatory_warning,
+    validate_extra_root_keys,
 )
 from haystack_enterprise_sdk.models import PipelineOutputType
 from haystack_enterprise_sdk.workflows.sync_client.deployment_client import DeploymentClient
@@ -74,6 +77,20 @@ cli_app = typer.Typer(pretty_exceptions_show_locals=False)
 
 # How long a sandbox run has to be waiting before the spinner explains that this is normal.
 _RUN_HINT_AFTER_S = 20
+
+
+class IoConfig(NamedTuple):
+    """Everything an io-config file can pin: the socket mapping, plus the top-level pipeline settings.
+
+    Three slots that do not grow. The mapping is separate from `settings` because it has a different
+    lifecycle — inferred from the pipeline, then possibly edited interactively — while a setting is
+    only ever declared. A new platform setting is a field on `PipelineSettings`, so it costs nothing
+    here and nothing at any call site; one the SDK has no field for rides in `settings.extra`.
+    """
+
+    inputs: Optional[dict] = None
+    outputs: Optional[dict] = None
+    settings: PipelineSettings = PipelineSettings()
 
 
 def _configure_cli_logging(verbose: bool) -> None:
@@ -479,10 +496,11 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param dry_run: Transform the pipeline and print/write the resulting YAML without deploying. No
         API credentials are needed.
     :param output: With --dry-run, write the transformed YAML to this file instead of stdout.
-    :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections (and an
-        optional `pipeline_output_type`) that replace inference and skip all mapping prompts. Defaults
-        to `<target>.io.yaml` next to the pipeline file when that exists (the file the interactive
-        review offers to save).
+    :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections plus any
+        top-level setting (`pipeline_output_type`, `session_storage`, `dependencies`, or a platform
+        config key this SDK does not know, passed through as-is). These replace inference and skip all
+        mapping prompts. Defaults to `<target>.io.yaml` next to the pipeline file when that exists
+        (the file the interactive review offers to save).
     :param skip_io_validation: Skip all input/output mapping prompts and deploy with whatever was
         inferred, warning about nothing. The platform rejects a pipeline with no query input or no
         output, so expect the deploy to fail validation unless you also pass --skip-validation.
@@ -515,12 +533,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     `deepset-cloud deploy pipeline.py my-service --dry-run --output out.yaml`
     """
     io_config_path = _resolve_io_config_path(target, io_config)
-    io_inputs, io_outputs, io_output_type = (
-        _load_io_config(io_config_path) if io_config_path is not None else (None, None, None)
-    )
+    io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
 
     if dry_run:
-        _deploy_dry_run(target, entrypoint, python, output, skip_io_validation, io_inputs, io_outputs, io_output_type)
+        _deploy_dry_run(target, entrypoint, python, output, skip_io_validation, io_cfg)
         return
 
     # The sizing flags only mean something for a managed service being created, so a combination that
@@ -596,7 +612,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     # reviews the whole mapping, because its chat UI routes through all of it; a plain deploy asks only
     # for the two things the platform requires of a servable pipeline (a query input and one output) and
     # only when inference did not already supply them.
-    if io_inputs is not None or io_outputs is not None:
+    if io_cfg.inputs is not None or io_cfg.outputs is not None:
         io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="warn")
     elif share:
         io_resolver = functools.partial(
@@ -628,9 +644,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     create_options=create_options,
                     comment=comment,
                     entrypoint=entrypoint,
-                    inputs=io_inputs,
-                    outputs=io_outputs,
-                    pipeline_output_type=io_output_type,
+                    inputs=io_cfg.inputs,
+                    outputs=io_cfg.outputs,
+                    settings=io_cfg.settings,
                     io_resolver=spinner_resolver,
                     python_executable=python,
                     validate=not skip_validation,
@@ -644,9 +660,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 create_options=create_options,
                 comment=comment,
                 entrypoint=entrypoint,
-                inputs=io_inputs,
-                outputs=io_outputs,
-                pipeline_output_type=io_output_type,
+                inputs=io_cfg.inputs,
+                outputs=io_cfg.outputs,
+                settings=io_cfg.settings,
                 io_resolver=io_resolver,
                 python_executable=python,
                 validate=not skip_validation,
@@ -719,9 +735,10 @@ def validate(
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
     :param python: Path to the Python interpreter used to load your pipeline (defaults to an
         auto-detected virtualenv near the target file, else the current interpreter).
-    :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections (and an
-        optional `pipeline_output_type`) that replace inference. Defaults to `<target>.io.yaml` next to
-        the pipeline file when that exists.
+    :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections plus any
+        top-level setting (`pipeline_output_type`, `session_storage`, `dependencies`, or a platform
+        config key this SDK does not know, passed through as-is), replacing inference. Defaults to
+        `<target>.io.yaml` next to the pipeline file when that exists.
     :param skip_io_validation: Skip the warning about mandatory pipeline inputs that aren't mapped to a
         platform input. Validation never prompts for the mapping.
     :param api_key: deepset API key to use for authentication.
@@ -732,9 +749,7 @@ def validate(
     `deepset-cloud validate pipeline.py`
     """
     io_config_path = _resolve_io_config_path(target, io_config)
-    io_inputs, io_outputs, io_output_type = (
-        _load_io_config(io_config_path) if io_config_path is not None else (None, None, None)
-    )
+    io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
     # Validation never sends a query and never serves a chat UI, so the mapping is used as inferred.
     io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="warn")
@@ -742,9 +757,9 @@ def validate(
         result = client.validate(
             target,
             entrypoint=entrypoint,
-            inputs=io_inputs,
-            outputs=io_outputs,
-            pipeline_output_type=io_output_type,
+            inputs=io_cfg.inputs,
+            outputs=io_cfg.outputs,
+            settings=io_cfg.settings,
             io_resolver=io_resolver,
             python_executable=python,
         )
@@ -814,7 +829,8 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
     :param python: Path to the Python interpreter used to load your pipeline (defaults to an
         auto-detected virtualenv near the target file, else the current interpreter).
     :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections that
-        replace inference and skip the query-socket prompt. Defaults to `<target>.io.yaml`
+        replace inference and skip the query-socket prompt. Only the mapping is read; the top-level
+        settings describe a deployed revision, not a sandbox run. Defaults to `<target>.io.yaml`
         next to the pipeline file when that exists.
     :param skip_io_validation: Skip the query-socket prompt and use whatever was inferred. Nothing is
         asked anyway when a query can already be routed, or when only --inputs is given.
@@ -837,7 +853,10 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
     named_inputs = _parse_set_option(set_input)
     extra_inputs = _parse_inputs_option(inputs)
     io_config_path = _resolve_io_config_path(target, io_config)
-    io_inputs, io_outputs, _ = _load_io_config(io_config_path) if io_config_path is not None else (None, None, None)
+    # Only the mapping is forwarded. The settings all describe a deployed revision rather than an
+    # ad-hoc invocation, and `DeploymentService.run` strips them (`DEPLOY_ONLY_KEYS`) even when they
+    # arrive some other way, so dropping them here is the intent and that is the enforcement.
+    io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
 
     if query is None and named_inputs is None and extra_inputs is None and _stdin_is_tty():
         query = typer.prompt("Query")
@@ -855,8 +874,8 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
         return client.run(
             target,
             entrypoint=entrypoint,
-            inputs=io_inputs,
-            outputs=io_outputs,
+            inputs=io_cfg.inputs,
+            outputs=io_cfg.outputs,
             io_resolver=resolver,
             python_executable=python,
             query=query,
@@ -975,9 +994,7 @@ def _deploy_dry_run(
     python: Optional[str],
     output: Optional[Path],
     skip_io_validation: bool = False,
-    inputs: Optional[dict] = None,
-    outputs: Optional[dict] = None,
-    pipeline_output_type: Optional[str] = None,
+    io_cfg: IoConfig = IoConfig(),
 ) -> None:
     """Transform the pipeline and print/write the YAML without contacting the API.
 
@@ -989,9 +1006,9 @@ def _deploy_dry_run(
         config_yaml = build_config_yaml(
             target,
             entrypoint=entrypoint,
-            inputs=inputs,
-            outputs=outputs,
-            pipeline_output_type=pipeline_output_type,
+            inputs=io_cfg.inputs,
+            outputs=io_cfg.outputs,
+            settings=io_cfg.settings,
             io_resolver=io_resolver,
             python_executable=python,
         )
@@ -1403,14 +1420,18 @@ def _resolve_io_config_path(target: Path, io_config: Optional[Path]) -> Optional
     return None
 
 
-def _load_io_config(path: Path) -> Tuple[Optional[dict], Optional[dict], Optional[str]]:
-    """Load an explicit pipeline I/O mapping from a YAML or JSON io-config file.
+def _load_io_config(path: Path) -> IoConfig:
+    """Load an explicit pipeline I/O mapping and the top-level pipeline settings from an io-config file.
 
-    The file may contain optional ``inputs:``, ``outputs:``, and ``pipeline_output_type:`` sections.
-    Input values may be a string or a list of strings (coerced to a list); output values are single
-    ``"component.socket"`` strings. Keys beyond the standard platform keys are passed through with a
-    note. Returns ``(inputs, outputs, pipeline_output_type)`` with ``None`` for absent sections (a
-    section that is present but empty — e.g. fully commented out — also counts as absent).
+    The file may contain optional ``inputs:``/``outputs:`` sections plus any of the settings in
+    :data:`io_spec.PIPELINE_SETTINGS`. Input values may be a string or a list of strings (coerced to a
+    list); output values are single ``"component.socket"`` strings. Absent sections come back as
+    ``None`` (a section that is present but empty — e.g. fully commented out — also counts as absent).
+
+    Keys beyond the ones the SDK knows are passed through to the pipeline config with a note, at both
+    levels: an unknown key under ``inputs:``/``outputs:`` and an unknown top-level key alike. That is
+    what lets a platform config key the SDK has never heard of be set from here without an SDK release;
+    the alternative — dropping it silently — is how a setting written in good faith goes missing.
 
     :raises typer.Exit: On a missing/unreadable file, invalid YAML/JSON, or a bad shape.
     """
@@ -1465,7 +1486,41 @@ def _load_io_config(path: Path) -> Tuple[Optional[dict], Optional[dict], Optiona
         if output_type not in valid:
             typer.echo(f"--io-config 'pipeline_output_type' must be one of: {', '.join(valid)}.")
             raise typer.Exit(1)
-    return inputs, outputs, output_type
+
+    session_storage: Optional[bool] = data.get("session_storage")
+    # Rejected rather than coerced: YAML turns an unquoted `yes`/`on` into a bool already, so anything
+    # left over is a string or a number the author did not mean to write here.
+    if session_storage is not None and not isinstance(session_storage, bool):
+        typer.echo("--io-config 'session_storage' must be true or false.")
+        raise typer.Exit(1)
+
+    # A present-but-empty `dependencies:` is absent, but an explicit `[]` is not: it means "install no
+    # pins", which suppresses the haystack-ai pin the extractor reads off the loading interpreter.
+    dependencies: Optional[List[str]] = data.get("dependencies")
+    if dependencies is not None and (
+        not isinstance(dependencies, list) or not all(isinstance(pin, str) for pin in dependencies)
+    ):
+        typer.echo("--io-config 'dependencies' must be a list of pip requirement strings.")
+        raise typer.Exit(1)
+
+    known = {"inputs", "outputs"} | KNOWN_SETTING_KEYS
+    extra = {key: value for key, value in data.items() if key not in known}
+    # Validated before the notes, so a rejected key is never also announced as passed through.
+    try:
+        validate_extra_root_keys(extra)
+    except PipelineTransformError as err:
+        typer.echo(f"--io-config: {err}")
+        raise typer.Exit(1)  # noqa: B904
+    for key in sorted(extra):
+        typer.echo(f"Note: '{key}' is not a setting this SDK knows; passing it through to the config as-is.")
+
+    settings = PipelineSettings(
+        pipeline_output_type=output_type,
+        session_storage=session_storage,
+        dependencies=dependencies,
+        extra=extra,
+    )
+    return IoConfig(inputs, outputs, settings)
 
 
 def _socket_menu_label(option: Union[str, SocketOption]) -> str:

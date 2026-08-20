@@ -31,7 +31,7 @@ from haystack_enterprise_sdk._service.deployment_service import (
     DeployResult,
     ShareOptions,
 )
-from haystack_enterprise_sdk._service.pipeline_transform import IoResolver
+from haystack_enterprise_sdk._service.pipeline_transform import IoResolver, PipelineSettings
 
 logger = structlog.get_logger(__name__)
 
@@ -104,7 +104,7 @@ class AsyncDeploymentClient:
         entrypoint: Optional[str] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
-        pipeline_output_type: Optional[str] = None,
+        settings: Optional[PipelineSettings] = None,
         io_resolver: Optional[IoResolver] = None,
         python_executable: Optional[str] = None,
         validate: bool = True,
@@ -127,7 +127,7 @@ class AsyncDeploymentClient:
                 entrypoint=entrypoint,
                 inputs=inputs,
                 outputs=outputs,
-                pipeline_output_type=pipeline_output_type,
+                settings=settings,
                 io_resolver=io_resolver,
                 python_executable=python_executable,
                 validate=validate,
@@ -143,7 +143,7 @@ class AsyncDeploymentClient:
         entrypoint: Optional[str] = None,
         inputs: Optional[dict] = None,
         outputs: Optional[dict] = None,
-        pipeline_output_type: Optional[str] = None,
+        settings: Optional[PipelineSettings] = None,
         io_resolver: Optional[IoResolver] = None,
         python_executable: Optional[str] = None,
     ) -> PipelineValidationResult:
@@ -157,7 +157,7 @@ class AsyncDeploymentClient:
                 entrypoint=entrypoint,
                 inputs=inputs,
                 outputs=outputs,
-                pipeline_output_type=pipeline_output_type,
+                settings=settings,
                 io_resolver=io_resolver,
                 python_executable=python_executable,
             )
