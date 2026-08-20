@@ -19,6 +19,7 @@ from haystack_enterprise_sdk._api.deployments import (
     PipelineValidationIssue,
     PipelineValidationResult,
 )
+from haystack_enterprise_sdk._service import pipeline_transform
 from haystack_enterprise_sdk._service.deployment_service import (
     CreateOptions,
     DeploymentFailedError,
@@ -270,23 +271,30 @@ class TestRun:
         assert kwargs["json"]["pipeline_config"]["inputs"] == {"query": ["retriever.query"]}
         assert kwargs["json"]["inputs"] == {"retriever": {"query": "who?"}}
 
-    async def test_run_strips_dependencies_block_from_config(
+    async def test_run_strips_every_deploy_only_key_from_config(
         self, service: MockedDeploymentService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The sandbox run endpoint executes the config in place; a ``dependencies`` block is meaningless
-        # there and must be dropped so the pinned version can't interfere with sandbox execution.
+        """The sandbox run endpoint executes the config in place: it installs nothing, carries no search
+        session, and renders no Playground result. Every key describing a deployed revision has to be
+        dropped here, and by the shared list rather than one remembered key at a time -- the run path
+        does not choose which of them to send, so it cannot be the thing that keeps the list honest."""
+        # A stand-in value per deploy-only key; only their absence downstream is asserted.
+        rendered = (
+            "components: {}\ninputs:\n  query:\n  - retriever.query\n"
+            "dependencies:\n- haystack-ai==3.0.0\nsession_storage: true\npipeline_output_type: chat\n"
+        )
         monkeypatch.setattr(
-            "haystack_enterprise_sdk._service.pipeline_transform.build_config_yaml",
-            lambda *a, **k: (
-                "components: {}\ninputs:\n  query:\n  - retriever.query\ndependencies:\n  - haystack-ai==3.0.0\n"
-            ),
+            "haystack_enterprise_sdk._service.pipeline_transform.build_config_yaml", lambda *a, **k: rendered
         )
         post = self._mock_run_response(service, {})
 
         await service.run(FIXTURE, query="who?")
 
         _, kwargs = post.call_args
-        assert "dependencies" not in kwargs["json"]["pipeline_config"]
+        config = kwargs["json"]["pipeline_config"]
+        assert not pipeline_transform.DEPLOY_ONLY_KEYS & set(config)
+        # The mapping itself still has to survive the strip.
+        assert config["inputs"] == {"query": ["retriever.query"]}
 
     async def test_run_forwards_include_outputs_from(
         self, service: MockedDeploymentService, monkeypatch: pytest.MonkeyPatch
