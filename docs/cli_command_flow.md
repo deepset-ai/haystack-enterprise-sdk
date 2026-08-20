@@ -246,6 +246,7 @@ written straight through to the deployed config:
 | `outputs:` | Platform output key → a single `component.socket` path | Inferred from your socket names |
 | `pipeline_output_type:` | How the Playground renders results: `generative`, `chat`, `extractive`, `document` | Inferred from the pipeline shape |
 | `session_storage:` | `true` gives the pipeline a per-session workspace, so files a tool writes survive to the next run in the same search session | Off |
+| `async_enabled:` | `true` runs the graph with `Pipeline.run_async`, so independent branches overlap instead of running one at a time. **Only accepted alongside a `dependencies:` pin of `haystack-ai==3.0` or later** — below that the pipeline class says it (build an `AsyncPipeline`), so the key is rejected rather than competing with the class. Optional under such a pin: the pin unlocks the key, it does not require it | Off (the platform's own default), or inferred from the pipeline class below 3.0 |
 | `dependencies:` | pip pins the deployed revision installs. **Replaces** the automatic pin rather than adding to it, so include `haystack-ai` yourself if you still want it; `[]` ships no pins at all | The `haystack-ai` version of the interpreter that loaded your pipeline |
 
 ```yaml
@@ -257,20 +258,34 @@ outputs:
   answers: answer_builder.answers
 pipeline_output_type: chat
 session_storage: true
+async_enabled: true       # accepted because the pin below is 3.x
 dependencies:
-  - haystack-ai==2.30.2
+  - haystack-ai==3.0.0
   - my-private-lib==1.4
 ```
+
+`async_enabled` is the one setting whose acceptance depends on another key. Async execution is a
+property of the pipeline, and up to Haystack 2.x the pipeline *class* is where it lives — `deploy`
+reads it off an `AsyncPipeline` instance. Haystack 3.0 folded that class into `Pipeline`, leaving the
+inference nothing to read, which is the only reason the key exists. Gating it on the pin keeps one
+source of truth per version instead of two that can disagree. An io-config with no `haystack-ai` pin
+counts as 2.x: the automatic pin is read off whichever interpreter loaded your pipeline, which is not
+always the version the revision installs.
+
+Pinning 3.x does not oblige you to say anything about async. Leave `async_enabled` out and the key is
+left out of the deployed config too, where the platform applies its own default of off — which is what
+almost every pipeline wants. Writing `async_enabled: false` says exactly the same thing.
 
 Any other top-level key is **passed through to the pipeline config unchanged**, with a note telling you
 it was not recognised. That is deliberate: it means a platform config key newer than your installed SDK
 can still be set from here. The note is the only signal that the SDK did not validate it, so read it —
 a typo like `session_storge: true` passes through exactly the same way. Keys the transform derives
-itself (`components`, `connections`, `metadata`, `async_enabled`, and the two mapping sections) are
-rejected instead of passed through.
+itself (`components`, `connections`, `metadata`, and the two mapping sections) are rejected instead of
+passed through.
 
-`run` uses only the mapping. The settings all describe a *deployed revision* — the sandbox installs
-nothing, has no search session, and renders no Playground result — so `run` strips them.
+`run` uses only the mapping. The settings that describe a *deployed revision* — the sandbox installs
+nothing, has no search session, and renders no Playground result — are stripped by `run`.
+`async_enabled` is not one of them: it changes how the graph executes, which a sandbox run does too.
 
 ---
 

@@ -33,6 +33,7 @@ from haystack_enterprise_sdk._service.pipeline_transform import (
     extract_via_subprocess,
     haystack_pin,
     load_pipeline_from_file,
+    pins_haystack_3_or_later,
     render_config_yaml,
     resolve_io,
     unmapped_mandatory_inputs,
@@ -294,6 +295,81 @@ class TestAgentCompile:
         for absent in (None, False):
             settings = PipelineSettings(session_storage=absent)
             assert "session_storage" not in _load_yaml(render_config_yaml(bundle, settings=settings))
+
+    def test_async_enabled_is_requestable_only_on_a_haystack_3_pin(self, tmp_path: Path) -> None:
+        """Haystack 3.0 folded `AsyncPipeline` into `Pipeline`, so the extractor's `isinstance` check
+        can only ever infer `False` there while `Pipeline.run_async` still exists. The setting is the
+        way across that gap — but only on a revision that will actually run 3.x. Below that the class
+        is the single source for the same property, so a declared value loses to the inference rather
+        than overriding it. Being a truthy platform flag, `False` renders as an absent key."""
+        import dataclasses
+
+        path = _write_project(tmp_path, {"pipeline.py": "from haystack import Pipeline\npipeline = Pipeline()\n"})
+        pipeline = load_pipeline_from_file(path)
+        sync_bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, tmp_path))
+        # What haystack-ai<3.0 infers from an `AsyncPipeline` instance.
+        async_bundle = dataclasses.replace(sync_bundle, async_enabled=True)
+        pin_3x = ["haystack-ai==3.0.0"]
+        pin_2x = ["haystack-ai==2.30.2"]
+
+        def rendered(bundle: ExtractionBundle, declared: Optional[bool], pins: Optional[list]) -> dict:
+            settings = PipelineSettings(async_enabled=declared, dependencies=pins)
+            return _load_yaml(render_config_yaml(bundle, settings=settings))
+
+        # Asked for on a 3.x pin, from a class that cannot say so: the case this setting exists for.
+        assert rendered(sync_bundle, True, pin_3x)["async_enabled"] is True
+        # Not declared: defer to the class either way, whatever the pin.
+        assert "async_enabled" not in rendered(sync_bundle, None, pin_3x)
+        assert rendered(async_bundle, None, pin_2x)["async_enabled"] is True
+        # Declared off on a 3.x pin: overrides the inference, and is absent rather than `false`.
+        assert "async_enabled" not in rendered(async_bundle, False, pin_3x)
+        assert "async_enabled" not in rendered(sync_bundle, False, pin_3x)
+
+    def test_a_haystack_3_pin_does_not_require_the_async_setting(self, tmp_path: Path) -> None:
+        """The pin UNLOCKS the setting, it does not demand it. Leaving the key out on a 3.x revision
+        has to stay a valid config that renders no `async_enabled` at all, since the platform applies
+        its own default of off — so an omitted key must not become an explicit `false`, and must not
+        be treated as a config error either. Asserted on its own because it is the common case: most
+        3.x pipelines never want async and should never have to say so."""
+        path = _write_project(tmp_path, {"pipeline.py": "from haystack import Pipeline\npipeline = Pipeline()\n"})
+        pipeline = load_pipeline_from_file(path)
+        bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, tmp_path))
+
+        settings = PipelineSettings(async_enabled=None, dependencies=["haystack-ai==3.0.0"])
+        doc = _load_yaml(render_config_yaml(bundle, settings=settings))
+        assert "async_enabled" not in doc
+        # The pin itself still lands, so the absence above is the setting and not a dropped block.
+        assert doc["dependencies"] == ["haystack-ai==3.0.0"]
+
+    def test_async_enabled_loses_to_the_pipeline_class_without_a_haystack_3_pin(self, tmp_path: Path) -> None:
+        """Below 3.0 the class carries async execution, so the declared key is dropped rather than
+        honoured against the version that will run it — `_load_io_config` refuses the same
+        combination outright, and this is the rule for callers building settings directly.
+
+        An absent pin counts as 2.x: the auto-detected one is read off whichever interpreter loaded
+        the pipeline, so it is too weak a signal to unlock execution semantics on."""
+        import dataclasses
+
+        path = _write_project(tmp_path, {"pipeline.py": "from haystack import Pipeline\npipeline = Pipeline()\n"})
+        pipeline = load_pipeline_from_file(path)
+        sync_bundle = ExtractionBundle.from_dict(extract_from_pipeline(pipeline, tmp_path))
+        async_bundle = dataclasses.replace(sync_bundle, async_enabled=True)
+
+        for pins in (None, [], ["haystack-ai==2.30.2"], ["trafilatura==2.0.0"], ["haystack-ai>=3.0"]):
+            settings = PipelineSettings(async_enabled=True, dependencies=pins)
+            assert "async_enabled" not in _load_yaml(render_config_yaml(sync_bundle, settings=settings)), pins
+            # ...and the inference still wins on its own terms, rather than being suppressed too.
+            assert _load_yaml(render_config_yaml(async_bundle, settings=settings))["async_enabled"] is True, pins
+
+    def test_pins_haystack_3_or_later_reads_the_pin_the_renderer_writes(self) -> None:
+        """Shares `_HAYSTACK_PIN_PREFIX` with `haystack_pin`, so it recognises the exact `==` spelling
+        the renderer emits and nothing looser. A range is deliberately not enough — fail closed, and
+        consistent with `haystack_pin` returning None for one."""
+        assert pins_haystack_3_or_later(["haystack-ai==3.0.0"])
+        assert pins_haystack_3_or_later(["haystack-ai==10.2"])
+        assert pins_haystack_3_or_later(["trafilatura==1.0", "haystack-ai==3.1.0"])
+        for pins in (None, [], ["haystack-ai==2.30.2"], ["haystack-ai"], ["haystack-ai>=3.0"], ["haystack-ai=="]):
+            assert not pins_haystack_3_or_later(pins), pins
 
     def test_declared_dependencies_replace_the_inferred_pin(self, tmp_path: Path) -> None:
         """The auto-detected pin is read off whichever interpreter loaded the pipeline, so an author has

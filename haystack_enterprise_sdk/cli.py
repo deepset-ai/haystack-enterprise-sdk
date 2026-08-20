@@ -56,6 +56,7 @@ from haystack_enterprise_sdk._service.pipeline_transform import (
     PipelineTransformError,
     SocketOption,
     build_config_yaml,
+    pins_haystack_3_or_later,
     socket_options,
     unmapped_mandatory_inputs,
     unmapped_mandatory_warning,
@@ -497,7 +498,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         API credentials are needed.
     :param output: With --dry-run, write the transformed YAML to this file instead of stdout.
     :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections plus any
-        top-level setting (`pipeline_output_type`, `session_storage`, `dependencies`, or a platform
+        top-level setting (`pipeline_output_type`, `session_storage`, `async_enabled`, `dependencies`, or a platform
         config key this SDK does not know, passed through as-is). These replace inference and skip all
         mapping prompts. Defaults to `<target>.io.yaml` next to the pipeline file when that exists
         (the file the interactive review offers to save).
@@ -736,7 +737,7 @@ def validate(
     :param python: Path to the Python interpreter used to load your pipeline (defaults to an
         auto-detected virtualenv near the target file, else the current interpreter).
     :param io_config: Path to a YAML/JSON file with explicit `inputs:`/`outputs:` sections plus any
-        top-level setting (`pipeline_output_type`, `session_storage`, `dependencies`, or a platform
+        top-level setting (`pipeline_output_type`, `session_storage`, `async_enabled`, `dependencies`, or a platform
         config key this SDK does not know, passed through as-is), replacing inference. Defaults to
         `<target>.io.yaml` next to the pipeline file when that exists.
     :param skip_io_validation: Skip the warning about mandatory pipeline inputs that aren't mapped to a
@@ -1503,6 +1504,25 @@ def _load_io_config(path: Path) -> IoConfig:
         typer.echo("--io-config 'dependencies' must be a list of pip requirement strings.")
         raise typer.Exit(1)
 
+    # Read after `dependencies` on purpose: the key is only accepted on a revision pinned to
+    # haystack-ai 3.x. Below that the pipeline class is what carries async execution (`AsyncPipeline`
+    # vs `Pipeline`) and the extractor infers it from the instance, so a second source for the same
+    # property is refused rather than silently losing to the first. An unpinned file counts as 2.x —
+    # the auto-detected pin comes off whichever interpreter loaded the pipeline, not necessarily the
+    # one the revision installs.
+    async_enabled: Optional[bool] = data.get("async_enabled")
+    if async_enabled is not None:
+        if not isinstance(async_enabled, bool):
+            typer.echo("--io-config 'async_enabled' must be true or false.")
+            raise typer.Exit(1)
+        if not pins_haystack_3_or_later(dependencies):
+            typer.echo(
+                "--io-config 'async_enabled' needs a 'dependencies' pin of haystack-ai==3.0 or later. "
+                "On earlier versions, build the pipeline as an AsyncPipeline instead — the class "
+                "carries it and this key is not read."
+            )
+            raise typer.Exit(1)
+
     known = {"inputs", "outputs"} | KNOWN_SETTING_KEYS
     extra = {key: value for key, value in data.items() if key not in known}
     # Validated before the notes, so a rejected key is never also announced as passed through.
@@ -1517,6 +1537,7 @@ def _load_io_config(path: Path) -> IoConfig:
     settings = PipelineSettings(
         pipeline_output_type=output_type,
         session_storage=session_storage,
+        async_enabled=async_enabled,
         dependencies=dependencies,
         extra=extra,
     )

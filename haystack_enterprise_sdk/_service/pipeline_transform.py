@@ -42,6 +42,10 @@ logger = structlog.get_logger(__name__)
 # How the renderer spells the Haystack pin inside the ``dependencies`` block.
 _HAYSTACK_PIN_PREFIX = "haystack-ai=="
 
+#: First Haystack major whose pipeline class cannot express async execution: 3.0 folded
+#: ``AsyncPipeline`` into ``Pipeline``, so from here on ``async_enabled`` has to be declared.
+_ASYNC_SETTING_MIN_MAJOR = 3
+
 __all__ = [
     "CODE_COMPONENT_TYPE",
     "DEPLOY_ONLY_KEYS",
@@ -59,6 +63,7 @@ __all__ = [
     "extract_via_subprocess",
     "flatten_sockets",
     "haystack_pin",
+    "pins_haystack_3_or_later",
     "load_pipeline_from_file",
     "render_config_yaml",
     "SocketOption",
@@ -166,6 +171,11 @@ class PipelineSettings:
 
     pipeline_output_type: Optional[str] = None
     session_storage: Optional[bool] = None
+    #: Tri-state, and the third state is load-bearing: ``None`` is "not declared", which stays
+    #: undeclared all the way through — the key is left out of the config and the platform applies
+    #: its own default of off. So the setting is optional even on a haystack-3 pin, and declaring it
+    #: ``False`` says the same thing as omitting it rather than something stronger.
+    async_enabled: Optional[bool] = None
     dependencies: Optional[List[str]] = None
     extra: Mapping[str, Any] = field(default_factory=dict)
 
@@ -176,9 +186,14 @@ class PipelineSettings:
 KNOWN_SETTING_KEYS = frozenset(f.name for f in fields(PipelineSettings)) - {"extra"}
 
 #: Root keys the renderer derives rather than accepts, so nothing may pass them through: the first
-#: five come straight out of ``Pipeline.dumps()``, ``inputs``/``outputs`` are the socket mapping (with
-#: their own io-config sections and their own resolution path), and ``async_enabled`` follows the
-#: pipeline class.
+#: five come straight out of ``Pipeline.dumps()``, and ``inputs``/``outputs`` are the socket mapping
+#: (with their own io-config sections and their own resolution path).
+#:
+#: ``async_enabled`` used to be here, on the reasoning that it follows the pipeline class. Haystack
+#: 3.0 invalidated that: it folded ``AsyncPipeline`` into ``Pipeline``, so the class the inference
+#: keys off no longer exists and :func:`extract_pipeline_bundle` can only ever infer ``False`` — while
+#: ``Pipeline.run_async`` is right there. It is a :class:`PipelineSettings` field now, so 2.x keeps
+#: inferring it from the class and 3.x can ask for it by name.
 RESERVED_ROOT_KEYS = frozenset(
     {
         "components",
@@ -188,7 +203,6 @@ RESERVED_ROOT_KEYS = frozenset(
         "metadata",
         "inputs",
         "outputs",
-        "async_enabled",
     }
 )
 
@@ -336,16 +350,38 @@ def render_config_yaml(
     if settings.session_storage:
         pipeline_dict["session_storage"] = True
 
-    if bundle.async_enabled:
+    # Resolved here rather than at the write below, because the ``async_enabled`` gate turns on the
+    # DECLARED pins: a revision installs the declared list when there is one, and the auto-detected
+    # pin is too weak a signal to unlock execution semantics on (see ``pins_haystack_3_or_later``).
+    dependencies_declared = settings.dependencies
+    dependencies_effective = bundle.dependencies if dependencies_declared is None else dependencies_declared
+
+    # An explicit request wins, but ONLY on a revision pinned to haystack-ai 3.x, where the pipeline
+    # class can no longer express it and this setting is the only way to reach ``Pipeline.run_async``.
+    # Below that the class is authoritative and the inference takes precedence, so a declared value is
+    # dropped with a warning rather than honoured against the version that will actually run it.
+    # ``_load_io_config`` rejects that combination outright; this is the same rule for callers who
+    # build ``PipelineSettings`` directly.
+    #
+    # Emitted only when true, like ``session_storage``: the platform reads a plain truthy flag, so
+    # ``false`` and absent mean the same thing.
+    declared_async = settings.async_enabled
+    if declared_async is not None and not pins_haystack_3_or_later(dependencies_declared):
+        logger.warning(
+            "Ignoring 'async_enabled': it needs a 'dependencies' pin of haystack-ai==3.0 or later. "
+            "Below that, use an AsyncPipeline instance and the pipeline class carries it."
+        )
+        declared_async = None
+    async_enabled = bundle.async_enabled if declared_async is None else declared_async
+    if async_enabled:
         pipeline_dict["async_enabled"] = True
 
     # Written last so the pins keep their place at the bottom of the file. Declared pins replace the
     # extractor's auto-detected ``haystack-ai`` pin outright, which is what makes ``dependencies: []``
     # a way to ship no pin at all — worth having, since that pin is read off whichever interpreter
     # loaded the pipeline and is not always the one the deployed revision should install.
-    dependencies = bundle.dependencies if settings.dependencies is None else settings.dependencies
-    if dependencies:
-        pipeline_dict["dependencies"] = list(dependencies)
+    if dependencies_effective:
+        pipeline_dict["dependencies"] = list(dependencies_effective)
 
     yaml = YAML()
     yaml.indent(mapping=2, sequence=2)
@@ -485,6 +521,37 @@ def detect_project_python(target: Path) -> str:
                     logger.debug("Detected project virtualenv interpreter.", python=str(candidate))
                     return str(candidate)
     return sys.executable
+
+
+def pins_haystack_3_or_later(dependencies: Optional[List[str]]) -> bool:
+    """True when ``dependencies`` pins ``haystack-ai`` at major 3 or later.
+
+    Gates the ``async_enabled`` setting. Below 3.0 the pipeline CLASS carries that fact --
+    ``AsyncPipeline`` versus ``Pipeline`` -- and :func:`extract_pipeline_bundle` reads it off the
+    instance, so accepting the key there would be a second, silently disagreeing source for one
+    property. 3.0 folded the two classes together, which is what leaves the setting as the only way
+    to say it.
+
+    Absent, empty, or pinning something else all mean "no ``haystack-ai`` pin", which is treated as
+    2.x rather than as the auto-detected pin: that one is read off whichever interpreter loaded the
+    pipeline and is not always the version the revision installs (which is the whole reason
+    ``dependencies`` can override it), so it is too weak a signal to unlock execution semantics on.
+
+    NOTE: recognises only the exact ``haystack-ai==`` spelling, the one :func:`render_config_yaml`
+    writes and :func:`haystack_pin` reads back. A range such as ``haystack-ai>=3.0`` therefore does
+    NOT qualify -- fail-closed, and consistent with ``haystack_pin`` already ignoring it. Upgrade
+    path: parse the specifier properly (``packaging``) in both places at once, never one.
+
+    :param dependencies: The declared pip pins, as written in the io-config.
+    :return: Whether the pin allows ``async_enabled`` to be declared.
+    """
+    for requirement in dependencies or []:
+        if not isinstance(requirement, str) or not requirement.startswith(_HAYSTACK_PIN_PREFIX):
+            continue
+        version = requirement[len(_HAYSTACK_PIN_PREFIX) :].strip()
+        major, _, _ = version.partition(".")
+        return major.isdigit() and int(major) >= _ASYNC_SETTING_MIN_MAJOR
+    return False
 
 
 def haystack_pin(config_yaml: str) -> Optional[str]:

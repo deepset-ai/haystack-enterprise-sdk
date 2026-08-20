@@ -1248,6 +1248,54 @@ class TestLoadIoConfig:
         with pytest.raises(typer.Exit):
             _load_io_config(cfg)
 
+    def test_async_enabled_validated(self, tmp_path: Path) -> None:
+        import typer
+
+        from haystack_enterprise_sdk.cli import _load_io_config
+
+        cfg = tmp_path / "io.yaml"
+        pinned = "outputs:\n  answers: r.answers\ndependencies: [haystack-ai==3.0.0]\n"
+        cfg.write_text(pinned + "async_enabled: true\n", encoding="utf-8")
+        assert _load_io_config(cfg).settings.async_enabled is True
+
+        # Optional even under a 3.x pin: the pin unlocks the key, it does not demand it. Absent stays
+        # `None` rather than becoming `False`, so nothing is written and the platform's own default
+        # applies. An empty or explicitly null value is the same "not declared".
+        for absent in (pinned, pinned + "async_enabled:\n", pinned + "async_enabled: null\n"):
+            cfg.write_text(absent, encoding="utf-8")
+            assert _load_io_config(cfg).settings.async_enabled is None
+
+        # Rejected rather than coerced: a non-bool here is a typo, not an intent.
+        cfg.write_text(pinned + "async_enabled: sure\n", encoding="utf-8")
+        with pytest.raises(typer.Exit):
+            _load_io_config(cfg)
+
+    def test_async_enabled_needs_a_haystack_3_pin(self, tmp_path: Path) -> None:
+        """Below 3.0 the pipeline class says it (`AsyncPipeline` vs `Pipeline`) and the extractor reads
+        it off the instance, so the key would be a second source for one property. Refused rather than
+        ignored, so a file asking for something that cannot take effect says so."""
+        import typer
+
+        from haystack_enterprise_sdk.cli import _load_io_config
+
+        cfg = tmp_path / "io.yaml"
+        base = "outputs:\n  answers: r.answers\n"
+        # An absent pin counts as 2.x; so does a 2.x pin, an unrelated pin, and a mere range.
+        for pin in (
+            "",
+            "dependencies: [haystack-ai==2.30.2]\n",
+            "dependencies: [trafilatura==2.0.0]\n",
+            "dependencies: [haystack-ai>=3.0]\n",
+        ):
+            cfg.write_text(f"{base}{pin}async_enabled: true\n", encoding="utf-8")
+            with pytest.raises(typer.Exit):
+                _load_io_config(cfg)
+
+        # Declaring it off is the same claim about the same property, so it is refused too.
+        cfg.write_text(f"{base}async_enabled: false\n", encoding="utf-8")
+        with pytest.raises(typer.Exit):
+            _load_io_config(cfg)
+
     def test_dependencies_validated(self, tmp_path: Path) -> None:
         import typer
 
@@ -1284,7 +1332,7 @@ class TestLoadIoConfig:
         from haystack_enterprise_sdk.cli import _load_io_config
 
         cfg = tmp_path / "io.yaml"
-        for key in ("components", "async_enabled"):
+        for key in ("components", "connections"):
             cfg.write_text(f"outputs:\n  answers: r.answers\n{key}: something\n", encoding="utf-8")
             with pytest.raises(typer.Exit):
                 _load_io_config(cfg)
@@ -1356,6 +1404,23 @@ class TestLoadIoConfig:
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run", "--io-config", str(cfg)])
         assert result.exit_code == 0
         assert "session_storage: true" in result.stdout
+
+    @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
+    def test_dry_run_renders_async_enabled_from_io_config(self, extract_mock: Mock, tmp_path: Path) -> None:
+        """On haystack-ai>=3.0 the io-config is the only place that can ask for `run_async`, so the key
+        has to survive into the deployed YAML — the one place the platform looks for it."""
+        extract_mock.return_value = _bundle(
+            inferred_inputs={"query": ["retriever.query"]},
+            inferred_outputs={"answers": "reader.answers"},
+        )
+        cfg = tmp_path / "io.yaml"
+        cfg.write_text(
+            "outputs:\n  answers: reader.answers\ndependencies: [haystack-ai==3.0.0]\nasync_enabled: true\n",
+            encoding="utf-8",
+        )
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run", "--io-config", str(cfg)])
+        assert result.exit_code == 0
+        assert "async_enabled: true" in result.stdout
 
 
 class TestSpinnerPausedResolver:

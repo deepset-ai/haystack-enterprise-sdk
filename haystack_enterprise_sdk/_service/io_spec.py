@@ -50,6 +50,10 @@ class PipelineSetting:
     name: str  # e.g. "session_storage"
     description: str  # one-liner written above the stub as a comment
     example: str  # the value shown in the commented-out stub, valid YAML on its own
+    #: A YAML line this setting is only accepted alongside, for the settings the loader gates on
+    #: another key. Present so a stub that cannot stand alone is still known to be loadable, and so
+    #: the round-trip test can uncomment it the way an author would.
+    prerequisite: Optional[str] = None
 
 
 PIPELINE_SETTINGS = (
@@ -62,6 +66,15 @@ PIPELINE_SETTINGS = (
         name="session_storage",
         description="give the pipeline a per-session workspace that keeps files between runs",
         example="true",
+    ),
+    PipelineSetting(
+        name="async_enabled",
+        description=(
+            "run the graph with Pipeline.run_async, so independent branches overlap; "
+            "needs a haystack-ai==3.0+ pin below, since earlier versions say it with AsyncPipeline"
+        ),
+        example="true",
+        prerequisite="dependencies: [haystack-ai==3.0.0]",
     ),
     PipelineSetting(
         name="dependencies",
