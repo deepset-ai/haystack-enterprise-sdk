@@ -37,7 +37,10 @@ class TestSpecSync:
 
         for setting in PIPELINE_SETTINGS:
             path = tmp_path / f"{setting.name}.io.yaml"
-            path.write_text(f"{setting.name}: {setting.example}\n", encoding="utf-8")
+            # A gated setting is only accepted alongside its prerequisite, so uncomment that too --
+            # exactly what an author following the stub's own comment would do.
+            lines = [line for line in (setting.prerequisite, f"{setting.name}: {setting.example}") if line]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             declared = getattr(_load_io_config(path).settings, setting.name)
             assert declared is not None, setting.name
 
