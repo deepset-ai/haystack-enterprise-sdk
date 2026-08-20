@@ -5,7 +5,7 @@ from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
-from httpx import Request, Response, codes
+from httpx import ReadTimeout, Request, Response, codes
 
 from haystack_enterprise_sdk._api.deployments import (
     Deployment,
@@ -214,6 +214,12 @@ class TestRevisions:
             await deployments_api.activate_revision("ws", uuid4(), uuid4())
 
 
+@pytest.fixture
+def no_retry_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Collapse the cold-start backoff so the retry tests don't actually wait."""
+    monkeypatch.setattr("haystack_enterprise_sdk._api.deployments._PINNED_RETRY_DELAY_S", 0.0)
+
+
 @pytest.mark.asyncio
 class TestValidatePipeline:
     async def test_valid_204(self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock) -> None:
@@ -296,6 +302,139 @@ class TestValidatePipeline:
         mocked_haystack_enterprise_api.post.return_value = _resp(codes.INTERNAL_SERVER_ERROR, text="boom")
         with pytest.raises(FailedToValidatePipelineError):
             await deployments_api.validate_pipeline("ws", query_yaml="y")
+
+    async def test_haystack_version_is_sent_as_env_switch_header(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        """A pinned version selects the platform's worker environment, and buys a longer timeout."""
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.NO_CONTENT)
+        await deployments_api.validate_pipeline("ws", query_yaml="y", haystack_version="2.30.2")
+        _, kwargs = mocked_haystack_enterprise_api.post.call_args
+        assert kwargs["headers"] == {"x-haystack-version": "2.30.2"}
+        assert kwargs["timeout_s"] > 20
+
+    async def test_no_pin_sends_no_header(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        """Without a pin the request is byte-for-byte the unpinned one (host validation, default timeout)."""
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.NO_CONTENT)
+        await deployments_api.validate_pipeline("ws", query_yaml="y")
+        _, kwargs = mocked_haystack_enterprise_api.post.call_args
+        assert "headers" not in kwargs
+        assert "timeout_s" not in kwargs
+
+    async def test_unsupported_pin_falls_back_to_unpinned_with_a_warning(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        """The platform serves any pin but validates only its targets, so a rejected pin must not fail
+        a pipeline that would deploy -- it re-asks unpinned and says the pin went unhonored."""
+        rejection = _resp(
+            codes.BAD_REQUEST,
+            json={"detail": "Unsupported haystack version '2.20.0'. Supported versions: 2.30.2"},
+        )
+        mocked_haystack_enterprise_api.post.side_effect = [rejection, _resp(codes.NO_CONTENT)]
+
+        result = await deployments_api.validate_pipeline("ws", query_yaml="y", haystack_version="2.20.0")
+
+        assert result.is_valid is True, "a pin the platform won't validate is not an invalid pipeline"
+        assert len(result.warnings) == 1
+        assert "2.20.0" in (result.warnings[0].message or "")
+        # Second attempt dropped the pin.
+        assert mocked_haystack_enterprise_api.post.call_count == 2
+        assert "headers" not in mocked_haystack_enterprise_api.post.call_args_list[1].kwargs
+
+    async def test_unsupported_pin_keeps_real_errors_from_the_fallback(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        """Falling back must not swallow the config errors the unpinned check does find."""
+        mocked_haystack_enterprise_api.post.side_effect = [
+            _resp(codes.BAD_REQUEST, json={"detail": "Unsupported haystack version '2.20.0'."}),
+            _resp(codes.BAD_REQUEST, json={"error_details": [{"category": "ERROR", "message": "bad component"}]}),
+        ]
+
+        result = await deployments_api.validate_pipeline("ws", query_yaml="y", haystack_version="2.20.0")
+
+        assert result.has_errors is True
+        assert result.errors[0].message == "bad component"
+        assert len(result.warnings) == 1
+
+    async def test_cold_start_retries_the_pin_and_succeeds(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock, no_retry_delay: None
+    ) -> None:
+        """A cold environment build outlasts the platform's validation timeout, so the first pinned
+        attempt comes back transient -- the retry finds the build's downloads cached and lands."""
+        mocked_haystack_enterprise_api.post.side_effect = [
+            _resp(codes.GATEWAY_TIMEOUT, text="upstream timed out"),
+            _resp(codes.NO_CONTENT),
+        ]
+
+        result = await deployments_api.validate_pipeline("ws", query_yaml="y", haystack_version="2.30.2")
+
+        assert result.is_valid is True
+        assert not result.warnings, "a retry that landed pinned needs no caveat"
+        # Both attempts kept the pin -- the retry is not a silent downgrade.
+        assert mocked_haystack_enterprise_api.post.call_count == 2
+        for call in mocked_haystack_enterprise_api.post.call_args_list:
+            assert call.kwargs["headers"] == {"x-haystack-version": "2.30.2"}
+
+    async def test_client_timeout_on_the_pin_is_retried(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock, no_retry_delay: None
+    ) -> None:
+        """Our own read timeout is the same cold-start signal as a transient status."""
+        mocked_haystack_enterprise_api.post.side_effect = [ReadTimeout("too slow"), _resp(codes.NO_CONTENT)]
+
+        result = await deployments_api.validate_pipeline("ws", query_yaml="y", haystack_version="2.30.2")
+
+        assert result.is_valid is True
+        assert mocked_haystack_enterprise_api.post.call_count == 2
+
+    async def test_exhausted_retries_fall_back_to_unpinned_with_a_warning(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock, no_retry_delay: None
+    ) -> None:
+        """If the build never finishes in time, say so and validate unpinned rather than hard-fail."""
+        mocked_haystack_enterprise_api.post.side_effect = [
+            _resp(codes.GATEWAY_TIMEOUT),
+            _resp(codes.GATEWAY_TIMEOUT),
+            _resp(codes.NO_CONTENT),
+        ]
+
+        result = await deployments_api.validate_pipeline("ws", query_yaml="y", haystack_version="2.30.2")
+
+        assert result.is_valid is True
+        assert len(result.warnings) == 1
+        assert "did not return a verdict" in (result.warnings[0].message or "")
+        # Two pinned attempts, then one unpinned.
+        assert mocked_haystack_enterprise_api.post.call_count == 3
+        assert "headers" not in mocked_haystack_enterprise_api.post.call_args_list[2].kwargs
+
+    async def test_non_transient_failure_still_raises(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock, no_retry_delay: None
+    ) -> None:
+        """A permanent failure (e.g. auth) must not be retried or hidden behind an unpinned fallback."""
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.FORBIDDEN, text="nope")
+
+        with pytest.raises(FailedToValidatePipelineError):
+            await deployments_api.validate_pipeline("ws", query_yaml="y", haystack_version="2.30.2")
+
+        assert mocked_haystack_enterprise_api.post.call_count == 1
+
+    async def test_request_rejection_without_a_pin_is_blocking(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        """With no pin to blame there is nothing to retry, so the rejection must surface as blocking."""
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.BAD_REQUEST, json={"detail": "nope"})
+        result = await deployments_api.validate_pipeline("ws", query_yaml="y")
+        assert result.has_errors is True
+        assert result.errors[0].message == "nope"
+        assert mocked_haystack_enterprise_api.post.call_count == 1
+
+    async def test_unparseable_400_is_blocking_not_valid(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        """A 400 whose body yields no issues still means refused -- never ``is_valid``."""
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.BAD_REQUEST, json={"unexpected": "shape"})
+        result = await deployments_api.validate_pipeline("ws", query_yaml="y")
+        assert result.is_valid is False
 
 
 @pytest.mark.asyncio

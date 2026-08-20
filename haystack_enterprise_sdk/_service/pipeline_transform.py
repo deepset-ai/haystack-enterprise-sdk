@@ -39,6 +39,9 @@ from haystack_enterprise_sdk._service.pipeline_extract import (
 
 logger = structlog.get_logger(__name__)
 
+# How the renderer spells the Haystack pin inside the ``dependencies`` block.
+_HAYSTACK_PIN_PREFIX = "haystack-ai=="
+
 __all__ = [
     "CODE_COMPONENT_TYPE",
     "DEPLOY_ONLY_KEYS",
@@ -55,6 +58,7 @@ __all__ = [
     "extract_from_pipeline",
     "extract_via_subprocess",
     "flatten_sockets",
+    "haystack_pin",
     "load_pipeline_from_file",
     "render_config_yaml",
     "SocketOption",
@@ -481,3 +485,24 @@ def detect_project_python(target: Path) -> str:
                     logger.debug("Detected project virtualenv interpreter.", python=str(candidate))
                     return str(candidate)
     return sys.executable
+
+
+def haystack_pin(config_yaml: str) -> Optional[str]:
+    """Return the ``haystack-ai`` version pinned in ``config_yaml``'s ``dependencies`` block.
+
+    The inverse of the ``dependencies`` key :func:`render_config_yaml` writes. The platform picks the
+    validation worker's environment from a request header, but rejects a header that disagrees with
+    the YAML's own pin, so the header has to be read back off the block rather than sniffed
+    separately -- and a declared ``dependencies`` list overrides the auto-detected pin, so the block
+    is the only place the shipped version is known.
+
+    :param config_yaml: Rendered platform YAML, with or without a ``dependencies`` block.
+    :return: The pinned version, or ``None`` when the block is absent or pins no ``haystack-ai``.
+    """
+    parsed = YAML(typ="safe").load(config_yaml)
+    if not isinstance(parsed, dict):
+        return None
+    for requirement in parsed.get("dependencies") or []:
+        if isinstance(requirement, str) and requirement.startswith(_HAYSTACK_PIN_PREFIX):
+            return requirement[len(_HAYSTACK_PIN_PREFIX) :].strip() or None
+    return None

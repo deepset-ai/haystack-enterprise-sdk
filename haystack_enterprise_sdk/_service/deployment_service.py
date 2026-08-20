@@ -303,8 +303,14 @@ class DeploymentService:
         )
 
         if validate:
-            # Validate before resolving/creating the service so an invalid config never provisions one.
-            result = await self._deployments.validate_pipeline(self._workspace_name, query_yaml=config_yaml)
+            # Validate before resolving/creating the service so an invalid config never provisions one,
+            # against the Haystack this pipeline pins -- the same version it will be served under, and
+            # the same check `validate` runs, so the two commands cannot disagree.
+            result = await self._deployments.validate_pipeline(
+                self._workspace_name,
+                query_yaml=config_yaml,
+                haystack_version=pipeline_transform.haystack_pin(config_yaml),
+            )
             for issue in result.warnings:
                 logger.warning("Pipeline validation warning.", message=issue.message, pointer=issue.json_pointer)
             if result.has_errors:
@@ -359,6 +365,9 @@ class DeploymentService:
         Runs the exact same transform path as :meth:`deploy`, so the validated YAML matches what a
         deploy would push. The result is returned as-is (no gating); the caller decides how to react.
 
+        The ``haystack-ai`` version the transform pinned into the YAML is forwarded to the platform, so
+        the check runs in a worker built for that version rather than against the platform host's own.
+
         :param target: Path to the pipeline ``.py`` file.
         :param entrypoint: Name of the pipeline instance/factory when the file is ambiguous.
         :param inputs: Optional explicit pipeline inputs (overrides inference).
@@ -379,7 +388,13 @@ class DeploymentService:
             io_resolver=io_resolver,
             python_executable=python_executable,
         )
-        return await self._deployments.validate_pipeline(self._workspace_name, query_yaml=config_yaml)
+        # Validate against the Haystack the pipeline pins, not whatever the platform host happens to
+        # run -- otherwise a component that only exists in one of the two is judged by the wrong one.
+        return await self._deployments.validate_pipeline(
+            self._workspace_name,
+            query_yaml=config_yaml,
+            haystack_version=pipeline_transform.haystack_pin(config_yaml),
+        )
 
     async def run(  # pylint: disable=too-many-arguments
         self,
@@ -403,6 +418,12 @@ class DeploymentService:
         Runs the exact same transform path as :meth:`deploy`, so the YAML executed matches what a
         deploy would push. The generated ``config_yaml`` is parsed back into a dict and sent, together
         with the run inputs, to the sandbox run endpoint (the same call the builder/playground makes).
+
+        Unlike :meth:`validate` and :meth:`deploy`, the run is NOT pinned to the ``haystack-ai`` version
+        the YAML declares: the sandbox endpoint takes no version and never resolves the YAML's
+        ``dependencies`` block, so it executes against the platform's own Haystack. The YAML matches a
+        deploy, the environment running it may not -- so a version-specific failure can show up here and
+        not in a deployed service, or the reverse. Pinning it needs a platform-side change.
 
         :param target: Path to the pipeline ``.py`` file.
         :param entrypoint: Name of the pipeline instance/factory when the file is ambiguous.

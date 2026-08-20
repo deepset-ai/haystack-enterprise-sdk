@@ -123,6 +123,12 @@ def _raise_for_proxy_error(response: Response, api_key: str) -> None:
     raise HaystackEnterpriseAPIError(response.status_code, message)
 
 
+# Statuses worth another attempt: the request never really landed (or the platform asked us to back
+# off), so repeating it can still succeed. Everything else -- bad config, bad inputs, auth -- is
+# permanent, and retrying would only burn time.
+TRANSIENT_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
 def raise_for_unexpected_status(
     response: Response,
     accepted: tuple,

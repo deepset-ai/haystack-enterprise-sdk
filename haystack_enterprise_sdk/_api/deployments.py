@@ -8,15 +8,18 @@ Note: these endpoints are internal (not in the public OpenAPI schema) and there 
 list endpoint and matching client-side.
 """
 
+import asyncio
 import enum
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Type, TypeVar
 from uuid import UUID
 
+import httpx
 import structlog
-from httpx import codes
+from httpx import Response, codes
 
 from haystack_enterprise_sdk._api.haystack_enterprise_api import (
+    TRANSIENT_STATUS_CODES,
     HaystackEnterpriseAPI,
     raise_for_unexpected_status,
 )
@@ -147,6 +150,18 @@ class DeploymentRevision:
 _ERROR_CATEGORY = "ERROR"
 _WARNING_CATEGORY = "WARNING"
 
+# Selects the Haystack version the platform validates against (see DeploymentsAPI.validate_pipeline).
+_HAYSTACK_VERSION_HEADER = "x-haystack-version"
+_PINNED_VALIDATION_TIMEOUT_S = 60
+# One retry: a cold environment build is ~20-30s against the platform's 20s validation timeout, so the
+# first pinned attempt pays for the build and the second finds its downloads cached.
+_PINNED_VALIDATION_ATTEMPTS = 2
+_PINNED_RETRY_DELAY_S = 2.0
+_NO_VERDICT_REASON = (
+    "the platform did not return a verdict in time, even after a retry "
+    "(building the environment for a new Haystack version can outlast its validation timeout)."
+)
+
 
 @dataclass
 class PipelineValidationIssue:
@@ -183,6 +198,14 @@ class PipelineValidationResult:
     """The outcome of validating a pipeline YAML against the platform."""
 
     issues: List[PipelineValidationIssue]
+    # Set when the platform refused the *request* rather than judging the config -- e.g. it will not
+    # validate against the requested Haystack version. Distinct from an invalid pipeline.
+    rejection_message: Optional[str] = None
+
+    @property
+    def rejected_environment(self) -> bool:
+        """Whether the platform refused the request itself instead of judging the pipeline."""
+        return self.rejection_message is not None
 
     @property
     def errors(self) -> List[PipelineValidationIssue]:
@@ -438,6 +461,7 @@ class DeploymentsAPI:
         indexing_yaml: Optional[str] = None,
         pipeline_id: Optional[str] = None,
         deepset_cloud_version: str = "v2",
+        haystack_version: Optional[str] = None,
     ) -> PipelineValidationResult:
         """Validate a pipeline YAML against the platform without deploying it.
 
@@ -451,6 +475,12 @@ class DeploymentsAPI:
         :param indexing_yaml: Indexing-pipeline YAML to validate, if any.
         :param pipeline_id: Optional pipeline id (used server-side for event tracking).
         :param deepset_cloud_version: Platform config version (defaults to ``v2``).
+        :param haystack_version: ``haystack-ai`` version to validate against. When given, the platform
+            runs the validation in a worker pinned to it instead of against its own Haystack. A cold
+            environment build can outlast the platform's validation timeout, so a transient failure is
+            retried once. If the pin still does not hold -- no verdict, or the platform declines the
+            version (it only validates against its compatibility targets, even though it serves any
+            pin) -- the check falls back to unpinned and the result carries a warning saying so.
         :raises FailedToValidatePipelineError: If the validation request could not be completed.
         :return: The validation result (issues split into errors/warnings).
         """
@@ -463,11 +493,117 @@ class DeploymentsAPI:
             if value is not None:
                 payload[key] = value
 
-        response = await self._haystack_enterprise_api.post(
+        if not haystack_version:
+            return self._validation_result(await self._request_validation(workspace_name, payload, None))
+
+        result = await self._pinned_validation(workspace_name, payload, haystack_version)
+        if result is not None and not result.rejected_environment:
+            return result
+
+        # Two different ways the pin can fail to hold, same conclusion. The platform only validates
+        # against a Haystack it lists as a compatibility target, but it *serves* any pinned version
+        # (the fleet route trusts the pin outright); and a cold environment build can outlast its
+        # validation timeout even with the retry. Neither means a broken pipeline, so re-ask unpinned
+        # rather than fail something that would deploy -- and say the pin went unused.
+        reason = _NO_VERDICT_REASON if result is None else str(result.rejection_message)
+        logger.warning(
+            "Could not validate against the pinned Haystack version; falling back to the platform's own.",
+            haystack_version=haystack_version,
+            reason=reason,
+        )
+        fallback = self._validation_result(await self._request_validation(workspace_name, payload, None))
+        return PipelineValidationResult(
+            issues=[
+                PipelineValidationIssue(
+                    category=_WARNING_CATEGORY,
+                    code=None,
+                    json_pointer=None,
+                    message=(
+                        f"Could not validate against haystack-ai=={haystack_version}, the version your "
+                        f"pipeline pins: {reason} Validated against the platform's own Haystack instead, "
+                        f"so version-specific problems may be missed."
+                    ),
+                ),
+                *fallback.issues,
+            ]
+        )
+
+    async def _pinned_validation(
+        self, workspace_name: str, payload: Dict[str, Any], haystack_version: str
+    ) -> Optional[PipelineValidationResult]:
+        """Validate pinned to ``haystack_version``, retrying while the platform builds the environment.
+
+        The first pinned request for a version pays for building that environment (~20-30s), which
+        outlasts the platform's own validation timeout and so comes back as a transient error rather
+        than a verdict. Retrying is worth it because that build leaves the package downloads cached
+        platform-side, so the next attempt starts warm and usually lands.
+
+        :param workspace_name: Name of the workspace.
+        :param payload: The prepared request body.
+        :param haystack_version: Version to pin the platform's validation worker to.
+        :raises FailedToValidatePipelineError: If the request failed for a non-transient reason.
+        :return: The validation result, or ``None`` when no attempt produced a verdict.
+        """
+        reason = ""
+        for attempt in range(1, _PINNED_VALIDATION_ATTEMPTS + 1):
+            try:
+                response = await self._request_validation(workspace_name, payload, haystack_version)
+            except httpx.RequestError as err:  # our own read timeout, connection resets
+                reason = f"{type(err).__name__}: {err}"
+            else:
+                if response.status_code not in TRANSIENT_STATUS_CODES:
+                    return self._validation_result(response)
+                reason = f"status {response.status_code}"
+
+            if attempt < _PINNED_VALIDATION_ATTEMPTS:
+                logger.warning(
+                    "Pinned validation did not return a verdict; the platform is likely still building "
+                    "the environment for this Haystack version. Retrying.",
+                    haystack_version=haystack_version,
+                    attempt=attempt,
+                    attempts=_PINNED_VALIDATION_ATTEMPTS,
+                    reason=reason,
+                )
+                await asyncio.sleep(_PINNED_RETRY_DELAY_S * 2 ** (attempt - 1))
+        return None
+
+    async def _request_validation(
+        self, workspace_name: str, payload: Dict[str, Any], haystack_version: Optional[str]
+    ) -> Response:
+        """POST one validation request, optionally pinned to ``haystack_version``.
+
+        :param workspace_name: Name of the workspace.
+        :param payload: The prepared request body.
+        :param haystack_version: Version to pin the platform's validation worker to, or ``None`` to
+            let it validate against its own Haystack.
+        :return: The raw response, for the caller to interpret.
+        """
+        # Pinned validation builds (or claims) a worker for that Haystack version, so it cannot answer
+        # within the unpinned default. NOTE(marc-mrt): the real ceiling is the platform's own
+        # PIPELINE_VALIDATION_TIMEOUT_SECONDS (20s by default), which a ~20-30s cold build exceeds --
+        # hence the retry above rather than a longer client timeout, which cannot help. Removing the
+        # retry needs a platform-side change, or a warm worker (`x-worker-mode: persistent`).
+        extra: Dict[str, Any] = {}
+        if haystack_version:
+            extra = {
+                "headers": {_HAYSTACK_VERSION_HEADER: haystack_version},
+                "timeout_s": _PINNED_VALIDATION_TIMEOUT_S,
+            }
+
+        return await self._haystack_enterprise_api.post(
             workspace_name=workspace_name,
             endpoint=self._VALIDATION_ENDPOINT,
             json=payload,
+            **extra,
         )
+
+    def _validation_result(self, response: Response) -> PipelineValidationResult:
+        """Interpret a validation response: ``204`` is valid, ``400`` carries the verdict.
+
+        :param response: The response to interpret.
+        :raises FailedToValidatePipelineError: If the status is neither ``204`` nor ``400``.
+        :return: The validation result.
+        """
         if response.status_code == codes.NO_CONTENT:
             return PipelineValidationResult(issues=[])
         raise_for_unexpected_status(
@@ -476,7 +612,18 @@ class DeploymentsAPI:
             FailedToValidatePipelineError,
             "Failed to validate the pipeline.",
         )
-        return PipelineValidationResult(issues=_parse_validation_issues(response.json()))
+        try:
+            body = response.json()
+        except ValueError:  # non-JSON body
+            body = None
+        issues = _parse_validation_issues(body) if body is not None else []
+        # A 400 means the platform refused this config, so an empty issue list must not read as
+        # valid -- surface the raw body instead of silently reporting a clean bill of health.
+        return PipelineValidationResult(
+            issues=issues
+            or [_blocking_issue(f"The platform rejected the pipeline: {response.text.strip() or 'no details given'}")],
+            rejection_message=_request_level_rejection(body),
+        )
 
     async def list_activity(self, workspace_name: str, deployment_id: UUID) -> List[Dict[str, Any]]:
         """Return the deployment's lifecycle activity events (creation/activation/deactivation).
@@ -517,10 +664,40 @@ def _parse_validation_issues(body: Any) -> List[PipelineValidationIssue]:
         items = body.get(key)
         if isinstance(items, list):
             return [PipelineValidationIssue.from_response(item) for item in items if isinstance(item, dict)]
+        # A rejected *request* (rather than a rejected config) carries a bare string here -- that is
+        # how an unsupported ``x-haystack-version`` comes back. It is still blocking.
+        if isinstance(items, str) and items.strip():
+            return [_blocking_issue(items)]
     message = body.get("message")
     if message:
-        return [PipelineValidationIssue(category=_ERROR_CATEGORY, code=None, json_pointer=None, message=str(message))]
+        return [_blocking_issue(str(message))]
     return []
+
+
+def _request_level_rejection(body: Any) -> Optional[str]:
+    """Return the platform's message when it refused the *request*, else ``None``.
+
+    Config issues arrive as a *list* under a detail key; a refused request carries a bare *string*
+    there instead (FastAPI's ``HTTPException`` shape). That shape difference is the signal -- no
+    message matching, so it keeps working as the platform's wording changes.
+
+    :param body: The parsed 400 body, or ``None`` when it was not JSON.
+    :return: The rejection message, or ``None`` when the body judged the config.
+    """
+    if not isinstance(body, dict):
+        return None
+    for key in ("error_details", "details", "detail", "errors"):
+        value = body.get(key)
+        if isinstance(value, list):
+            return None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _blocking_issue(message: str) -> PipelineValidationIssue:
+    """Build a categoryless platform message as a blocking (ERROR) issue."""
+    return PipelineValidationIssue(category=_ERROR_CATEGORY, code=None, json_pointer=None, message=message)
 
 
 def _optional_uuid(value: Optional[str]) -> Optional[UUID]:

@@ -64,6 +64,22 @@ haystack-enterprise validate pipeline.py
 - Exits **non-zero** if there are blocking (ERROR) issues.
 - If it reports `Pipeline is valid.`, the pipeline is deployable.
 
+The check runs against the **`haystack-ai` version your pipeline pins**, not the platform host's own
+Haystack: the transform records the version it loaded your pipeline under, and `validate` asks the
+platform to run the check in a worker built for exactly that version. So a component that exists in
+one version but not the other is judged by the version that will actually run your pipeline.
+
+The first check against a given version is slow: the platform builds an environment for it (roughly
+20-30s), which can outlast its own validation timeout. `validate` retries once when that happens — the
+build leaves its downloads cached, so the second attempt usually lands. Later checks against the same
+version are fast.
+
+The platform only validates against a Haystack version it lists as a compatibility target, though it
+will *serve* any version you pin. So if it declines your version — or the build still does not finish
+in time — `validate` does not fail the pipeline: it re-runs the check against the platform's own
+Haystack and prints a **warning** that the pin went unhonored, so you know version-specific problems
+may have been missed.
+
 `validate` never prompts — reporting problems is the point. It uses the input/output mapping inferred
 from your socket names, so it also tells you when that mapping is not servable ("You need to connect at
 least one of the inputs (`query` or `messages`)…"); `deploy` asks you to fix that interactively. You can
@@ -97,6 +113,11 @@ haystack-enterprise run pipeline.py --query "What is deepset?"
 - `--include-outputs-from` limits the result to specific components (repeat the option for several);
   defaults to all components.
 - `--output` writes the result JSON to a file instead of printing it.
+
+Unlike `validate` and `deploy`, **`run` is not pinned to the `haystack-ai` version your pipeline
+declares** — the sandbox executes against the platform's own Haystack. The YAML it runs is the same one
+a deploy would push, but the Haystack running it may not be, so a version-specific failure can appear
+here and not in a deployed service (or the reverse). Use `validate` for the version-accurate check.
 
 ```shell
 # run with explicit inputs from a file and save the output

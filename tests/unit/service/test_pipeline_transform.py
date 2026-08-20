@@ -31,6 +31,7 @@ from haystack_enterprise_sdk._service.pipeline_transform import (
     classify_module,
     detect_project_python,
     extract_via_subprocess,
+    haystack_pin,
     load_pipeline_from_file,
     render_config_yaml,
     resolve_io,
@@ -1559,3 +1560,18 @@ class TestUnresolvableNames:
         )
         with pytest.raises(PipelineTransformError, match="SUFFIX"):
             validate_tool_code_block("probe", code)
+
+
+class TestHaystackPin:
+    """``haystack_pin`` must agree with the block the renderer wrote, since the platform rejects a
+    header that disagrees with the pipeline's own pin."""
+
+    def test_reads_the_rendered_pin(self) -> None:
+        yaml = render_config_yaml(ExtractionBundle(pipeline={"components": {}}, dependencies=["haystack-ai==2.30.2"]))
+        assert haystack_pin(yaml) == "2.30.2"
+
+    def test_no_dependencies_block_is_none(self) -> None:
+        assert haystack_pin("components: {}\n") is None
+
+    def test_ignores_non_haystack_requirements(self) -> None:
+        assert haystack_pin("components: {}\ndependencies:\n  - trafilatura==2.0.0\n") is None
