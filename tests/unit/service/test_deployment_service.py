@@ -187,9 +187,28 @@ class TestValidation:
         with pytest.raises(PipelineValidationError):
             await service.deploy(FIXTURE, "svc")
 
-        service._deployments.validate_pipeline.assert_awaited_once_with("ws", query_yaml="components: {}\n")
+        service._deployments.validate_pipeline.assert_awaited_once_with(
+            "ws", query_yaml="components: {}\n", haystack_version=None
+        )
         service._deployments.find_by_name.assert_not_called()
         service._deployments.push_revision.assert_not_called()
+
+    async def test_deploy_and_validate_pin_the_same_version(
+        self, service: MockedDeploymentService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both commands must judge a pipeline against the version it pins, or they can disagree."""
+        pinned = "components: {}\ndependencies:\n  - haystack-ai==2.30.2\n"
+        monkeypatch.setattr(
+            "haystack_enterprise_sdk._service.pipeline_transform.build_config_yaml", lambda *a, **k: pinned
+        )
+        service._deployments.find_by_name.return_value = _deployment()
+        service._deployments.push_revision.return_value = _revision(_deployment().deployment_id)
+
+        await service.validate(FIXTURE)
+        await service.deploy(FIXTURE, "svc")
+
+        sent = [call.kwargs["haystack_version"] for call in service._deployments.validate_pipeline.await_args_list]
+        assert sent == ["2.30.2", "2.30.2"]
 
     async def test_warning_only_proceeds(self, service: MockedDeploymentService) -> None:
         deployment = _deployment()
@@ -219,7 +238,9 @@ class TestValidation:
         result = await service.validate(FIXTURE)
 
         assert result is expected
-        service._deployments.validate_pipeline.assert_awaited_once_with("ws", query_yaml="components: {}\n")
+        service._deployments.validate_pipeline.assert_awaited_once_with(
+            "ws", query_yaml="components: {}\n", haystack_version=None
+        )
 
 
 @pytest.mark.asyncio

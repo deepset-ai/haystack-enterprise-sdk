@@ -16,14 +16,12 @@ import structlog
 from httpx import codes
 
 from haystack_enterprise_sdk._api.config import ASYNC_CLIENT_TIMEOUT
-from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
+from haystack_enterprise_sdk._api.haystack_enterprise_api import (
+    TRANSIENT_STATUS_CODES,
+    HaystackEnterpriseAPI,
+)
 
 logger = structlog.get_logger(__name__)
-
-# Statuses worth another attempt: the run never really started (or the platform asked us to back off),
-# so the same request can still succeed. Everything else -- a bad config, bad inputs, auth -- is a
-# permanent failure and retrying it would only burn time and LLM credits.
-_TRANSIENT_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 # Retries *after* the first attempt, so the default is 3 attempts in total.
 DEFAULT_RUN_RETRIES = 2
@@ -105,7 +103,7 @@ class HaystackRunAPI:
                 if response.status_code == codes.OK:
                     return dict(response.json())
                 reason = _format_run_error(response.status_code, response.text)
-                if response.status_code not in _TRANSIENT_STATUS_CODES:
+                if response.status_code not in TRANSIENT_STATUS_CODES:
                     raise PipelineRunError(reason)
 
             if attempt == attempts:
