@@ -858,8 +858,10 @@ def _rewrite_agent_hooks(comp_name: str, init: dict, project_root: Path) -> None
 def _maybe_rewrite_hook(hook: Any, project_root: Path) -> Any:
     """A hook rewritten to an inlined ``Code`` component, or ``None`` when it cannot be deployed.
 
-    Mirrors the local-component rewrite: same ``_build_code_block``, same ``validate_code_block``, and
-    the same nested ``init_parameters`` shape, which is what the platform's ``Code`` component expects.
+    Mirrors the local-component rewrite: same ``_build_code_block`` and the same nested
+    ``init_parameters`` shape, which is what the platform's ``Code`` component expects. Validation is
+    the one place it goes further — see :func:`validate_hook_code_block` for the extra rule a hook
+    carries and why only a deploy would otherwise catch it.
     """
     if not isinstance(hook, dict):
         return None
@@ -870,7 +872,7 @@ def _maybe_rewrite_hook(hook: Any, project_root: Path) -> Any:
 
     logger.debug("Rewriting local hook '%s' to Code", hook_type)
     code = _build_code_block(hook_type, project_root)
-    validate_code_block(hook_type, code)
+    validate_hook_code_block(hook_type, code)
     new_init: dict[str, Any] = {"code": code}
     original_init = hook.get("init_parameters") or {}
     if original_init:
@@ -1127,6 +1129,89 @@ def validate_code_block(comp_name: str, code: str) -> None:
     _reject_required_init_params(comp_name, component_classes[0])
     _reject_undefined_names(f"Component '{comp_name}'", tree)
     _reject_class_level_use_before_definition(f"Component '{comp_name}'", component_classes[0])
+
+
+def validate_hook_code_block(hook_name: str, code: str) -> None:
+    """Validate a generated hook Code block: everything a component needs, plus a dict return.
+
+    A hook deploys AS a Code component, so every component rule still applies. On top of them, its
+    ``run`` must return a dict — even though Haystack's ``Hook`` protocol types it ``-> None`` and
+    ``_run_hooks_async`` discards the result, so returning nothing is correct as far as the authoring
+    Haystack is concerned.
+
+    The platform is why. It wraps every component ``run`` in OpenInference tracing, which treats the
+    return value as a component response and calls ``.items()`` on it. A hook returning ``None``
+    transforms cleanly, deploys cleanly, and then fails the Agent on its FIRST query with
+    ``'NoneType' object has no attribute 'items'``. Nothing the author can run locally catches that —
+    not their tests, not ``dry-run``, not ``validate``, not even loading the rendered Agent and
+    running it against a stub generator — because the instrumentation exists only in the deployed
+    image. That is what earns it a check here: a deploy is otherwise the only thing that finds it.
+    """
+    validate_code_block(hook_name, code)
+    component_class = next(
+        node for node in ast.parse(code).body if isinstance(node, ast.ClassDef) and _has_component_decorator(node)
+    )
+    _reject_none_returning_run(hook_name, component_class)
+
+
+def _reject_none_returning_run(hook_name: str, component_class: ast.ClassDef) -> None:
+    """Raise unless every path through the class's ``run`` returns a value."""
+    run = next(
+        (
+            stmt
+            for stmt in component_class.body
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == "run"
+        ),
+        None,
+    )
+    if run is None:
+        raise PipelineTransformError(f"Hook '{hook_name}': class '{component_class.name}' defines no 'run' method.")
+
+    advice = (
+        "A hook's run must return a dict: the platform traces every component run and calls .items() "
+        "on the result, so returning None fails the Agent at query time with \"'NoneType' object has "
+        "no attribute 'items'\"."
+    )
+    for node in _iter_same_scope(run.body):
+        if isinstance(node, ast.Return) and (node.value is None or _is_none_literal(node.value)):
+            raise PipelineTransformError(
+                f"Hook '{hook_name}': '{component_class.name}.run' returns None on at least one path "
+                f"(line {node.lineno} of the generated block). {advice} Return {{}} instead."
+            )
+    if not _always_returns(run.body):
+        raise PipelineTransformError(
+            f"Hook '{hook_name}': '{component_class.name}.run' can finish without returning a value. "
+            f"{advice} End it with `return {{}}`."
+        )
+
+
+def _is_none_literal(node: ast.expr) -> bool:
+    """Whether ``node`` is the literal ``None``."""
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _always_returns(body: list[ast.stmt]) -> bool:
+    """Whether every path through ``body`` ends in a ``return`` or a ``raise``.
+
+    Deliberately conservative: it understands the shapes a hook realistically takes and calls
+    anything else "might fall through". A false positive costs the author the explicit trailing
+    ``return {}`` the message asks for; a false negative costs them a broken deploy.
+    """
+    if not body:
+        return False
+    last = body[-1]
+    if isinstance(last, (ast.Return, ast.Raise)):
+        return True
+    if isinstance(last, ast.If):
+        return bool(last.orelse) and _always_returns(last.body) and _always_returns(last.orelse)
+    if isinstance(last, (ast.With, ast.AsyncWith)):
+        return _always_returns(last.body)
+    if isinstance(last, ast.Try):
+        if last.finalbody and _always_returns(last.finalbody):
+            return True
+        main = _always_returns(last.orelse) if last.orelse else _always_returns(last.body)
+        return main and all(_always_returns(handler.body) for handler in last.handlers)
+    return False
 
 
 def _reject_module_level_definitions(comp_name: str, tree: ast.Module, component_class: ast.ClassDef) -> None:

@@ -18,6 +18,7 @@ from haystack_enterprise_sdk._service.pipeline_extract import (
     _sanitize_agent_init_params,
     extract_from_pipeline,
     validate_code_block,
+    validate_hook_code_block,
     validate_tool_code_block,
 )
 from haystack_enterprise_sdk._service.pipeline_transform import (
@@ -661,8 +662,9 @@ _HOOK_PROJECT = {
                 self.label = label
 
             @component.output_types()
-            def run(self, state) -> None:
+            def run(self, state) -> dict:
                 tag(state, self.label)
+                return {}
         """,
     "helpers.py": """
         def tag(state, label):
@@ -738,6 +740,88 @@ class TestLocalHookRewrite:
         # the `None` default that pass drops.
         init = self._rewrite(tmp_path, {"before_llm": [self._HOOK]})
         assert "hooks" in init
+
+    def test_a_none_returning_hook_is_rejected_at_transform_time(self, tmp_path: Path) -> None:
+        # The rewrite runs `validate_hook_code_block`, not the plain component one. Without that a
+        # `-> None` hook transforms and deploys cleanly and dies on the first query.
+        _write_project(tmp_path, {**_HOOK_PROJECT, "myhooks.py": _NONE_RETURNING_HOOK_SRC})
+        sys.path.insert(0, str(tmp_path))
+        components: dict[str, Any] = {
+            "agent": {
+                "type": "haystack.components.agents.agent.Agent",
+                "init_parameters": {"hooks": {"before_llm": [{"type": "myhooks.TagHook"}]}},
+            }
+        }
+        with pytest.raises(PipelineTransformError, match="can finish without returning a value"):
+            _sanitize_agent_init_params(components, tmp_path)
+
+
+_NONE_RETURNING_HOOK_SRC = """
+    from haystack import component
+
+    @component
+    class TagHook:
+        @component.output_types()
+        def run(self, state) -> None:
+            state.data["tagged"] = True
+    """
+
+
+class TestHookCodeBlockValidation:
+    """A hook's `run` must return a dict.
+
+    Haystack types the `Hook` protocol `-> None` and discards the result, so this is invisible until
+    the platform — which wraps every component `run` in OpenInference tracing and calls `.items()` on
+    what comes back — fails the Agent on its first query with `'NoneType' object has no attribute
+    'items'`. Neither the author's tests nor dry-run nor validate reproduce it, which is exactly why
+    it is worth a transform-time check.
+    """
+
+    @staticmethod
+    def _hook(run_body: str) -> str:
+        body = textwrap.indent(textwrap.dedent(run_body).strip(), " " * 8)
+        return (
+            "from haystack import component\n\n"
+            "@component\n"
+            "class H:\n"
+            "    @component.output_types()\n"
+            "    def run(self, state) -> dict:\n"
+            f"{body}\n"
+        )
+
+    def test_rejects_falling_off_the_end(self) -> None:
+        with pytest.raises(PipelineTransformError, match="can finish without returning a value"):
+            validate_hook_code_block("h", self._hook("state.data['x'] = 1"))
+
+    def test_rejects_a_bare_return(self) -> None:
+        with pytest.raises(PipelineTransformError, match="returns None on at least one path"):
+            validate_hook_code_block("h", self._hook("if state:\n    return\nreturn {}"))
+
+    def test_rejects_an_explicit_return_none(self) -> None:
+        with pytest.raises(PipelineTransformError, match="returns None on at least one path"):
+            validate_hook_code_block("h", self._hook("return None"))
+
+    def test_accepts_a_dict_return(self) -> None:
+        validate_hook_code_block("h", self._hook("state.data['x'] = 1\nreturn {}"))
+
+    def test_accepts_every_branch_returning(self) -> None:
+        # Conservative, not naive: an if/else where both arms return needs no trailing return.
+        validate_hook_code_block("h", self._hook("if state:\n    return {}\nelse:\n    return {'a': 1}"))
+
+    def test_accepts_a_terminal_raise(self) -> None:
+        validate_hook_code_block("h", self._hook("raise RuntimeError('nope')"))
+
+    def test_ignores_a_nested_functions_returns(self) -> None:
+        # A `return` inside a nested def belongs to that scope, and must neither satisfy the
+        # end-of-body check nor trip the None check.
+        with pytest.raises(PipelineTransformError, match="can finish without returning a value"):
+            validate_hook_code_block("h", self._hook("def inner():\n    return None\ninner()"))
+
+    def test_still_applies_every_component_rule(self) -> None:
+        # It delegates to `validate_code_block` first: a hook is a Code component like any other.
+        code = "from haystack import component\n\n@component\nclass H:\n    pass\n\nX = 1\n"
+        with pytest.raises(PipelineTransformError):
+            validate_hook_code_block("h", code)
 
 
 # --------------------------------------------------------------------------- #
