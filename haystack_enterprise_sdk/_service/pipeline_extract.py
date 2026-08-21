@@ -762,7 +762,7 @@ def _rewrite_local_tools(components: dict, project_root: Path) -> None:
         init["tools"] = [_maybe_rewrite_tool(tool, project_root) for tool in tools]
 
 
-def _sanitize_agent_init_params(components: dict) -> None:
+def _sanitize_agent_init_params(components: dict, project_root: Path) -> None:
     """Make Agent init params portable across a version gap with the platform runtime, in place.
 
     When the authoring Haystack is newer than the platform's, two things break validation:
@@ -772,8 +772,9 @@ def _sanitize_agent_init_params(components: dict) -> None:
        the authoring ``Agent``'s default — there's no user intent in it and the platform applies its own
        default — which fixes the whole class of "unexpected keyword argument" errors, not one param at a
        time. ``chat_generator`` has no default, so it (and any other explicitly-set param) is kept.
-    2. ``hooks`` cannot be deployed at all and is unset entirely — see :func:`_sanitize_agent_hooks`,
-       which also explains why it runs here rather than being left to the default-pruning below.
+    2. ``hooks`` holds entries the platform cannot import as-is, so each is either rewritten or
+       dropped — see :func:`_rewrite_agent_hooks`, which also explains why it runs here rather than
+       being left to the default-pruning below.
     """
     defaults = _agent_init_defaults()
     for comp_name, comp in components.items():
@@ -783,7 +784,7 @@ def _sanitize_agent_init_params(components: dict) -> None:
         if not isinstance(init, dict):
             continue
 
-        _sanitize_agent_hooks(comp_name, init)
+        _rewrite_agent_hooks(comp_name, init, project_root)
 
         pruned = [key for key in list(init) if key in defaults and _equals_default(init[key], defaults[key])]
         for key in pruned:
@@ -792,42 +793,95 @@ def _sanitize_agent_init_params(components: dict) -> None:
             logger.debug("Dropped default-valued agent params from '%s': %s", comp_name, ", ".join(sorted(pruned)))
 
 
-def _sanitize_agent_hooks(comp_name: str, init: dict) -> None:
-    """Unset an Agent's ``hooks`` entirely, in place, warning when one was actually registered.
+def _rewrite_agent_hooks(comp_name: str, init: dict, project_root: Path) -> None:
+    """Rewrite an Agent's local hooks into inlined platform ``Code`` components, in place.
 
-    No hook survives a deploy today, and the ones worth keeping are exactly the ones that cannot:
-    a ``FunctionHook`` serializes its function as an import path (``myhooks.my_hook``) and a
-    class-based hook serializes under its own type, so either way the module is absent from the
-    platform runtime. A local ``@tool`` dodges this by being rewritten into an inlined ``CodeTool``;
-    there is no hook analogue to inline into, so there is nothing to rewrite. Deploying the subset
-    that *looks* importable would only move the failure to runtime, so ``hooks`` is unset wholesale
-    — the safest shape, and exactly what an Agent that never registered one serializes as.
+    A hook defined in the user's project serializes under its own type (``myhooks.MyHook``), a module
+    the platform runtime does not have. It is the same problem a local component has, and it takes the
+    same answer: the platform accepts a hook whose ``type`` is the ``Code`` component, so the class
+    source is inlined into it exactly as :func:`_build_code_block` does for a local component.
+
+    A hook that is NOT local is dropped, with a warning naming it. That is almost always a
+    ``FunctionHook``, which serializes its function as an import path (``myhooks.my_hook``) while
+    typing itself as ``haystack.hooks.from_function.FunctionHook`` — importable on the platform, but
+    only to then fail resolving a function from a module that isn't there. There is nothing to inline
+    for it: the ``Code`` component carries a component class, and a bare function is not one. Dropping
+    it keeps the failure at deploy time, where the warning names the cause, instead of at run time.
 
     ``hooks`` left at its default is dropped *silently*: Haystack serializes ``hooks: None`` for
     every Agent that has the parameter, so warning on mere key-presence made every agent deploy emit
     a spurious "removed unsupported hooks" — noise that trains people to ignore the warning, which
     would then mask a real dropped-hook case.
 
-    It is popped here rather than left to the caller's default-pruning on purpose: that pass
-    introspects the *authoring* ``Agent.__init__``, so an authoring Haystack whose Agent predates
-    ``hooks`` has no default to compare against and ``None`` would survive, reaching a platform Agent
-    that may reject the kwarg outright.
+    An emptied ``hooks`` is popped here rather than left to the caller's default-pruning on purpose:
+    that pass introspects the *authoring* ``Agent.__init__``, so an authoring Haystack whose Agent
+    predates ``hooks`` has no default to compare against and ``None`` would survive, reaching a
+    platform Agent that may reject the kwarg outright.
     """
     if "hooks" not in init:
         return
-    hooks = init.pop("hooks")
+    hooks = init.get("hooks")
     if not hooks:  # unset (``None``) or explicitly empty — nothing was registered, so nothing to report
+        init.pop("hooks")
         return
-    logger.warning(
-        "Removed hooks from agent '%s' (%s): hooks are not deployed. Unlike a local @tool, which is "
-        "rewritten into an inlined CodeTool, a hook has no equivalent the platform runtime resolves.",
-        comp_name,
-        _hooks_label(hooks),
-    )
+    if not isinstance(hooks, dict):  # not a hook point -> entries mapping; nothing we can rewrite
+        init.pop("hooks")
+        logger.warning("Removed unrecognised hooks from agent '%s' (%s).", comp_name, _hooks_label(hooks))
+        return
+
+    rewritten: dict[str, list] = {}
+    dropped: dict[str, list] = {}
+    for point, entry in hooks.items():
+        entries = entry if isinstance(entry, list) else [entry]
+        for hook in entries:
+            as_code = _maybe_rewrite_hook(hook, project_root)
+            if as_code is None:
+                dropped.setdefault(point, []).append(hook)
+            else:
+                rewritten.setdefault(point, []).append(as_code)
+
+    if dropped:
+        logger.warning(
+            "Removed hooks from agent '%s' (%s): only a hook defined as a local component class can be "
+            "inlined into the platform Code component. A @hook function serializes as an import path to "
+            "a module the platform runtime does not have.",
+            comp_name,
+            _hooks_label(dropped),
+        )
+    if rewritten:
+        init["hooks"] = rewritten
+        logger.debug("Rewrote local hooks on agent '%s' to Code: %s", comp_name, _hooks_label(rewritten))
+    else:
+        init.pop("hooks")
+
+
+def _maybe_rewrite_hook(hook: Any, project_root: Path) -> Any:
+    """A hook rewritten to an inlined ``Code`` component, or ``None`` when it cannot be deployed.
+
+    Mirrors the local-component rewrite: same ``_build_code_block`` and the same nested
+    ``init_parameters`` shape, which is what the platform's ``Code`` component expects. Validation is
+    the one place it goes further — see :func:`validate_hook_code_block` for the extra rule a hook
+    carries and why only a deploy would otherwise catch it.
+    """
+    if not isinstance(hook, dict):
+        return None
+    hook_type = str(hook.get("type", ""))
+    module_name = hook_type.rpartition(".")[0]
+    if not module_name or classify_module(module_name, project_root) != "local":
+        return None
+
+    logger.debug("Rewriting local hook '%s' to Code", hook_type)
+    code = _build_code_block(hook_type, project_root)
+    validate_hook_code_block(hook_type, code)
+    new_init: dict[str, Any] = {"code": code}
+    original_init = hook.get("init_parameters") or {}
+    if original_init:
+        new_init["init_parameters"] = original_init
+    return {"type": CODE_COMPONENT_TYPE, "init_parameters": new_init}
 
 
 def _hooks_label(hooks: Any) -> str:
-    """A ``point: Type(function), Type; point: Type`` description of the dropped hooks, for the warning.
+    """A ``point: Type(function), Type; point: Type`` description of the hooks, for a log line.
 
     Names the function too, not just the type: every ``@hook`` function serializes under the same
     ``FunctionHook`` type, so the import path is the only thing that tells two of them apart.
@@ -1075,6 +1129,89 @@ def validate_code_block(comp_name: str, code: str) -> None:
     _reject_required_init_params(comp_name, component_classes[0])
     _reject_undefined_names(f"Component '{comp_name}'", tree)
     _reject_class_level_use_before_definition(f"Component '{comp_name}'", component_classes[0])
+
+
+def validate_hook_code_block(hook_name: str, code: str) -> None:
+    """Validate a generated hook Code block: everything a component needs, plus a dict return.
+
+    A hook deploys AS a Code component, so every component rule still applies. On top of them, its
+    ``run`` must return a dict — even though Haystack's ``Hook`` protocol types it ``-> None`` and
+    ``_run_hooks_async`` discards the result, so returning nothing is correct as far as the authoring
+    Haystack is concerned.
+
+    The platform is why. It wraps every component ``run`` in OpenInference tracing, which treats the
+    return value as a component response and calls ``.items()`` on it. A hook returning ``None``
+    transforms cleanly, deploys cleanly, and then fails the Agent on its FIRST query with
+    ``'NoneType' object has no attribute 'items'``. Nothing the author can run locally catches that —
+    not their tests, not ``dry-run``, not ``validate``, not even loading the rendered Agent and
+    running it against a stub generator — because the instrumentation exists only in the deployed
+    image. That is what earns it a check here: a deploy is otherwise the only thing that finds it.
+    """
+    validate_code_block(hook_name, code)
+    component_class = next(
+        node for node in ast.parse(code).body if isinstance(node, ast.ClassDef) and _has_component_decorator(node)
+    )
+    _reject_none_returning_run(hook_name, component_class)
+
+
+def _reject_none_returning_run(hook_name: str, component_class: ast.ClassDef) -> None:
+    """Raise unless every path through the class's ``run`` returns a value."""
+    run = next(
+        (
+            stmt
+            for stmt in component_class.body
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == "run"
+        ),
+        None,
+    )
+    if run is None:
+        raise PipelineTransformError(f"Hook '{hook_name}': class '{component_class.name}' defines no 'run' method.")
+
+    advice = (
+        "A hook's run must return a dict: the platform traces every component run and calls .items() "
+        "on the result, so returning None fails the Agent at query time with \"'NoneType' object has "
+        "no attribute 'items'\"."
+    )
+    for node in _iter_same_scope(run.body):
+        if isinstance(node, ast.Return) and (node.value is None or _is_none_literal(node.value)):
+            raise PipelineTransformError(
+                f"Hook '{hook_name}': '{component_class.name}.run' returns None on at least one path "
+                f"(line {node.lineno} of the generated block). {advice} Return {{}} instead."
+            )
+    if not _always_returns(run.body):
+        raise PipelineTransformError(
+            f"Hook '{hook_name}': '{component_class.name}.run' can finish without returning a value. "
+            f"{advice} End it with `return {{}}`."
+        )
+
+
+def _is_none_literal(node: ast.expr) -> bool:
+    """Whether ``node`` is the literal ``None``."""
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _always_returns(body: list[ast.stmt]) -> bool:
+    """Whether every path through ``body`` ends in a ``return`` or a ``raise``.
+
+    Deliberately conservative: it understands the shapes a hook realistically takes and calls
+    anything else "might fall through". A false positive costs the author the explicit trailing
+    ``return {}`` the message asks for; a false negative costs them a broken deploy.
+    """
+    if not body:
+        return False
+    last = body[-1]
+    if isinstance(last, (ast.Return, ast.Raise)):
+        return True
+    if isinstance(last, ast.If):
+        return bool(last.orelse) and _always_returns(last.body) and _always_returns(last.orelse)
+    if isinstance(last, (ast.With, ast.AsyncWith)):
+        return _always_returns(last.body)
+    if isinstance(last, ast.Try):
+        if last.finalbody and _always_returns(last.finalbody):
+            return True
+        main = _always_returns(last.orelse) if last.orelse else _always_returns(last.body)
+        return main and all(_always_returns(handler.body) for handler in last.handlers)
+    return False
 
 
 def _reject_module_level_definitions(comp_name: str, tree: ast.Module, component_class: ast.ClassDef) -> None:
@@ -1480,8 +1617,8 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
     _rewrite_local_tools(components, project_root)
 
     # Make Agent init params portable to the platform runtime: drop default-valued params (which the
-    # older platform Agent may not know) and unsupported ones like ``hooks``.
-    _sanitize_agent_init_params(components)
+    # older platform Agent may not know), and inline local hooks into Code components.
+    _sanitize_agent_init_params(components, project_root)
 
     return {
         "pipeline": pipeline_dict,
