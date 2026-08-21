@@ -566,54 +566,61 @@ class TestSanitizeAgentInitParams:
                 "init_parameters": {some_key: some_default, "system_prompt": "custom"},
             }
         }
-        _sanitize_agent_init_params(components)
+        _sanitize_agent_init_params(components, Path(__file__).parent)
         init = components["agent"]["init_parameters"]
         assert some_key not in init
         assert init["system_prompt"] == "custom"
 
     def test_leaves_non_agent_component_untouched(self) -> None:
         components: dict[str, Any] = {"c": {"type": "haystack.components.foo.Foo", "init_parameters": {"hooks": 1}}}
-        _sanitize_agent_init_params(components)
+        _sanitize_agent_init_params(components, Path(__file__).parent)
         assert components["c"]["init_parameters"]["hooks"] == 1
 
 
 class TestSanitizeAgentHooks:
-    """Hooks are unset wholesale — nothing can be rewritten into a form the platform resolves — but only
-    an Agent that actually registered one is worth warning about."""
+    """A hook defined as a local component class is inlined into the platform Code component, exactly
+    as a local component is. Anything else is dropped, and only a real registration warrants a warning.
+
+    Every hook in this class is non-local, so the project root is irrelevant to it; the rewrite itself
+    needs a project on disk and is covered by :class:`TestLocalHookRewrite`."""
 
     _OFFLOAD_HOOK = {
         "type": "haystack.hooks.tool_result_offloading.hooks.ToolResultOffloadHook",
         "init_parameters": {"preview_chars": 200},
     }
-    _LOCAL_HOOK = {
+    _FUNCTION_HOOK = {
         "type": "haystack.hooks.from_function.FunctionHook",
         "init_parameters": {"function": "myhooks.h", "async_function": None},
     }
 
     @staticmethod
-    def _sanitize(hooks: Any) -> dict:
+    def _sanitize(hooks: Any, project_root: Path | None = None) -> dict:
         components: dict[str, Any] = {
             "agent": {
                 "type": "haystack.components.agents.agent.Agent",
                 "init_parameters": {"system_prompt": "hi", "hooks": hooks},
             }
         }
-        _sanitize_agent_init_params(components)
+        _sanitize_agent_init_params(components, project_root or Path(__file__).parent)
         init: dict = components["agent"]["init_parameters"]
         return init
 
     def test_drops_a_hook_referencing_only_installed_modules(self) -> None:
-        # Even a hook that would import fine on the platform goes: there is no way to tell it apart
-        # from one that would not without guessing, and a wrong guess fails at runtime after deploy.
+        # A built-in hook would import on the platform — but only on one whose Haystack has it, and
+        # `validate` type-checks against an older one. Whether to pass those through is a separate
+        # question from inlining a local class, and nothing has needed it yet.
         assert "hooks" not in self._sanitize({"after_tool": [self._OFFLOAD_HOOK]})
 
-    def test_drops_a_local_hook(self) -> None:
-        # The case that most needs dropping: a local @hook serializes under Haystack's own FunctionHook
-        # type with the user's import path, and that module does not exist in the platform runtime.
-        assert "hooks" not in self._sanitize({"on_exit": [self._LOCAL_HOOK]})
+    def test_drops_a_function_hook(self) -> None:
+        # A local @hook serializes under Haystack's OWN FunctionHook type carrying the user's import
+        # path, so the type resolves on the platform and the function does not. There is nothing to
+        # inline either: the Code component carries a component class, and a bare function is not one.
+        assert "hooks" not in self._sanitize({"on_exit": [self._FUNCTION_HOOK]})
 
     def test_drops_every_hook_point(self) -> None:
-        init = self._sanitize({"on_exit": [self._LOCAL_HOOK, self._OFFLOAD_HOOK], "after_tool": [self._OFFLOAD_HOOK]})
+        init = self._sanitize(
+            {"on_exit": [self._FUNCTION_HOOK, self._OFFLOAD_HOOK], "after_tool": [self._OFFLOAD_HOOK]}
+        )
         assert "hooks" not in init
         assert init["system_prompt"] == "hi"  # the rest of the Agent is untouched
 
@@ -636,10 +643,101 @@ class TestSanitizeAgentHooks:
 
     def test_warns_naming_the_dropped_hooks(self, caplog: pytest.LogCaptureFixture) -> None:
         with caplog.at_level("WARNING"):
-            self._sanitize({"on_exit": [self._LOCAL_HOOK]})
+            self._sanitize({"on_exit": [self._FUNCTION_HOOK]})
         assert "myhooks.h" in caplog.text
         assert "on_exit" in caplog.text
         assert "agent" in caplog.text
+
+
+_HOOK_PROJECT = {
+    "myhooks.py": """
+        from haystack import component
+
+        from helpers import tag
+
+        @component
+        class TagHook:
+            def __init__(self, label: str = "x") -> None:
+                self.label = label
+
+            @component.output_types()
+            def run(self, state) -> None:
+                tag(state, self.label)
+        """,
+    "helpers.py": """
+        def tag(state, label):
+            state.data["tagged"] = label
+        """,
+    "pipeline.py": "from haystack import Pipeline\npipeline = Pipeline()\n",
+}
+
+
+class TestLocalHookRewrite:
+    """The point of the whole thing: a hook the user wrote in their own project reaches the platform.
+
+    It is the local-component rewrite applied to a hook — same `_build_code_block`, so the same
+    transitive inlining of local helpers, and the same nested `init_parameters` shape.
+    """
+
+    @staticmethod
+    def _rewrite(tmp_path: Path, hooks: Any) -> dict:
+        _write_project(tmp_path, _HOOK_PROJECT)
+        # `classify_module` resolves through `find_spec`, so the project has to be importable.
+        # The autouse `clean_import_state` fixture puts sys.path back.
+        sys.path.insert(0, str(tmp_path))
+        components: dict[str, Any] = {
+            "agent": {
+                "type": "haystack.components.agents.agent.Agent",
+                "init_parameters": {"system_prompt": "hi", "hooks": hooks},
+            }
+        }
+        _sanitize_agent_init_params(components, tmp_path)
+        init: dict = components["agent"]["init_parameters"]
+        return init
+
+    _HOOK = {"type": "myhooks.TagHook", "init_parameters": {"label": "seen"}}
+
+    def test_a_local_hook_becomes_an_inlined_code_component(self, tmp_path: Path) -> None:
+        init = self._rewrite(tmp_path, {"before_llm": [self._HOOK]})
+
+        (hook,) = init["hooks"]["before_llm"]
+        assert hook["type"] == CODE_COMPONENT_TYPE
+        # Original init params ride nested, the shape the platform Code component expects.
+        assert hook["init_parameters"]["init_parameters"] == {"label": "seen"}
+
+        code = hook["init_parameters"]["code"]
+        assert "class TagHook" in code
+        assert "def tag" in code, "a hook's local helpers must be inlined too, as a component's are"
+
+    def test_a_hook_with_no_init_params_carries_only_code(self, tmp_path: Path) -> None:
+        # Mirrors the component rewrite: an empty `init_parameters` is omitted rather than emitted
+        # empty, so the deployed YAML says what was configured and nothing more.
+        init = self._rewrite(tmp_path, {"before_llm": [{"type": "myhooks.TagHook"}]})
+        assert set(init["hooks"]["before_llm"][0]["init_parameters"]) == {"code"}
+
+    def test_a_bare_hook_is_accepted_beside_a_list(self, tmp_path: Path) -> None:
+        # Haystack types `hooks` as point -> list, but the label helper already tolerated a bare
+        # entry, so the rewrite does too rather than dropping one on a shape it could handle.
+        init = self._rewrite(tmp_path, {"before_llm": self._HOOK})
+        assert init["hooks"]["before_llm"][0]["type"] == CODE_COMPONENT_TYPE
+
+    def test_a_dropped_hook_does_not_take_the_deployable_one_with_it(self, tmp_path: Path) -> None:
+        # Partial success is the useful behaviour: dropping the whole mapping because one entry is a
+        # FunctionHook would silently disable a hook that deploys perfectly well.
+        init = self._rewrite(
+            tmp_path,
+            {
+                "before_llm": [self._HOOK],
+                "on_exit": [TestSanitizeAgentHooks._FUNCTION_HOOK],
+            },
+        )
+        assert set(init["hooks"]) == {"before_llm"}
+
+    def test_a_local_hook_survives_the_default_pruning(self, tmp_path: Path) -> None:
+        # The rewritten value is written back BEFORE default-pruning runs, so it has to not look like
+        # the `None` default that pass drops.
+        init = self._rewrite(tmp_path, {"before_llm": [self._HOOK]})
+        assert "hooks" in init
 
 
 # --------------------------------------------------------------------------- #
