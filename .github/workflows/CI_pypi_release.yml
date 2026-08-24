@@ -6,8 +6,7 @@ on:
   release:
     types:
       - published
-  # Manual dry run only. Builds a throwaway .devN version and uploads it to
-  # TestPyPI; it can never reach pypi.org.
+  # Manual dry run uploads a .devN version to TestPyPI.
   workflow_dispatch:
 
 permissions:
@@ -18,20 +17,14 @@ jobs:
     name: Build and publish
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # A release goes to PyPI, a manual dispatch goes to TestPyPI. The names must
-    # match the environments configured on the respective trusted publishers.
     environment: ${{ github.event_name == 'release' && 'pypi' || 'testpypi' }}
     permissions:
-      # Job-level permissions replace the top-level block instead of merging with
-      # it, and this repository is internal, so checkout needs its own read scope.
       contents: read
-      # Trusted publishing (OIDC). There is no API token anywhere in this workflow.
       id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # For a release event this resolves to the released tag.
           persist-credentials: false
 
       - name: Install uv
@@ -85,10 +78,8 @@ jobs:
 
       - name: Publish to PyPI
         if: github.event_name == 'release'
-        # IRREVERSIBLE: a version number can never be reused once uploaded.
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
-          # PEP 740 provenance attestations, free with trusted publishing.
           attestations: true
 
       - name: Publish to TestPyPI
