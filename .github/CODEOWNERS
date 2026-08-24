@@ -1,1 +1,4 @@
-* @deepset-ai/grow-squad-backend
+# Round-robin review assignment is configured on the team itself, not here.
+# The team must be visible (not secret) and hold write access on this repo,
+# or GitHub silently ignores this file and requests no reviews at all.
+* @deepset-ai/haystack-enterprise-sdk-reviewers
