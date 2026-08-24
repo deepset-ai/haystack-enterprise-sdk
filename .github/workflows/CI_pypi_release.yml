@@ -1,0 +1,99 @@
+name: PyPI Release
+
+on:
+  # Publishing a GitHub Release is the single human action that ships a version.
+  # It also fires api-docs.yaml, so the package and the docs site move together.
+  release:
+    types:
+      - published
+  # Manual dry run only. Builds a throwaway .devN version and uploads it to
+  # TestPyPI; it can never reach pypi.org.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # A release goes to PyPI, a manual dispatch goes to TestPyPI. The names must
+    # match the environments configured on the respective trusted publishers.
+    environment: ${{ github.event_name == 'release' && 'pypi' || 'testpypi' }}
+    permissions:
+      # Job-level permissions replace the top-level block instead of merging with
+      # it, and this repository is internal, so checkout needs its own read scope.
+      contents: read
+      # Trusted publishing (OIDC). There is no API token anywhere in this workflow.
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # For a release event this resolves to the released tag.
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          python-version: "3.10"
+
+      - name: Check uv.lock is in sync with pyproject.toml
+        run: uv lock --check
+
+      - name: Check the release tag matches the version in pyproject.toml
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          tag_version="${TAG#v}"
+          project_version="$(uv version --short --frozen)"
+          if [ "$tag_version" != "$project_version" ]; then
+            echo "::error::Release tag '$TAG' resolves to version '$tag_version', but pyproject.toml declares '$project_version'. Bump [project] version on main, run 'uv lock', merge, then re-create the release from a tag on the bump commit."
+            exit 1
+          fi
+          echo "VERSION=$project_version" >> "$GITHUB_ENV"
+
+      - name: Stamp a throwaway dev version
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          # Each dry run needs a version TestPyPI has not seen before.
+          dev_version="$(uv version --short --frozen).dev$(date -u +%Y%m%d%H%M%S)"
+          uv version --frozen "$dev_version"
+          echo "VERSION=$dev_version" >> "$GITHUB_ENV"
+
+      - name: Build sdist and wheel
+        run: make build
+
+      - name: Verify the built wheel
+        run: |
+          ls -l dist
+          wheel="$(ls dist/*.whl)"
+          case "$(basename "$wheel")" in
+            "haystack_enterprise_sdk-${VERSION}-"*) ;;
+            *)
+              echo "::error::Wheel '$wheel' does not carry version ${VERSION}. Check PEP 440 normalisation of the version string (write '1.2.3rc1', not '1.2.3-rc1')."
+              exit 1
+              ;;
+          esac
+          # Install the wheel into a throwaway environment and run its console
+          # script. Proves the entry point, imports, dependency resolution and
+          # recorded metadata all work before the upload becomes permanent.
+          uv run --no-project --with "$wheel" -- haystack-enterprise --version
+
+      - name: Publish to PyPI
+        if: github.event_name == 'release'
+        # IRREVERSIBLE: a version number can never be reused once uploaded.
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          # PEP 740 provenance attestations, free with trusted publishing.
+          attestations: true
+
+      - name: Publish to TestPyPI
+        if: github.event_name == 'workflow_dispatch'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          attestations: true
