@@ -2,11 +2,9 @@
 The `haystack-enterprise` CLI is the command-line interface of the Haystack Enterprise SDK. Use it to perform operations such as uploading files and folders to your workspace.
 
 ## Installation
-To install the CLI, use `pip`:
 
-```shell
-pip install haystack-enterprise-sdk
-```
+See [Install](../../get-started/install.md).
+
 ## Configuration
 Before using the CLI, log in and provide your credentials. You can do this by running the command:
 

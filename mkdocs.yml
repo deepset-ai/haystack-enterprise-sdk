@@ -49,7 +49,11 @@ extra_css:
 
 # mkdocs uses the `docs` folder as root folder
 nav:
-  - Get Started: index.md
+  - Home: index.md
+  - Get started:
+      - Install: get-started/install.md
+      - Quickstart: get-started/quickstart.md
+      - Configuration: get-started/configuration.md
   - CLI Command Flow: cli_command_flow.md
   - Upload Files: upload_files.md
   - Examples:

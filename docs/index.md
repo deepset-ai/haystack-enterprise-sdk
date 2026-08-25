@@ -6,44 +6,44 @@
 [![Tests](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/continuous-integration.yml/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/continuous-integration.yml)
 [![Compliance Checks](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/compliance.yml/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/compliance.yml)
 
-The Haystack Enterprise SDK is an open source software development kit that provides convenient access and integration with Haystack Enterprise Platform, a powerful platform for building production-ready AI-powered applications and managing them across the full lifecycle — from prototyping to large-scale production. To learn more about Haystack Enterprise Platform, please have a look at the [official Documentation](https://docs.cloud.deepset.ai/).
+The **Haystack Enterprise SDK** takes the Haystack pipelines and agents you build locally and moves them
+onto [Haystack Enterprise Platform](https://docs.cloud.deepset.ai/) — validated, run and deployed from
+your terminal, without leaving your editor. The platform is where you build production-ready AI
+applications and manage them across the full lifecycle, from prototyping to large-scale production.
 
-# Supported Features
-The following examples demonstrate how to use the Haystack Enterprise SDK to interact with Haystack Enterprise Platform using Python.
-You can use the Haystack Enterprise SDK in the command line as well. For more information, see the [CLI documentation](/haystack-enterprise-sdk/examples/cli).
-- [SDK Examples - Upload datasets](/haystack-enterprise-sdk/examples/sdk)
-- [CLI Examples - Upload datasets](/haystack-enterprise-sdk/examples/cli/)
+> **Experimental.** This SDK is under active development. APIs and CLI commands may change without
+> notice.
 
-## Installation
-The SDK is not published to a package registry yet. Install it directly from the repository with [uv](https://docs.astral.sh/uv/):
-```bash
-uv tool install git+https://github.com/deepset-ai/haystack-enterprise-sdk.git
+## What it does
+
+**Deploy pipelines.** Build a pipeline locally with Haystack, then check it, run it and serve it with
+three commands that all read the same file and apply the same transform — so what you validate is what
+you run, and what you run is what you deploy.
+
+```shell
+haystack-enterprise validate pipeline.py
+haystack-enterprise run pipeline.py --query "What is deepset?"
+haystack-enterprise deploy pipeline.py my-service
 ```
 
-After installing the Haystack Enterprise SDK, you can use it to interact with Haystack Enterprise Platform. It comes with a command line interface (CLI), that you can use by calling:
-```bash
-haystack-enterprise --help
+A deployed service is served over an OpenAI-compatible chat-completions endpoint, so any OpenAI client
+can call it. Add `--share` to get a chat UI link you can send to someone.
+
+**Move files.** Upload documents and their metadata into a workspace in bulk, from the CLI or from
+Python.
+
+```shell
+haystack-enterprise upload ./my-files
 ```
 
-### Development Installation
-To install the Haystack Enterprise SDK for development, clone the repository and install the package in editable mode:
-```bash
-pip install hatch==1.7.0
-hatch build
-```
+## Get started
 
-Instead of calling the cli from the build package, you can call it directly from the source code:
-```bash
-python3 -m haystack_enterprise_sdk.cli --help
-```
-
----
-## Interested in Haystack Enterprise Platform?
-If you are interested in exploring Haystack Enterprise Platform, visit cloud.deepset.ai.
-Haystack Enterprise Platform provides a range of NLP capabilities and services to help you build and deploy powerful
-natural language processing applications.
+- **[Install](get-started/install.md)** — get the `haystack-enterprise` command.
+- **[Quickstart](get-started/quickstart.md)** — deploy your first pipeline in five minutes.
+- **[Configuration](get-started/configuration.md)** — API keys, workspaces and `.env` precedence.
 
 ## Interested in Haystack?
-Haystack Enterprise Platform is powered by Haystack, an open source framework for building end-to-end NLP pipelines.
- - [Project website](https://haystack.deepset.ai/)
- - [GitHub repository](https://github.com/deepset-ai/haystack)
+
+Haystack Enterprise Platform is powered by [Haystack](https://haystack.deepset.ai/), the open source
+framework for building end-to-end AI pipelines and agents
+([GitHub](https://github.com/deepset-ai/haystack)).
