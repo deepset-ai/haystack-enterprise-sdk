@@ -1,7 +1,13 @@
+/* deepset brand tokens.
+   Navy #071233 and electric blue #2558ff are taken from the Haystack Enterprise SDK logo SVGs.
+   Contrast: #2558ff on white is 5.36:1 (WCAG AA for body text); white on #071233 is 18.4:1.
+   Note #2558ff on #071233 is only 3.43:1, so electric blue must not become a link colour on a
+   navy background if a dark palette is added later. */
 :root {
-    --md-primary-fg-color: #2b2f55;
-    --md-accent-fg-color: #1890ff;
-    /* accent is used for over*/
+    --md-primary-fg-color: #071233;
+    --md-primary-fg-color--light: #2558ff;
+    --md-primary-fg-color--dark: #050d24;
+    --md-accent-fg-color: #2558ff;
 }
 
 /* Hide the title Haystack Enterprise SDK, but still show the name in the tab */

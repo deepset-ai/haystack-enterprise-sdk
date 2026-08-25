@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://cloud.deepset.ai/"><img src="https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/assets/logo.png"  alt="Haystack Enterprise SDK"></a>
+  <a href="https://cloud.deepset.ai/"><img src="_images/logo.svg" alt="Haystack Enterprise SDK" width="420"></a>
 </p>
 
 [![Coverage badge](https://github.com/deepset-ai/haystack-enterprise-sdk/raw/python-coverage-comment-action-data/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/tree/python-coverage-comment-action-data)
@@ -24,10 +24,6 @@ After installing the Haystack Enterprise SDK, you can use it to interact with Ha
 ```bash
 haystack-enterprise --help
 ```
-
-<p align="center">
-  <a href="https://cloud.deepset.ai/"><img src="https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/assets/cli.gif"  alt="Haystack Enterprise Platform CLI"></a>
-</p>
 
 ### Development Installation
 To install the Haystack Enterprise SDK for development, clone the repository and install the package in editable mode:
