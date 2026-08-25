@@ -1,4 +1,4 @@
-# CLI Command Flow
+# Deploy a pipeline
 
 The `haystack-enterprise` CLI takes a Haystack pipeline or agent that you build **locally** and
 moves it, step by step, onto the Haystack Enterprise Platform. Each step builds on the previous one and

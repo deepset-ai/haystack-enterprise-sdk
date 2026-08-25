@@ -28,6 +28,7 @@ upload(
 ## Uploads a list of raw texts to the default workspace.
 ## This is useful if you want to process your text first and upload the content of the files later.
 
+from haystack_enterprise_sdk.models import HaystackEnterpriseFile
 from haystack_enterprise_sdk.workflows.sync_client.files import upload_texts
 
 upload_texts(

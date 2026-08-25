@@ -1,4 +1,4 @@
-# Software development kit for the deepset API
+# Software design
 
 This package is split into multiple layers:
 - API layer

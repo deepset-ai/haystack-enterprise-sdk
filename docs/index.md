@@ -42,6 +42,19 @@ haystack-enterprise upload ./my-files
 - **[Quickstart](get-started/quickstart.md)** — deploy your first pipeline in five minutes.
 - **[Configuration](get-started/configuration.md)** — API keys, workspaces and `.env` precedence.
 
+## Guides
+
+- **[Deploy a pipeline](guides/deploy-a-pipeline.md)** — the full flow, managed vs serverless services,
+  prototype links, and the `io.yaml` file that pins input/output mapping.
+- **[Upload files](guides/upload-files.md)** — upload sessions, folder structure and file metadata.
+- **[Troubleshooting](guides/troubleshooting.md)** — what the SDK's errors mean and what to do about them.
+- **[CLI reference](reference/cli.md)** — every command and flag.
+
+## Coming from `deepset-cloud-sdk`?
+
+The package, the CLI command and the config file path all changed. See
+[Migrating from deepset-cloud-sdk](about/migrating.md).
+
 ## Interested in Haystack?
 
 Haystack Enterprise Platform is powered by [Haystack](https://haystack.deepset.ai/), the open source
