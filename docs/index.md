@@ -1,16 +1,16 @@
 <p align="center">
-  <a href="https://cloud.deepset.ai/"><img src="https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/assets/logo.png"  alt="Haystack Enterprise Platform SDK"></a>
+  <a href="https://cloud.deepset.ai/"><img src="https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/assets/logo.png"  alt="Haystack Enterprise SDK"></a>
 </p>
 
 [![Coverage badge](https://github.com/deepset-ai/haystack-enterprise-sdk/raw/python-coverage-comment-action-data/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/tree/python-coverage-comment-action-data)
 [![Tests](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/continuous-integration.yml/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/continuous-integration.yml)
 [![Compliance Checks](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/compliance.yml/badge.svg)](https://github.com/deepset-ai/haystack-enterprise-sdk/actions/workflows/compliance.yml)
 
-The Haystack Enterprise Platform SDK is an open source software development kit that provides convenient access and integration with Haystack Enterprise Platform, a powerful cloud offering for various natural language processing (NLP) tasks. To learn more about Haystack Enterprise Platform, please have a look at the [official Documentation](https://docs.cloud.deepset.ai/).
+The Haystack Enterprise SDK is an open source software development kit that provides convenient access and integration with Haystack Enterprise Platform, a powerful cloud offering for various natural language processing (NLP) tasks. To learn more about Haystack Enterprise Platform, please have a look at the [official Documentation](https://docs.cloud.deepset.ai/).
 
 # Supported Features
-The following examples demonstrate how to use the Haystack Enterprise Platform SDK to interact with Haystack Enterprise Platform using Python.
-You can use the Haystack Enterprise Platform SDK in the command line as well. For more information, see the [CLI documentation](/haystack-enterprise-sdk/examples/cli).
+The following examples demonstrate how to use the Haystack Enterprise SDK to interact with Haystack Enterprise Platform using Python.
+You can use the Haystack Enterprise SDK in the command line as well. For more information, see the [CLI documentation](/haystack-enterprise-sdk/examples/cli).
 - [SDK Examples - Upload datasets](/haystack-enterprise-sdk/examples/sdk)
 - [CLI Examples - Upload datasets](/haystack-enterprise-sdk/examples/cli/)
 
@@ -20,7 +20,7 @@ The SDK is not published to a package registry yet. Install it directly from the
 uv tool install git+https://github.com/deepset-ai/haystack-enterprise-sdk.git
 ```
 
-After installing the Haystack Enterprise Platform SDK, you can use it to interact with Haystack Enterprise Platform. It comes with a command line interface (CLI), that you can use by calling:
+After installing the Haystack Enterprise SDK, you can use it to interact with Haystack Enterprise Platform. It comes with a command line interface (CLI), that you can use by calling:
 ```bash
 haystack-enterprise --help
 ```
@@ -30,7 +30,7 @@ haystack-enterprise --help
 </p>
 
 ### Development Installation
-To install the Haystack Enterprise Platform SDK for development, clone the repository and install the package in editable mode:
+To install the Haystack Enterprise SDK for development, clone the repository and install the package in editable mode:
 ```bash
 pip install hatch==1.7.0
 hatch build

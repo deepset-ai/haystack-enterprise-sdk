@@ -368,7 +368,7 @@ class TestActivateAndPoll:
 
         with pytest.raises(DeploymentFailedError) as exc:
             await service.deploy(FIXTURE, "svc", activate=True, poll_interval_s=0)
-        assert "deepset AI Platform" in exc.value.ui_hint
+        assert "Haystack Enterprise Platform" in exc.value.ui_hint
 
     async def test_activate_times_out_and_detaches(self, service: MockedDeploymentService) -> None:
         deployment = _deployment()

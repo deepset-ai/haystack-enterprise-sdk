@@ -1,4 +1,4 @@
-"""The CLI for the Haystack Enterprise Platform SDK."""
+"""The CLI for the Haystack Enterprise SDK."""
 
 import functools
 import json
@@ -295,7 +295,7 @@ def list_files(
     batch_size: int = 10,
     timeout_s: Optional[int] = None,
 ) -> None:
-    """List files that exist in the specified deepset workspace.
+    """List files that exist in the specified workspace.
 
     :param api_key: deepset API key to use for authentication.
     :param api_url: API URL to use for authentication.
@@ -401,7 +401,7 @@ def get_upload_session(
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
 ) -> None:  # noqa: D400, D205
     """Fetch an upload session from Haystack Enterprise Platform. This method is useful for checking
-    the status of an upload session after uploading files to deepset.
+    the status of an upload session after uploading files.
 
     :param session_id: ID of the upload session whose status you want to check.
     :param api_key: deepset API key to use for authentication.
@@ -519,19 +519,19 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param workspace_name: Workspace to deploy into. Uses the workspace from the .ENV file by default.
 
     Example (reuses the service, or creates it serverless when missing, and activates the revision):
-    `deepset-cloud deploy pipeline.py my-service`
+    `haystack-enterprise deploy pipeline.py my-service`
 
     Create a managed service with explicit sizing (activates and waits for the rollout):
-    `deepset-cloud deploy pipeline.py my-service --managed --service-level PRODUCTION --cpu 2`
+    `haystack-enterprise deploy pipeline.py my-service --managed --service-level PRODUCTION --cpu 2`
 
     Describe the revision instead of using the auto-generated comment:
-    `deepset-cloud deploy pipeline.py my-service -m "Bump embedder model to bge-large"`
+    `haystack-enterprise deploy pipeline.py my-service -m "Bump embedder model to bge-large"`
 
     Push a revision without rolling it out:
-    `deepset-cloud deploy pipeline.py my-service --skip-activation`
+    `haystack-enterprise deploy pipeline.py my-service --skip-activation`
 
     Preview the transformed YAML without deploying:
-    `deepset-cloud deploy pipeline.py my-service --dry-run --output out.yaml`
+    `haystack-enterprise deploy pipeline.py my-service --dry-run --output out.yaml`
     """
     io_config_path = _resolve_io_config_path(target, io_config)
     io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
@@ -671,7 +671,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     except KeyboardInterrupt:
         typer.echo(
             f"\nDetached. The rollout continues on the platform. "
-            f"Check with `deepset-cloud service-status {service_name}`."
+            f"Check with `haystack-enterprise service-status {service_name}`."
         )
         raise typer.Exit(0)  # noqa: B904
     except (DeploymentFailedError, ServiceNotFoundError, PipelineTransformError, PipelineValidationError) as err:
@@ -696,7 +696,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     elif result.timed_out:
         typer.echo(
             f"Activation of '{service_name}' is still in progress. Detached; the rollout continues. "
-            f"Check with `deepset-cloud service-status {service_name}`."
+            f"Check with `haystack-enterprise service-status {service_name}`."
         )
     elif result.deployment.deployment_mode is DeploymentMode.SERVERLESS:
         # A serverless service has no rollout status to report; the activated revision is what runs.
@@ -747,7 +747,7 @@ def validate(
     :param workspace_name: Workspace to validate against. Uses the workspace from the .ENV file by default.
 
     Example:
-    `deepset-cloud validate pipeline.py`
+    `haystack-enterprise validate pipeline.py`
     """
     io_config_path = _resolve_io_config_path(target, io_config)
     io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
@@ -843,13 +843,13 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
     :param workspace_name: Workspace to run in. Uses the workspace from the .ENV file by default.
 
     Example:
-    `deepset-cloud run pipeline.py --query "What is deepset?"`
+    `haystack-enterprise run pipeline.py --query "What is deepset?"`
 
     With a pipeline's own named inputs:
-    `deepset-cloud run pipeline.py --set github_token=ghs_abc --set security_prompt=@security.md`
+    `haystack-enterprise run pipeline.py --set github_token=ghs_abc --set security_prompt=@security.md`
 
     With explicit inputs from a file:
-    `deepset-cloud run pipeline.py --inputs @inputs.json`
+    `haystack-enterprise run pipeline.py --inputs @inputs.json`
     """
     named_inputs = _parse_set_option(set_input)
     extra_inputs = _parse_inputs_option(inputs)
@@ -1628,7 +1628,7 @@ def service_status(
     :param workspace_name: Workspace of the service. Uses the workspace from the .ENV file by default.
 
     Example:
-    `deepset-cloud service-status my-service`
+    `haystack-enterprise service-status my-service`
     """
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
     try:
@@ -1663,7 +1663,7 @@ def version_callback(value: bool) -> None:
     `haystack-enterprise --version`
     """
     if value:
-        typer.echo(f"Haystack Enterprise Platform SDK version: {__version__}")
+        typer.echo(f"Haystack Enterprise SDK version: {__version__}")
         raise typer.Exit()
 
 
@@ -1683,7 +1683,7 @@ def main(
         help="Show INFO/DEBUG logs from the SDK. By default only warnings and errors are shown.",
     ),
 ) -> None:  # noqa
-    """The CLI for the Haystack Enterprise Platform SDK.
+    """The CLI for the Haystack Enterprise SDK.
 
     This documentation uses Python type hints to provide information about the arguments and return values.
     Typer turns these type hints into a CLI interface. To see how these arguments are used in the CLI, check the
@@ -1704,10 +1704,8 @@ def main(
 def run_packaged() -> None:
     """Run the packaged CLI.
 
-    This is the entrypoint for the package to enable running the CLI using typer.
-
-    Example:
-    `haystack-enterprise run-packaged`
+    This is the console-script entrypoint (``haystack-enterprise``) declared in ``pyproject.toml``;
+    it is not a subcommand. It runs the Typer app and turns API errors into a clean exit.
     """
     try:
         cli_app()

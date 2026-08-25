@@ -1,4 +1,4 @@
-"""General data classes for Haystack Enterprise Platform SDK."""
+"""General data classes for Haystack Enterprise SDK."""
 
 import json
 from abc import abstractmethod

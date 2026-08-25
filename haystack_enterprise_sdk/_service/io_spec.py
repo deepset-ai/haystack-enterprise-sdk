@@ -2,7 +2,7 @@
 
 The platform-level ``inputs:``/``outputs:`` YAML sections are a wrapper around the pipeline: they map
 an integration's named keys to pipeline sockets. The first (and currently only) integration is the
-deepset AI Platform itself acting as the serving engine (Playground, shared prototypes, query API) —
+Haystack Enterprise Platform itself acting as the serving engine (Playground, shared prototypes, query API) —
 described by :data:`PLATFORM_SERVING_SPEC`. Future integrations define their own
 :class:`IntegrationIoSpec`; the CLI's review/edit UI is spec-driven and needs no changes per
 integration.
@@ -102,7 +102,7 @@ class IntegrationIoSpec:
 
 
 PLATFORM_SERVING_SPEC = IntegrationIoSpec(
-    name="deepset AI Platform",
+    name="Haystack Enterprise Platform",
     inputs=(
         PlatformKey(
             name="query",
@@ -175,7 +175,9 @@ def render_io_config(
     lines = []
     header_target = f" for {target_name}" if target_name else ""
     lines.append(f"# I/O mapping{header_target} — {spec.name}.")
-    lines.append("# Picked up automatically by `deepset-cloud deploy`; edit freely, delete to re-map interactively.")
+    lines.append(
+        "# Picked up automatically by `haystack-enterprise deploy`; edit freely, delete to re-map interactively."
+    )
     lines.append("# An explicit --io-config <file> overrides this file.")
     lines.append("inputs:")
     for key in spec.inputs:

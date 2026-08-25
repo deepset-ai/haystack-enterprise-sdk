@@ -101,7 +101,7 @@ def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any
 
     # Importing the module runs its top-level code, which often constructs components (e.g. an
     # OpenAIGenerator) that read secrets via ``Secret.from_env_var`` and fail to build without them.
-    # Load a project ``.env`` so those pipelines import cleanly, mirroring the deepset CLI's own .env
+    # Load a project ``.env`` so those pipelines import cleanly, mirroring the CLI's own .env
     # loading. Already-set environment variables always win.
     _load_project_dotenv(project_root)
 

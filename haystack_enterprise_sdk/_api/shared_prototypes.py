@@ -1,4 +1,4 @@
-"""Shared prototypes API for deepset AI Platform.
+"""Shared prototypes API for Haystack Enterprise Platform.
 
 Thin async client over :class:`HaystackEnterpriseAPI` for the (workspace-scoped) ``shared_prototypes``
 endpoint. A shared prototype is a shareable link that opens a chat UI for a deployed service.
@@ -62,7 +62,7 @@ class FailedToCreateSharedPrototypeError(Exception):
 
 
 class SharedPrototypesAPI:
-    """Shared prototypes API for deepset AI Platform."""
+    """Shared prototypes API for Haystack Enterprise Platform."""
 
     _ENDPOINT = "shared_prototypes"
 

@@ -1,4 +1,4 @@
-"""Haystack pipeline run API for deepset AI Platform.
+"""Haystack pipeline run API for Haystack Enterprise Platform.
 
 Thin async client over :class:`HaystackEnterpriseAPI` for the (workspace-scoped) sandbox run endpoint:
 ``POST /workspaces/{workspace}/haystack/pipelines/run``. This runs a pipeline configuration with
@@ -40,7 +40,7 @@ class PipelineRunError(Exception):
 
 
 class HaystackRunAPI:
-    """Sandbox pipeline run API for deepset AI Platform."""
+    """Sandbox pipeline run API for Haystack Enterprise Platform."""
 
     _ENDPOINT = "haystack/pipelines/run"
 

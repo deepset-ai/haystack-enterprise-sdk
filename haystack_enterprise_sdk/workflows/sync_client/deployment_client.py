@@ -1,4 +1,4 @@
-"""Sync client for deploying local Haystack pipelines to deepset AI Platform service deployments."""
+"""Sync client for deploying local Haystack pipelines to Haystack Enterprise Platform service deployments."""
 
 import asyncio
 from pathlib import Path
