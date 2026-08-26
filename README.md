@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/assets/logo-dark.svg">
+    <img src="https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/assets/logo.svg" alt="Haystack Enterprise SDK" width="420">
+  </picture>
+</p>
+
 # Haystack Enterprise SDK
 
 > **Experimental.** This SDK is under active development. APIs and CLI commands may change without notice.
