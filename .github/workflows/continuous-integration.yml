@@ -53,6 +53,21 @@ jobs:
       - name: Run mypy
         run: make types
 
+  lockfile:
+    name: Lockfile is up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          python-version: "3.10"
+      # Catches a dependency or version change that forgot to run `uv lock`.
+      # The release workflow checks the same thing, but failing here is cheaper.
+      - name: Run uv lock --check
+        run: uv lock --check
+
   scan-for-secrets:
     name: Scan for secrets
     runs-on: ubuntu-latest
