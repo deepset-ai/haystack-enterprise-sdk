@@ -894,9 +894,10 @@ class TestEnsureQueryInput:
         _, kwargs = client_cls.return_value.run.call_args
         assert kwargs["on_retry"] is None
 
+    @patch("haystack_enterprise_sdk.cli.animations_enabled", return_value=True)  # this suite runs in CI
     @patch("haystack_enterprise_sdk.cli._stdout_is_tty", return_value=True)
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
-    def test_run_shows_spinner_on_tty(self, client_cls: Mock, _tty: Mock) -> None:
+    def test_run_shows_spinner_on_tty(self, client_cls: Mock, _tty: Mock, _animated: Mock) -> None:
         client_cls.return_value.run.return_value = {}
         result = runner.invoke(cli_app, ["run", FIXTURE, "--query", "q"])
         assert result.exit_code == 0
