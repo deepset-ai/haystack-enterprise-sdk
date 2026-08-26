@@ -671,6 +671,7 @@ def _build_code_block(component_type: str, project_root: Path) -> str:
             f"Could not find the component class '{class_name}' to inline for type '{component_type}'."
         )
 
+    _default_missing_init_params(entry_node)
     code = _fold_helpers_into_class(class_name, entry_node, helpers)
 
     parts: list[str] = []
@@ -678,6 +679,24 @@ def _build_code_block(component_type: str, project_root: Path) -> str:
         parts.append("\n".join(preserved_imports))
     parts.append(code)
     return "\n\n\n".join(parts) + "\n"
+
+
+def _default_missing_init_params(class_node: ast.ClassDef) -> None:
+    """Give every default-less ``__init__`` parameter a ``None`` default.
+
+    The platform's Code parser only accepts a class it can instantiate with no arguments, a rule plain
+    Haystack components do not have. The default is never the value used: the authored one rides in the
+    nested ``init_parameters`` the rewrite emits, so the platform always constructs the class with it.
+    """
+    for item in class_node.body:
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "__init__":
+            args = item.args
+            # Positional defaults are contiguous at the tail, so the default-less ones are the leading
+            # parameters: prepending exactly that many covers them.
+            missing = len(args.posonlyargs + args.args) - 1 - len(args.defaults)  # -1 drops `self`
+            args.defaults = [ast.Constant(None)] * missing + args.defaults
+            args.kw_defaults = [d or ast.Constant(None) for d in args.kw_defaults]
+            return
 
 
 def _build_tool_code_block(function_path: str, project_root: Path) -> str:
@@ -1103,10 +1122,11 @@ def _reject_global_symbol_rebinding(class_name: str, fn: Any, symbol_names: set[
 def validate_code_block(comp_name: str, code: str) -> None:
     """Validate a generated Code block locally, mirroring the platform's parser.
 
-    The platform's ``Code`` component requires exactly one ``@component`` class with no *required*
-    ``__init__`` parameters, and keeps ONLY that class at runtime — so nothing else may live at module
-    level. We replicate those checks via AST so a bad transform fails fast locally instead of as a
-    ``DEPLOYMENT_FAILED`` after a wasted rollout.
+    The platform's ``Code`` component requires exactly one ``@component`` class and keeps ONLY that
+    class at runtime — so nothing else may live at module level. We replicate those checks via AST so a
+    bad transform fails fast locally instead of as a ``DEPLOYMENT_FAILED`` after a wasted rollout.
+    (Its no-required-``__init__``-params rule needs no check: :func:`_default_missing_init_params`
+    satisfies it while building the block.)
     """
     try:
         tree = ast.parse(code)
@@ -1126,7 +1146,6 @@ def validate_code_block(comp_name: str, code: str) -> None:
             f"({names}). A Code component must wrap exactly one. Split them into separate components."
         )
     _reject_module_level_definitions(comp_name, tree, component_classes[0])
-    _reject_required_init_params(comp_name, component_classes[0])
     _reject_undefined_names(f"Component '{comp_name}'", tree)
     _reject_class_level_use_before_definition(f"Component '{comp_name}'", component_classes[0])
 
@@ -1385,27 +1404,6 @@ def _has_component_decorator(node: ast.ClassDef) -> bool:
         if name == "component":
             return True
     return False
-
-
-def _reject_required_init_params(comp_name: str, class_node: ast.ClassDef) -> None:
-    """Raise if the component defines an ``__init__`` with a parameter that has no default."""
-    for item in class_node.body:
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == "__init__":
-            args = item.args
-            positional = args.posonlyargs + args.args
-            required = positional[1:] if positional else []  # drop `self`
-            num_defaults = len(args.defaults)
-            required_without_default = required[: len(required) - num_defaults]
-            offending = [a.arg for a in required_without_default]
-            required_kwonly = [kw.arg for kw, default in zip(args.kwonlyargs, args.kw_defaults) if default is None]
-            offending.extend(required_kwonly)
-            if offending:
-                raise PipelineTransformError(
-                    f"Component '{comp_name}': custom component '{class_node.name}' has required "
-                    f"__init__ parameters ({', '.join(offending)}). The platform Code component only "
-                    "supports components whose __init__ parameters all have defaults. Give them defaults."
-                )
-            return
 
 
 # --------------------------------------------------------------------------- #
