@@ -128,7 +128,7 @@ class UploadSessionsAPI:
     ) -> UploadSession:
         """Create an upload session.
 
-        This method creates an upload session for a given workspace. Use this session to upload files to deepset AI Plaform.
+        This method creates an upload session for a given workspace. Use this session to upload files to Haystack Enterprise Platform.
 
         You must close the session to start the file upload. If you don't close a session, it remains open for 24 hours.
         After that it's automatically closed and you must open a new session to upload more files.

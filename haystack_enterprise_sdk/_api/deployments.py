@@ -1,4 +1,4 @@
-"""Service deployments API for deepset AI Platform.
+"""Service deployments API for Haystack Enterprise Platform.
 
 Thin async client over :class:`HaystackEnterpriseAPI` for the (workspace-scoped) deployment endpoints:
 list/create/get deployments, push and activate revisions, and read the activity log.
@@ -264,7 +264,7 @@ class PipelineValidationError(Exception):
 
 
 class DeploymentsAPI:
-    """Service deployments API for deepset AI Platform."""
+    """Service deployments API for Haystack Enterprise Platform."""
 
     _ENDPOINT = "deployments"
     # Workspace-scoped validation endpoint (the base URL already includes /workspaces/{workspace}).

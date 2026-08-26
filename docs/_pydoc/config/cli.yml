@@ -13,9 +13,9 @@ processors:
   - type: crossref
 renderer:
   type: renderers.ReadmeRenderer
-  excerpt: A cli tool for the Haystack Enterprise Platform API.
+  excerpt: The command-line interface of the Haystack Enterprise SDK.
   category_slug: sdk-10
-  title: Haystack Enterprise Platform CLI
+  title: Haystack Enterprise CLI
   slug: cli
   order: 0
   markdown:

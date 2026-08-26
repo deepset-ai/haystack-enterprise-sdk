@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "haystack-enterprise-sdk"
 version = "1.0.0"
-description = 'Haystack Enterprise Platform SDK'
+description = 'Haystack Enterprise SDK'
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"

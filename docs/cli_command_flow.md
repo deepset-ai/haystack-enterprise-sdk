@@ -1,7 +1,7 @@
 # CLI Command Flow
 
-The deepset CLI takes a Haystack pipeline or agent that you build **locally** and moves it,
-step by step, onto the Haystack Enterprise Platform. Each step builds on the previous one and
+The `haystack-enterprise` CLI takes a Haystack pipeline or agent that you build **locally** and
+moves it, step by step, onto the Haystack Enterprise Platform. Each step builds on the previous one and
 runs the **same transform** under the hood, so what you validate is what you run, and what you
 run is what you deploy.
 
@@ -32,8 +32,8 @@ pipeline instance or factory, use `--entrypoint` to pick one.
 ## 1. Build your pipeline or agent locally
 
 Build and test your pipeline or agent locally with [Haystack](https://haystack.deepset.ai/),
-exactly as you normally would. No deepset CLI command is involved at this stage — you write plain
-Haystack code:
+exactly as you normally would. No `haystack-enterprise` command is involved at this stage — you
+write plain Haystack code:
 
 ```python
 # pipeline.py

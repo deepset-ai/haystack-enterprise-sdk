@@ -1,4 +1,4 @@
-"""Async client for deploying local Haystack pipelines to deepset AI Platform service deployments."""
+"""Async client for deploying local Haystack pipelines to Haystack Enterprise Platform service deployments."""
 
 from contextlib import asynccontextmanager
 from pathlib import Path

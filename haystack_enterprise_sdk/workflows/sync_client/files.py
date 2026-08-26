@@ -270,7 +270,7 @@ def list_files(
     batch_size: int = 100,
     timeout_s: Optional[int] = None,
 ) -> Generator[List[File], None, None]:
-    """List files in a deepset workspace.
+    """List files in a workspace.
 
     :param api_key: deepset API key to use for authentication.
     :param api_url: API URL to use for authentication.

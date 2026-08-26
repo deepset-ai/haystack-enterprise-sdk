@@ -1,4 +1,4 @@
-"""Workflows for Haystack Enterprise Platform SDK."""
+"""Workflows for Haystack Enterprise SDK."""
 
 from haystack_enterprise_sdk._service.pipeline_service import (
     ErrorDetail,

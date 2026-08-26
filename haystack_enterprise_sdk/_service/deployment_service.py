@@ -578,6 +578,6 @@ class DeploymentService:
 
     def _ui_hint(self, service_name: str) -> str:
         return (
-            f"Open the service '{service_name}' in the deepset AI Platform to inspect the deployment logs "
+            f"Open the service '{service_name}' in Haystack Enterprise Platform to inspect the deployment logs "
             "(the API does not expose a failure reason)."
         )

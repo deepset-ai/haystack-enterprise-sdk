@@ -1,4 +1,4 @@
-"""Pipeline importing service for Haystack Enterprise Platform SDK."""
+"""Pipeline importing service for Haystack Enterprise SDK."""
 
 # pylint: disable=unnecessary-ellipsis,import-outside-toplevel
 from __future__ import annotations

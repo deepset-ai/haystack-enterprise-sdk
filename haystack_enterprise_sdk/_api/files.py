@@ -62,7 +62,7 @@ class File:
 
 @dataclass
 class FileList:
-    """List of files from deepset AI Plaform. This dataclass is used for all file-related operations that return a list of files."""
+    """List of files from Haystack Enterprise Platform. This dataclass is used for all file-related operations that return a list of files."""
 
     total: int
     data: List[File]
