@@ -13,9 +13,6 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Sequence, Union
 from uuid import UUID
 
 import structlog
-from tqdm import tqdm
-from yaspin import yaspin
-from yaspin.spinners import Spinners
 
 from haystack_enterprise_sdk._api.config import CommonConfig
 from haystack_enterprise_sdk._api.files import (
@@ -31,6 +28,7 @@ from haystack_enterprise_sdk._api.upload_sessions import (
     UploadSessionStatus,
     WriteMode,
 )
+from haystack_enterprise_sdk._console import progress_bar, status_spinner
 from haystack_enterprise_sdk._s3.upload import S3, S3UploadResult, S3UploadSummary
 from haystack_enterprise_sdk.models import HaystackEnterpriseFileBase
 
@@ -108,9 +106,7 @@ class FilesService:
     ) -> None:
         start = time.time()
         ingested_files = 0
-        pbar = None
-        if show_progress:
-            pbar = tqdm(total=total_files, desc="Ingestion Progress")
+        pbar = progress_bar(total=total_files, desc="Ingestion Progress") if show_progress else None
 
         while ingested_files < total_files:
             if timeout_s is not None and time.time() - start > timeout_s:
@@ -370,7 +366,7 @@ class FilesService:
     @staticmethod
     def _preprocess_paths(
         paths: List[Path],
-        spinner: Spinners = None,
+        spinner: Optional[Any] = None,  # anything with a `text` attribute; see _console.status_spinner
         recursive: bool = False,
         desired_file_types: List[str] | None = None,
     ) -> List[Path]:
@@ -444,7 +440,7 @@ class FilesService:
         logger.info("Getting valid files from file path. This may take a few minutes.", recursive=recursive)
 
         if show_progress:
-            with yaspin().arc as sp:
+            with status_spinner() as sp:
                 sp.text = "Finding uploadable files in the given paths."
                 file_paths = self._preprocess_paths(
                     paths, spinner=sp, recursive=recursive, desired_file_types=desired_file_types
@@ -510,7 +506,7 @@ class FilesService:
         start = time.time()
         logger.info("Start downloading files.", workspace_name=workspace_name)
 
-        pbar: Optional[tqdm] = None
+        pbar: Optional[Any] = None
         if show_progress:
             total = (
                 await self._files.list_paginated(
@@ -520,7 +516,7 @@ class FilesService:
                     limit=1,
                 )
             ).total
-            pbar = tqdm(total=total, desc="Download Progress")
+            pbar = progress_bar(total=total, desc="Download Progress")
 
         after_value = None
         after_file_id = None

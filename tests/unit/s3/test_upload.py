@@ -34,9 +34,10 @@ class TestUploadsS3:
     @patch.object(aiohttp.ClientSession, "post")
     @pytest.mark.asyncio
     class TestS3:
+        @patch("haystack_enterprise_sdk._console.animations_enabled", return_value=True)  # suite runs in CI
         @patch.object(tqdm, "gather")
         async def test_upload_in_memory_with_progress(
-            self, tqdm_gather: Mock, post: Mock, upload_session_response: UploadSession
+            self, tqdm_gather: Mock, _animated: Mock, post: Mock, upload_session_response: UploadSession
         ) -> None:
             async with S3() as s3:
                 files = [

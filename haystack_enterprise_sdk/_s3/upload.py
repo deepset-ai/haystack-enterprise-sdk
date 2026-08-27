@@ -14,13 +14,13 @@ import aiohttp
 import structlog
 from pyrate_limiter import Duration, Limiter, Rate
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
-from tqdm.asyncio import tqdm
 
 from haystack_enterprise_sdk._api.config import ASYNC_CLIENT_TIMEOUT
 from haystack_enterprise_sdk._api.upload_sessions import (
     AWSPrefixedRequestConfig,
     UploadSession,
 )
+from haystack_enterprise_sdk._console import gather_with_progress
 from haystack_enterprise_sdk.models import HaystackEnterpriseFileBase
 
 logger = structlog.get_logger(__name__)
@@ -302,7 +302,7 @@ class S3:
         results: List[S3UploadResult] = []
 
         if show_progress:
-            results = await tqdm.gather(*tasks, desc="Upload to S3")
+            results = await gather_with_progress(tasks, desc="Upload to S3")
         else:
             results = await asyncio.gather(*tasks)
 

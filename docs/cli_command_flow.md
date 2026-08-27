@@ -304,6 +304,30 @@ incrementally.
 
 ---
 
+## Running in CI
+
+Spinners and progress bars are drawn by repainting one line, which a CI log viewer cannot do — it
+appends a new line per repaint, so a multi-minute rollout becomes thousands of log lines. So when
+`CI` is set — GitHub Actions, GitLab CI and Jenkins all set it — the CLI stops animating:
+
+- `deploy` prints each rollout status once, as a plain line, instead of animating a spinner:
+
+  ```
+  Deploying 'my-service'.
+  Rolling out 'my-service' (DEPLOYMENT_SCHEDULED).
+  Rolling out 'my-service' (DEPLOYED).
+  ```
+
+- `run` prints nothing while it waits — its spinner shows the elapsed seconds, which as plain lines
+  would be one line per second. The JSON result is still written to stdout.
+- Progress bars (`upload`, `download`) are dropped. `haystack-enterprise --verbose upload …` logs the
+  ingestion progress as ordinary INFO lines instead.
+
+Set `CI=false` (or unset it) to force the animations back on. Independently of `CI`, `run` never
+animates when its stdout is redirected, so a piped JSON payload stays parseable.
+
+---
+
 ## Command reference
 
 | Step | Command | What it does | Talks to the platform? |

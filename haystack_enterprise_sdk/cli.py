@@ -15,7 +15,6 @@ from uuid import UUID
 import structlog
 import typer
 from tabulate import tabulate
-from yaspin import yaspin
 
 __version__ = version("haystack-enterprise-sdk")
 from haystack_enterprise_sdk._api.config import (
@@ -34,6 +33,7 @@ from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpr
 from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, PipelineRunError
 from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
+from haystack_enterprise_sdk._console import animations_enabled, status_spinner
 from haystack_enterprise_sdk._service.deployment_service import (
     CreateOptions,
     DeploymentFailedError,
@@ -627,7 +627,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
 
     try:
         if activate:
-            with yaspin().arc as spinner:
+            with status_spinner() as spinner:
                 spinner.text = f"Deploying '{service_name}'."
 
                 def _on_status(status: object) -> None:
@@ -896,12 +896,13 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
     hint_after_s = _RUN_HINT_AFTER_S
 
     try:
-        # The spinner is a terminal affordance only: the payload is JSON on stdout that people pipe
-        # into jq or a file, and yaspin would scribble escape codes into it.
-        if not _stdout_is_tty():
+        # No status line at all here rather than a printed one: the payload is JSON on stdout that
+        # people pipe into jq, and the ticker below repaints once a second -- as plain lines, that is
+        # the CI log spam we are avoiding.
+        if not _stdout_is_tty() or not animations_enabled():
             result = _invoke(io_resolver, None)
         else:
-            with yaspin().arc as spinner:
+            with status_spinner() as spinner:
 
                 def _text(elapsed: int) -> str:
                     if elapsed < hint_after_s:
