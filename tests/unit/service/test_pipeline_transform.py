@@ -658,7 +658,7 @@ _HOOK_PROJECT = {
 
         @component
         class TagHook:
-            def __init__(self, label: str = "x") -> None:
+            def __init__(self, label):
                 self.label = label
 
             @component.output_types()
@@ -709,6 +709,9 @@ class TestLocalHookRewrite:
 
         code = hook["init_parameters"]["code"]
         assert "class TagHook" in code
+        # A hook deploys AS a Code component, so it inherits the no-required-params rule — and the
+        # injection that satisfies it, because both paths build their block with `_build_code_block`.
+        assert "def __init__(self, label=None)" in code
         assert "def tag" in code, "a hook's local helpers must be inlined too, as a component's are"
 
     def test_a_hook_with_no_init_params_carries_only_code(self, tmp_path: Path) -> None:
@@ -828,7 +831,11 @@ class TestHookCodeBlockValidation:
 # Code-block validation (local, mirrors the platform parser)
 # --------------------------------------------------------------------------- #
 class TestCodeBlockValidation:
-    def test_required_init_param_rejected(self, tmp_path: Path) -> None:
+    def test_default_less_init_params_get_a_none_default(self, tmp_path: Path) -> None:
+        # The platform's Code parser only accepts a class it can instantiate with no arguments, a rule
+        # plain Haystack components do not have. Positional defaults must stay contiguous at the tail
+        # and a keyword-only parameter carries its own default slot — the two halves of a signature the
+        # injection has to get right. The authored values still ride in the nested `init_parameters`.
         path = _write_project(
             tmp_path,
             {
@@ -837,9 +844,9 @@ class TestCodeBlockValidation:
                 from haystack import component
 
                 @component
-                class NeedsArg:
-                    def __init__(self, model):  # required, no default
-                        self.model = model
+                class Mixed:
+                    def __init__(self, a, b=1, *, c, d=2):
+                        self.a, self.b, self.c, self.d = a, b, c, d
 
                     @component.output_types(x=str)
                     def run(self, x: str):
@@ -847,16 +854,17 @@ class TestCodeBlockValidation:
                 """,
                 "pipeline.py": """
                 from haystack import Pipeline
-                from custom.comp import NeedsArg
+                from custom.comp import Mixed
 
                 pipeline = Pipeline()
-                pipeline.add_component("c", NeedsArg(model="m"))
+                pipeline.add_component("c", Mixed(a="a", c="c"))
                 """,
             },
         )
-        pipeline = load_pipeline_from_file(path)
-        with pytest.raises(PipelineTransformError, match="required __init__ parameters"):
-            transform_to_config_yaml(pipeline, project_root=tmp_path)
+        config_yaml = transform_to_config_yaml(load_pipeline_from_file(path), project_root=tmp_path)
+        assert "def __init__(self, a=None, b=1, *, c=None, d=2)" in _component_code(config_yaml, "c")
+        nested = _load_yaml(config_yaml)["components"]["c"]["init_parameters"]["init_parameters"]
+        assert nested == {"a": "a", "b": 1, "c": "c", "d": 2}
 
     def test_multiple_component_classes_rejected(self, tmp_path: Path) -> None:
         # Component A references component B (both local @component) -> inlining pulls both into one block.
