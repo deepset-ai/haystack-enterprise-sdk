@@ -1,8 +1,6 @@
 # Haystack Enterprise SDK Guidelines for AI Agents
 
-This file covers two jobs: driving the SDK and its CLI on someone's behalf, and changing this repo.
-Read the half you need. The first one is where the surprises are — several of the CLI's failure modes
-look like success.
+This file covers two jobs: driving the SDK and its CLI on someone's behalf, and contributing to this repo.
 
 ## Authentication
 
@@ -21,9 +19,8 @@ Precedence, highest first: an explicit `--api-key` / `--workspace-name` argument
 environment variable, then `./.env`, then `~/.haystack-enterprise/.env`.
 
 `DEFAULT_WORKSPACE_NAME` is read once at import and never again, unlike `API_KEY` and `API_URL`.
-Setting `os.environ["DEFAULT_WORKSPACE_NAME"]` after `import haystack_enterprise_sdk` has no effect,
-and the error you get back tells you to set the variable you just set. Export it before the process
-starts, or pass `workspace_name=` explicitly.
+Setting `os.environ["DEFAULT_WORKSPACE_NAME"]` after `import haystack_enterprise_sdk` has no effect.
+Export it before the process starts, or pass `workspace_name=` explicitly.
 
 ## Driving the CLI
 
@@ -55,21 +52,19 @@ Set `CI=true` to replace spinners and progress bars with plain line output.
 checking whether anyone is there to answer. With no TTY they print one page and abort with exit 1.
 Use the generators in `haystack_enterprise_sdk.workflows.sync_client.files` instead.
 
-Every other command is safe without a TTY. That is not the same as correct — see the next section.
-
 ## The I/O mapping is your job
 
 Off a TTY the CLI stops asking how your pipeline's sockets map to platform inputs and outputs, and
 deploys whatever it inferred. Nothing fails at that point. The mistake surfaces later, as a platform
 validation error or as "Missing mandatory input" on the first real query.
 
-Inference is name matching on open sockets, nothing more:
+Inference is name matching on open sockets:
 
 - inputs: `query` (also `question`), `filters`, `files` (also `sources`), `messages`
 - outputs: `answers`, `documents`, `messages` (also `replies`)
 
 A mandatory socket named anything else is not mapped. Write the mapping to `<target>.io.yaml` next to
-the pipeline file; `deploy`, `validate`, and `run` pick it up automatically and say so:
+the pipeline file; `deploy`, `validate`, and `run` pick it up automatically:
 
 ```yaml
 inputs:
@@ -83,7 +78,7 @@ The platform needs at least one query input (`query` or `messages`) and at least
 file carries `pipeline_output_type`, `session_storage`, `dependencies`, and `async_enabled`; see the
 io-config section of [docs/cli_command_flow.md](docs/cli_command_flow.md).
 
-`--skip-io-validation` silences the warning without fixing the mapping. It is not the answer here.
+`--skip-io-validation` silences the warning without fixing the mapping.
 
 ## What a pipeline file must contain
 
@@ -95,7 +90,8 @@ Importing the file runs all of its top-level code. If no instance is found, ever
 callable in the module is then *called* to see whether it returns a pipeline. Keep import-time side
 effects out of these files.
 
-Indexing pipelines — anything containing a `DocumentWriter` — are rejected. Deploy a query pipeline.
+Indexing pipelines — anything containing a `DocumentWriter` — are rejected in this SDK version.
+Deploy a query pipeline.
 
 ## Custom components are rewritten, their dependencies are not
 
@@ -105,8 +101,7 @@ result with `exec(code, {})` on an empty namespace. Any name not bound inside th
 builtin is a `NameError` — at deploy time if it is used at class-definition time, or on the first
 query if it is used inside a method body.
 
-Two consequences worth remembering: no aliased imports (`from x import y as z`), and no annotations
-naming a folded helper. Both leave a name unbound.
+Two consequences: no aliased imports (`from x import y as z`), and no annotations naming a folded helper.
 
 Only `haystack-ai` is pinned automatically. A third-party import in your component is carried into
 the generated code but never into `dependencies:`, so it raises `ImportError` on the platform until
@@ -114,8 +109,7 @@ you list it yourself in the io-config.
 
 ## Using the SDK from Python
 
-Import from `haystack_enterprise_sdk` only. `_api`, `_service`, and `_s3` are private, even though
-some public types are defined there.
+Import from `haystack_enterprise_sdk` only. `_api`, `_service`, and `_s3` are private.
 
 Two clients that are not two ways to do the same thing:
 
@@ -126,15 +120,13 @@ Two clients that are not two ways to do the same thing:
 `DeploymentClient` and `AsyncDeploymentClient` are absent from the generated API docs; read their
 docstrings.
 
-## Working on this repo
+## Contributing to this repo
 
-The Haystack Enterprise SDK uses **uv** for environment and dependency management.
+This repo uses **uv** for environment and dependency management.
 
 Do not run `python` or `pip` directly.
 
-Before running code on this project, you must be able to run `uv --version` and get a correct output.
-
-If not, ask the user where uv is or if they want to install it. For installation instructions, refer to https://docs.astral.sh/uv/getting-started/installation/.
+Before running code on this project, you must be able to run `uv --version`.
 
 ### Sync dependencies
 
@@ -152,8 +144,6 @@ make tests-unit
 
 make tests-integration
 
-These hit a live environment with real credentials. Run them only when the user asks.
-
 ### Type checking with mypy
 
 make types
@@ -162,18 +152,15 @@ make types
 
 make all-fix
 
-`tests/` is type-checked as well, under `disallow_untyped_defs`, so every test function needs a return
-annotation.
+`tests/` is type-checked as well, under `disallow_untyped_defs`. Every test function needs a return annotation.
 
-There is no pytest configuration in this repo, which leaves `asyncio_mode` at `strict`: every async
-test needs an explicit `@pytest.mark.asyncio`. Unit and integration tests are split by directory, not
-by marker.
+Every async test needs an explicit `@pytest.mark.asyncio`. Unit and integration tests are split by directory.
 
 Docstrings are reStructuredText (`:param:`, `:return:`, `:raises:`), despite the `google` convention
 left in the ruff config. Match the surrounding file.
 
 Use the [conventional commit specification](https://www.conventionalcommits.org/en/v1.0.0/) for PR
-titles. A dependency change needs `uv lock` — CI runs `uv lock --check`.
+titles. A dependency change needs `uv lock` and CI runs `uv lock --check`.
 
 ## Where to look next
 
