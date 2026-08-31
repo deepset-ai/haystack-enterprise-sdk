@@ -28,8 +28,6 @@ Commands such as `validate`, `run`, and `deploy` take a path to a local pipeline
 
 **Pointing the SDK at a pipeline file from an untrusted source is unsafe by design.** This is not a hidden weakness but the expected consequence of a tool that runs user-authored code. The security responsibility lies with the operator: pipeline files must be treated as code, stored and transmitted with the same controls applied to source code, and never loaded from untrusted or user-controlled input without review. Reports that demonstrate, for example, arbitrary code execution from a pipeline file that an operator chose to load are out of scope.
 
-However, if you find a way to achieve arbitrary code execution that does *not* rely on an operator loading an untrusted pipeline (for example, an issue in how the SDK processes a response from the platform), that finding is in scope.
-
 ---
 
 If you are uncertain whether a finding falls within scope, feel free to reach out before submitting a full report.
