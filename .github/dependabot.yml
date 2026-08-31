@@ -1,7 +1,10 @@
 # See all config options here https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  # This project is managed with uv, so the resolved versions live in uv.lock.
+  # The "pip" ecosystem does not read that lockfile, which is why Dependabot has
+  # never opened a version-update PR here even though the config looked correct.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
@@ -20,6 +23,19 @@ updates:
           - "major"
           - "minor"
           - "patch"
+
+  # The API reference build pins its own requirements outside the uv project.
+  - package-ecosystem: "pip"
+    directory: "/docs/_pydoc"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "build: "
+    groups:
+      pydoc-updates:
+        patterns:
+          - "*"
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

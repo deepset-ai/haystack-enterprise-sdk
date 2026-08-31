@@ -9,6 +9,8 @@ env:
   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_BUG_ALERT_URL }}
   SLACK_ALERT_CHANNEL: "#dc-alerts"
 
+permissions: {}
+
 jobs:
   add-comment:
     if: github.event.label.name == 'high'
