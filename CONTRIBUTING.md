@@ -37,7 +37,7 @@ Publishing a GitHub Release builds the package and publishes it to PyPI, and reg
 The SDK is published to PyPI as [`haystack-enterprise-sdk`](https://pypi.org/project/haystack-enterprise-sdk/).
 
 1. Bump `version` under `[project]` in `pyproject.toml`, run `uv lock`, and merge that to `main`.
-2. Publish a GitHub Release whose tag matches the new version (bare, no `v` prefix: `0.1.0`).
+2. Publish a GitHub Release tagged `v<version>` — `v0.1.1` for version `0.1.1`.
 
 Publishing the release is the single human action that ships a version. It triggers
 `CI_pypi_release.yml`, which checks the tag against `pyproject.toml`, builds the sdist and wheel,
@@ -47,6 +47,10 @@ together.
 
 To rehearse without shipping, run `CI_pypi_release.yml` manually (`workflow_dispatch`). That path
 stamps a throwaway `.devN` version and uploads to TestPyPI; it can never reach PyPI.
+
+The workflow strips a leading `v` before comparing the tag to `pyproject.toml`, and the `pypi`
+deployment environment allows both shapes, so an unprefixed tag still releases correctly — `0.1.0` was
+tagged that way. Prefer `v` for anything new.
 
 ## Software design
 
