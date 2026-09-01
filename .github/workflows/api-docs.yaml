@@ -44,15 +44,28 @@ jobs:
           git config --global user.name docs-bot
           git config --global user.email docs@bot.com
           git config pull.rebase false
-          git pull --allow-unrelated-histories origin gh-pages
+          # mike creates gh-pages on its first deploy, so before that there is no
+          # branch to pull and an unconditional pull aborts the job -- which is how
+          # the 0.1.0 release shipped to PyPI with no docs.
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git pull --allow-unrelated-histories origin gh-pages
+          else
+            echo "No gh-pages branch yet; mike will create it in this run."
+          fi
 
       - name: Install dependencies for doc deployment
         run: pip install mkdocs-material mkdocstrings[python] mkdocs-mermaid2-plugin mike
 
       - name: Publish docs to pages
+        env:
+          # Via env rather than inline ${{ }}, so the tag name reaches bash as data.
+          TAG: ${{ github.ref_name }}
         run: |
-          mike deploy --push --update-aliases ${{github.ref_name}} && \
-          mike set-default --push ${{github.ref_name}}
+          # Release tags carry a leading `v`; the docs version should read like the
+          # version on PyPI, so tag v0.1.1 publishes as 0.1.1.
+          version="${TAG#v}"
+          mike deploy --push --update-aliases "$version"
+          mike set-default --push "$version"
 
       - name: Add Category ID to all API docs
         run: python ./.github/utils/add-category-id.py
