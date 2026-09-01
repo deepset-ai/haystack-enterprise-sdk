@@ -1,0 +1,33 @@
+# Posts the coverage comment for pull requests that could not post it themselves.
+#
+# A `pull_request` run from a fork gets a read-only token, so the coverage step in
+# CI writes its comment to a file and uploads it as an artifact instead. This
+# workflow is triggered by that run finishing, executes in this repository's
+# context, and posts the comment.
+#
+# It deliberately does not check out or run any code from the pull request:
+# `workflow_run` grants write access, and the PR head is untrusted. The only step
+# reads the artifact produced by the CI run and comments with it.
+
+name: Add comment about test coverage to PRs
+
+on:
+  workflow_run:
+    workflows:
+      - "CI"
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  comment:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: py-cov-action/python-coverage-comment-action@a05be3d2e8a6272d3ef5fb2840ab20368bb2eb71 # v4.3
+        with:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_PR_RUN_ID: ${{ github.event.workflow_run.id }}
