@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
-from haystack import AsyncPipeline, Pipeline
+from haystack import Pipeline
 from haystack.components.converters import CSVToDocument, TextFileToDocument
 from haystack.components.joiners import DocumentJoiner
 from haystack.components.routers import FileTypeRouter
@@ -25,6 +25,7 @@ from haystack_enterprise_sdk.models import (
     PipelineOutputs,
     PipelineOutputType,
 )
+from tests.haystack_compat import HAS_ASYNC_PIPELINE, AsyncPipeline, requires_async_pipeline
 
 
 class TestImportPipelineService:
@@ -66,8 +67,11 @@ class TestImportPipelineService:
         return pipeline_index
 
     @pytest.fixture
-    def async_index_pipeline(self) -> AsyncPipeline:
+    def async_index_pipeline(self) -> Any:
         """Create a sample async index pipeline."""
+        if not HAS_ASYNC_PIPELINE:
+            pytest.skip("AsyncPipeline was removed in Haystack 3.0 (folded into Pipeline)")
+
         file_type_router = FileTypeRouter(mime_types=["text/plain"])
         text_converter = TextFileToDocument(encoding="utf-8")
         joiner = DocumentJoiner(join_mode="concatenate", sort_by_score=False)
@@ -180,7 +184,7 @@ class TestImportPipelineService:
     async def test_import_async_index(
         self,
         pipeline_service: PipelineService,
-        async_index_pipeline: AsyncPipeline,
+        async_index_pipeline: Any,
         mock_api: AsyncMock,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -743,6 +747,7 @@ class TestAddAsyncFlagIfNeeded:
         """Create a pipeline service instance with a mock API client."""
         return PipelineService(Mock(), workspace_name="default")
 
+    @requires_async_pipeline
     def test_add_async_flag_if_needed_with_async_pipeline(self, pipeline_service: PipelineService) -> None:
         """Test that async_enabled flag is added for AsyncPipeline."""
         mock_async_pipeline = Mock(spec=AsyncPipeline)
