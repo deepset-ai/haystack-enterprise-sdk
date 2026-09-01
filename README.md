@@ -13,14 +13,30 @@ Python SDK and CLI for the Haystack Enterprise Platform.
 
 ## Installation
 
-Not published to a package registry yet — install directly from this repository with [uv](https://docs.astral.sh/uv/):
-
 ```bash
 # Install as a CLI tool
-uv tool install git+https://github.com/deepset-ai/haystack-enterprise-sdk.git
+uv tool install haystack-enterprise-sdk
 
 # Or add it as a dependency of your project
-uv add git+https://github.com/deepset-ai/haystack-enterprise-sdk.git
+uv add haystack-enterprise-sdk
+
+# pip works too
+pip install haystack-enterprise-sdk
+```
+
+`deploy`, `validate`, and `run` load your pipeline in a subprocess using your project's own interpreter
+(an auto-detected venv, or `--python`), so the CLI environment does not need Haystack. Install the
+`deploy` extra only when the CLI environment doubles as the pipeline environment — that is, when there
+is no separate project venv to detect:
+
+```bash
+uv tool install "haystack-enterprise-sdk[deploy]"
+```
+
+To install unreleased changes from `main`:
+
+```bash
+uv tool install git+https://github.com/deepset-ai/haystack-enterprise-sdk.git
 ```
 
 ## Usage

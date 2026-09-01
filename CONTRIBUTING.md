@@ -34,7 +34,19 @@ Publishing a GitHub Release builds the package and publishes it to PyPI, and reg
 
 ## Releasing
 
-The SDK is not published to a package registry yet. Install it directly from this repository (see the [README](README.md)).
+The SDK is published to PyPI as [`haystack-enterprise-sdk`](https://pypi.org/project/haystack-enterprise-sdk/).
+
+1. Bump `version` under `[project]` in `pyproject.toml`, run `uv lock`, and merge that to `main`.
+2. Publish a GitHub Release whose tag matches the new version (bare, no `v` prefix: `0.1.0`).
+
+Publishing the release is the single human action that ships a version. It triggers
+`CI_pypi_release.yml`, which checks the tag against `pyproject.toml`, builds the sdist and wheel,
+installs the wheel into a throwaway environment to prove the entry point works, and uploads to PyPI via
+trusted publishing. The same event triggers `api-docs.yaml`, so the package and the docs site move
+together.
+
+To rehearse without shipping, run `CI_pypi_release.yml` manually (`workflow_dispatch`). That path
+stamps a throwaway `.devN` version and uploads to TestPyPI; it can never reach PyPI.
 
 ## Software design
 
