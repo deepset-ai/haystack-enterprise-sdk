@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import sys
+import sysconfig
 from pathlib import Path
 from typing import Any, Optional
 
@@ -52,6 +53,21 @@ _INDEX_MARKER_SUFFIXES = ("DocumentWriter",)
 
 # Path components that mark an installed package (even when the venv lives inside the project dir).
 _INSTALLED_PACKAGE_DIRS = {"site-packages", "dist-packages"}
+
+# Namespaces the platform runtime provides itself. Never inline these, even when they resolve to a
+# source checkout instead of site-packages (an editable ``haystack-ai`` install, for example).
+_PLATFORM_NAMESPACES = ("haystack", "haystack_integrations", "deepset_cloud_custom_nodes")
+
+# Directories owned by the interpreter running this extractor: its stdlib and its installed packages.
+_INTERPRETER_DIRS = frozenset(
+    Path(p).resolve()
+    for p in (
+        sysconfig.get_paths()["stdlib"],
+        sysconfig.get_paths()["platstdlib"],
+        sys.prefix,
+        sys.base_prefix,
+    )
+)
 
 
 class PipelineTransformError(Exception):
@@ -277,8 +293,19 @@ def _reject_index_pipeline(pipeline: Any) -> None:
 # Import classification
 # --------------------------------------------------------------------------- #
 def classify_module(module_name: str, project_root: Path) -> str:
-    """Classify ``module_name`` as ``'local'``, ``'external'``, or ``'stdlib'``."""
+    """Classify ``module_name`` as ``'local'``, ``'external'``, or ``'stdlib'``.
+
+    Only ``'local'`` is acted on (it means "inline this into a platform Code component"); the other two
+    are equivalent "leave it alone" answers.
+    """
     if not module_name:
+        return "external"
+    top = module_name.partition(".")[0]
+    # Decided by name, not by path: these must never be inlined even when they resolve to a source
+    # checkout (a vendored stdlib module, or an editable ``haystack-ai`` install).
+    if top in sys.stdlib_module_names:
+        return "stdlib"
+    if top in _PLATFORM_NAMESPACES:
         return "external"
     try:
         spec = importlib.util.find_spec(module_name)
@@ -299,12 +326,19 @@ def _classify_origin(origin_path: Path, project_root: Path) -> str:
     virtualenv often lives *inside* the project directory (e.g. ``<project>/.venv/.../site-packages``),
     so installed packages resolve under ``project_root`` yet must be treated as external dependencies,
     not inlined as local source.
+
+    Anything that is neither installed nor owned by the interpreter is the user's own source, wherever
+    it sits on disk. ``project_root`` (the pipeline file's directory) is only a fast positive hint:
+    requiring containment in it would miss the standard ``src``-layout repo, where the pipeline lives in
+    ``pipelines/`` and its components in ``src/``.
     """
     if _INSTALLED_PACKAGE_DIRS.intersection(origin_path.parts):
         return "external"
     if _is_relative_to(origin_path, project_root):
         return "local"
-    return "stdlib"
+    if any(_is_relative_to(origin_path, d) for d in _INTERPRETER_DIRS):
+        return "stdlib"
+    return "local"
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -1599,6 +1633,17 @@ def extract_from_pipeline(pipeline: Any, project_root: Path) -> dict:
         comp_type = comp.get("type", "")
         module_name = comp_type.rpartition(".")[0]
         if classify_module(module_name, project_root) != "local":
+            if not comp_type.startswith(_PLATFORM_NAMESPACES):
+                # Can't be inlined and isn't something the platform ships. Most likely first-party code
+                # deployed from an installed copy (``pip install ./src``), which we cannot tell apart
+                # from a third-party integration - so say so rather than fail on the platform later.
+                logger.warning(
+                    "Component '%s' keeps its original type '%s': it did not resolve to local source, so "
+                    "the platform must be able to import it. If it is your own code, deploy from the "
+                    "source tree rather than from an installed copy.",
+                    comp_name,
+                    comp_type,
+                )
             continue
         logger.debug("Rewriting local component '%s' (%s) to Code", comp_name, comp_type)
         code = _build_code_block(comp_type, project_root)

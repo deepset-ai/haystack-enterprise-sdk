@@ -4,6 +4,7 @@ import ast
 import json
 import os
 import sys
+import sysconfig
 import textwrap
 from pathlib import Path
 from typing import Any, Generator, Optional, Union
@@ -31,6 +32,7 @@ from haystack_enterprise_sdk._service.pipeline_transform import (
     build_config_yaml,
     classify_module,
     detect_project_python,
+    extract_from_file,
     extract_via_subprocess,
     haystack_pin,
     load_pipeline_from_file,
@@ -123,6 +125,54 @@ class TestTransformFixture:
         pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
         doc = _load_yaml(transform_to_config_yaml(pipeline, project_root=FIXTURE_DIR))
         assert doc["components"]["prompt_builder"]["type"].startswith("haystack.")
+
+    def test_component_outside_the_pipeline_files_directory_is_rewritten(self) -> None:
+        # Regression: `extract_from_file` derives the project root from the pipeline file's parent, so a
+        # component in a sibling directory (the standard src layout) used to be left un-inlined.
+        bundle = extract_from_file(FIXTURE_DIR / "pipelines" / "query.py")
+        greeter = bundle["pipeline"]["components"]["greeter"]
+        assert greeter["type"] == CODE_COMPONENT_TYPE
+        assert "class Greeter" in greeter["init_parameters"]["code"]
+
+    def test_no_warning_for_the_untouched_base_component(self, caplog: pytest.LogCaptureFixture) -> None:
+        pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
+        with caplog.at_level("WARNING", logger="haystack_enterprise_sdk._service.pipeline_extract"):
+            extract_from_pipeline(pipeline, FIXTURE_DIR)
+        assert "keeps its original type" not in caplog.text
+
+    def test_warns_when_a_non_platform_component_is_not_rewritten(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A first-party component deployed from an installed copy cannot be inlined and is
+        # indistinguishable from a third-party integration -- so it must at least be reported.
+        target = _write_project(
+            tmp_path,
+            {
+                "site-packages/instcomp.py": """
+                    from haystack import component
+
+                    @component
+                    class Inst:
+                        @component.output_types(out=str)
+                        def run(self, query: str) -> dict:
+                            return {"out": query}
+                """,
+                "pipeline.py": """
+                    import sys, pathlib
+                    sys.path.insert(0, str(pathlib.Path(__file__).parent / "site-packages"))
+                    from instcomp import Inst
+                    from haystack import Pipeline
+
+                    pipeline = Pipeline()
+                    pipeline.add_component("inst", Inst())
+                """,
+            },
+        )
+        with caplog.at_level("WARNING", logger="haystack_enterprise_sdk._service.pipeline_extract"):
+            bundle = extract_from_file(target)
+        assert bundle["pipeline"]["components"]["inst"]["type"] == "instcomp.Inst"
+        assert "keeps its original type" in caplog.text
+        assert "inst" in caplog.text
 
     def test_dependency_block_pins_haystack_version(self) -> None:
         pipeline = load_pipeline_from_file(FIXTURE_DIR / "pipeline.py")
@@ -1257,9 +1307,14 @@ class TestClassifyOrigin:
         origin = tmp_path / "custom_nodes" / "greeter.py"
         assert _classify_origin(origin, tmp_path) == "local"
 
-    def test_outside_project_is_stdlib(self, tmp_path: Path) -> None:
-        origin = Path("/usr/lib/python3.13/json/__init__.py")
+    def test_interpreter_stdlib_is_stdlib(self, tmp_path: Path) -> None:
+        origin = Path(sysconfig.get_paths()["stdlib"]) / "json" / "__init__.py"
         assert _classify_origin(origin, tmp_path) == "stdlib"
+
+    def test_outside_project_but_not_installed_is_local(self, tmp_path: Path) -> None:
+        # The src-layout case: the component sits beside the pipeline file's directory, not under it.
+        origin = tmp_path / "src" / "mycomps" / "foo.py"
+        assert _classify_origin(origin, tmp_path / "pipelines") == "local"
 
 
 class TestClassifyModule:
@@ -1276,6 +1331,21 @@ class TestClassifyModule:
 
     def test_unresolvable_is_external(self, tmp_path: Path) -> None:
         assert classify_module("totally_missing_pkg_xyz", tmp_path) == "external"
+
+    def test_src_layout_component_is_local(self, tmp_path: Path) -> None:
+        # Pipeline in `pipelines/`, component in `src/` -- the layout the classifier used to miss.
+        (tmp_path / "src" / "mycomps").mkdir(parents=True)
+        (tmp_path / "src" / "mycomps" / "__init__.py").write_text("", encoding="utf-8")
+        (tmp_path / "src" / "mycomps" / "foo.py").write_text("x = 1\n", encoding="utf-8")
+        sys.path.insert(0, str(tmp_path / "src"))
+        assert classify_module("mycomps.foo", tmp_path / "pipelines") == "local"
+
+    def test_platform_namespace_stays_external_under_the_project_root(self, tmp_path: Path) -> None:
+        # An editable/vendored `haystack` must never be inlined -- the platform provides it.
+        (tmp_path / "haystack").mkdir()
+        (tmp_path / "haystack" / "__init__.py").write_text("", encoding="utf-8")
+        sys.path.insert(0, str(tmp_path))
+        assert classify_module("haystack", tmp_path) == "external"
 
 
 # --------------------------------------------------------------------------- #
