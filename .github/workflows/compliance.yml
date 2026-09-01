@@ -4,6 +4,9 @@ on:
   push:
     paths:
       - 'pyproject.toml'
+      # A transitive bump changes only the lockfile, and it can still pull in a
+      # new licence, so the scan has to see uv.lock too.
+      - 'uv.lock'
   schedule:
     - cron: '0 0 * * *'  # every day at midnight
 
@@ -11,12 +14,17 @@ env:
   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
   SLACK_ALERT_CHANNEL: "#dc-alerts"
 
+permissions:
+  contents: read
+
 jobs:
   check-license-compliance:
     name: Check license compliance
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -34,7 +42,9 @@ jobs:
           uv pip freeze > requirements-full.txt
 
       - name: Send license report to Fossa
-        # This will collect all necessary information (mostly used dependencies) and send it to the Fossa API
+        # This will collect all necessary information (mostly used dependencies) and send it to the Fossa API.
+        # FOSSA_LICENSE_SCAN_TOKEN has to exist in BOTH secret stores: Dependabot-triggered
+        # runs only ever see Dependabot secrets, never the organisation's Actions secrets.
         uses: fossas/fossa-action@ff70fe9fe17cbd2040648f1c45e8ec4e4884dcf3 # Use a specific version if locking is preferred
         with:
           api-key: ${{ secrets.FOSSA_LICENSE_SCAN_TOKEN }}
