@@ -48,9 +48,7 @@ together.
 To rehearse without shipping, run `CI_pypi_release.yml` manually (`workflow_dispatch`). That path
 stamps a throwaway `.devN` version and uploads to TestPyPI; it can never reach PyPI.
 
-The workflow strips a leading `v` before comparing the tag to `pyproject.toml`, and the `pypi`
-deployment environment allows both shapes, so an unprefixed tag still releases correctly — `0.1.0` was
-tagged that way. Prefer `v` for anything new.
+Use `v` prefix for tags. For example, tag `v0.1.1` instead of `0.1.1`.
 
 ## Software design
 
