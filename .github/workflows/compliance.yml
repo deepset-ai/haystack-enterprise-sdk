@@ -20,12 +20,6 @@ permissions:
 jobs:
   check-license-compliance:
     name: Check license compliance
-    # Dependabot-triggered runs read the (empty) Dependabot secret store, not the
-    # organisation's Actions secrets, so FOSSA_LICENSE_SCAN_TOKEN is blank and the
-    # FOSSA CLI exits 1 on every dependency PR. Skip rather than fail. To scan
-    # dependency bumps too, add FOSSA_LICENSE_SCAN_TOKEN as a Dependabot secret
-    # and drop this condition.
-    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -48,7 +42,9 @@ jobs:
           uv pip freeze > requirements-full.txt
 
       - name: Send license report to Fossa
-        # This will collect all necessary information (mostly used dependencies) and send it to the Fossa API
+        # This will collect all necessary information (mostly used dependencies) and send it to the Fossa API.
+        # FOSSA_LICENSE_SCAN_TOKEN has to exist in BOTH secret stores: Dependabot-triggered
+        # runs only ever see Dependabot secrets, never the organisation's Actions secrets.
         uses: fossas/fossa-action@ff70fe9fe17cbd2040648f1c45e8ec4e4884dcf3 # Use a specific version if locking is preferred
         with:
           api-key: ${{ secrets.FOSSA_LICENSE_SCAN_TOKEN }}
