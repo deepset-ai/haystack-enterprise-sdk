@@ -4,6 +4,9 @@ on:
   push:
     paths:
       - 'pyproject.toml'
+      # A transitive bump changes only the lockfile, and it can still pull in a
+      # new licence, so the scan has to see uv.lock too.
+      - 'uv.lock'
   schedule:
     - cron: '0 0 * * *'  # every day at midnight
 
@@ -17,6 +20,12 @@ permissions:
 jobs:
   check-license-compliance:
     name: Check license compliance
+    # Dependabot-triggered runs read the (empty) Dependabot secret store, not the
+    # organisation's Actions secrets, so FOSSA_LICENSE_SCAN_TOKEN is blank and the
+    # FOSSA CLI exits 1 on every dependency PR. Skip rather than fail. To scan
+    # dependency bumps too, add FOSSA_LICENSE_SCAN_TOKEN as a Dependabot secret
+    # and drop this condition.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
