@@ -1,9 +1,10 @@
 """Tests for the PipelineClient class."""
 
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from haystack import AsyncPipeline, Pipeline
+from haystack import Pipeline
 
 from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
 from haystack_enterprise_sdk._service.pipeline_service import PipelineService
@@ -18,6 +19,7 @@ from haystack_enterprise_sdk.workflows.async_client.async_pipeline_client import
     AsyncPipelineClient,
 )
 from haystack_enterprise_sdk.workflows.sync_client.pipeline_client import PipelineClient
+from tests.haystack_compat import AsyncPipeline, requires_async_pipeline
 
 
 class TestPipelineClientInit:
@@ -112,10 +114,10 @@ class TestPipelineClientImport:
             outputs=PipelineOutputs(answers="answer_builder.answers"),
         )
 
-    @pytest.mark.parametrize("pipeline_type", [Pipeline, AsyncPipeline])
+    @pytest.mark.parametrize("pipeline_type", [Pipeline, pytest.param(AsyncPipeline, marks=requires_async_pipeline)])
     def test_import_into_platform_and_index_config_success(
         self,
-        pipeline_type: Pipeline | AsyncPipeline,
+        pipeline_type: Any,
         mock_api_service_setup: dict,
         client_with_explicit_config: PipelineClient,
         index_config: IndexConfig,
@@ -133,10 +135,10 @@ class TestPipelineClientImport:
         )
         mock_api_service_setup["service"].import_async.assert_called_once_with(mock_pipeline, index_config)
 
-    @pytest.mark.parametrize("pipeline_type", [Pipeline, AsyncPipeline])
+    @pytest.mark.parametrize("pipeline_type", [Pipeline, pytest.param(AsyncPipeline, marks=requires_async_pipeline)])
     def test_import_into_platform_and_pipeline_config_success(
         self,
-        pipeline_type: Pipeline | AsyncPipeline,
+        pipeline_type: Any,
         mock_api_service_setup: dict,
         client_with_explicit_config: PipelineClient,
         pipeline_config: PipelineConfig,
