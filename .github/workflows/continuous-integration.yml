@@ -4,8 +4,7 @@ on:
   pull_request:
 
 permissions:
-  pull-requests: write
-  contents: write
+  contents: read
 
 jobs:
   format:
@@ -94,6 +93,12 @@ jobs:
   tests:
     name: Tests
     runs-on: ubuntu-latest
+    # Only this job talks back to the PR. `contents` stays read: the coverage
+    # action only needs write to push its baseline to the data branch, which
+    # happens on pushes to the default branch, and this workflow is PR-only.
+    permissions:
+      contents: read
+      pull-requests: write
     env:
       API_KEY: "not-a-real-api-key"
     steps:
@@ -116,3 +121,15 @@ jobs:
         uses: py-cov-action/python-coverage-comment-action@a05be3d2e8a6272d3ef5fb2840ab20368bb2eb71
         with:
           GITHUB_TOKEN: ${{ github.token }}
+
+      # A pull request from a fork gets a read-only token, so the step above
+      # cannot post; it writes the comment to a file instead. Hand that file to
+      # coverage_comment.yml, which runs in this repository's context and can.
+      # On a same-repo PR the comment is posted directly and no file is written,
+      # so this step is skipped.
+      - name: Upload coverage comment to be posted
+        if: steps.coverage_comment.outputs.COMMENT_FILE_WRITTEN == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-coverage-comment-action
+          path: python-coverage-comment-action.txt
