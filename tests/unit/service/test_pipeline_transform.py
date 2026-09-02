@@ -1,10 +1,10 @@
 """Tests for the pipeline transform (local .py -> deployable platform YAML)."""
 
 import ast
+import importlib.util
 import json
 import os
 import sys
-import sysconfig
 import textwrap
 from pathlib import Path
 from typing import Any, Generator, Optional, Union
@@ -1308,8 +1308,10 @@ class TestClassifyOrigin:
         assert _classify_origin(origin, tmp_path) == "local"
 
     def test_interpreter_stdlib_is_stdlib(self, tmp_path: Path) -> None:
-        origin = Path(sysconfig.get_paths()["stdlib"]) / "json" / "__init__.py"
-        assert _classify_origin(origin, tmp_path) == "stdlib"
+        # Resolved exactly as `classify_module` resolves it, so a symlinked Python install still matches.
+        spec = importlib.util.find_spec("json")
+        assert spec is not None and spec.origin is not None
+        assert _classify_origin(Path(spec.origin).resolve(), tmp_path) == "stdlib"
 
     def test_outside_project_but_not_installed_is_local(self, tmp_path: Path) -> None:
         # The src-layout case: the component sits beside the pipeline file's directory, not under it.
