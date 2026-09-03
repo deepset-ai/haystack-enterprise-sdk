@@ -52,14 +52,6 @@ the pipeline file, `validate` fails with `ModuleNotFoundError: No module named '
 the extra, or point the CLI at the interpreter that has your pipeline's dependencies with
 `--python /path/to/python`.
 
-## Install unreleased changes
-
-To try what is on `main` before it is released:
-
-```bash
-uv tool install git+https://github.com/deepset-ai/haystack-enterprise-sdk.git
-```
-
 ## If `haystack-enterprise` is not found
 
 The command lives in the scripts directory of the environment you installed into. If that directory is
