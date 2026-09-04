@@ -60,7 +60,7 @@ dependencies = [
 # environment (i.e. there is no separate project venv to detect).
 # Install with: pip install "haystack-enterprise-sdk[deploy]"  (or uv pip install / uv tool install).
 deploy = [
-  "haystack-ai>=2.13.2",
+  "haystack-ai>=3.1.0",
 ]
 
 [project.urls]
@@ -75,16 +75,16 @@ haystack-enterprise = "haystack_enterprise_sdk.cli:run_packaged"
 test = [
   "pytest-cov==7.1.0",
   "pytest==8.4.2",
-  "pytest-asyncio==1.2.0",
-  "haystack-ai>=2.13.2",    # only for testing
+  "pytest-asyncio==1.4.0",
+  "haystack-ai>=3.1.0",    # only for testing
   "respx==0.23.1",
 ]
 code-quality = [
-  "ruff==0.15.12",
-  "mypy==1.19.1",
-  "pre-commit==4.3.0",
+  "ruff==0.16.5",
+  "mypy==2.3.1",
+  "pre-commit==4.6.2",
   "types-aiofiles==25.1.0.20260518",
-  "types-tabulate==0.9.0.20241207",
+  "types-tabulate==0.10.0.20260508",
 ]
 
 [tool.uv.build-backend]
