@@ -72,6 +72,7 @@ incrementally.
 
 ## Next steps
 
-- [CLI Command Flow](../cli_command_flow.md) — the full deploy flow, including managed services,
+- [Deploy a pipeline](../guides/deploy-a-pipeline.md) — the full flow, including managed services,
   sharing a prototype link, and the `io.yaml` file that pins input/output mapping.
-- [Upload Files](../upload_files.md) — get documents into a workspace.
+- [Upload files](../guides/upload-files.md) — get documents into a workspace.
+- [CLI reference](../reference/cli.md) — every command and flag.
