@@ -7,6 +7,9 @@ To install the CLI, use `pip`:
 ```shell
 pip install haystack-enterprise-sdk
 ```
+
+See [Install](../../get-started/install.md) for details.
+
 ## Configuration
 Before using the CLI, log in and provide your credentials. You can do this by running the command:
 
