@@ -1,0 +1,22 @@
+name: Trigger Documentation Generation
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+
+jobs:
+  trigger-docs:
+    if: github.actor != 'dependabot[bot]' && github.event.pull_request.draft == false
+    uses: deepset-ai/dc-docs/.github/workflows/generate-docs.yml@main
+    with:
+      source_repo: ${{ github.repository }}
+      source_pr_number: ${{ github.event.pull_request.number }}
+      source_pr_title: ${{ github.event.pull_request.title }}
+      source_pr_body: ${{ github.event.pull_request.body }}
+    secrets:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      docs_token: ${{ secrets.DOCS_TOKEN }}
+      deepset_api_key: ${{ secrets.DEEPSET_API_KEY }}
+      # linear_api_key: ${{ secrets.LINEAR_API_KEY }}  # Enable to group docs PRs by Linear project. Requires LINEAR_API_KEY secret.
