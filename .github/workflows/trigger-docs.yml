@@ -19,4 +19,4 @@ jobs:
       anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
       docs_token: ${{ secrets.DOCS_TOKEN }}
       deepset_api_key: ${{ secrets.DEEPSET_API_KEY }}
-      linear_api_key: ${{ secrets.LINEAR_API_KEY }}
+      # linear_api_key: ${{ secrets.LINEAR_API_KEY }}  # Enable to group docs PRs by Linear project. Requires LINEAR_API_KEY secret.
