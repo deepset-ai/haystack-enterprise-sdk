@@ -193,5 +193,9 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
         return self._async_client.workspace_name
 
     def deployment_base_url(self, deployment_id: Any) -> str:
-        """The OpenAI-compatible base URL of a deployment. See :meth:`AsyncDeploymentClient.deployment_base_url`."""
+        """The per-deployment base URL. See :meth:`AsyncDeploymentClient.deployment_base_url`."""
         return self._async_client.deployment_base_url(deployment_id)
+
+    def chat_completions_base_url(self) -> str:
+        """The workspace-scoped chat-completions base URL. See :meth:`AsyncDeploymentClient.chat_completions_base_url`."""
+        return self._async_client.chat_completions_base_url()

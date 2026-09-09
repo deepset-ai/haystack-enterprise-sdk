@@ -19,6 +19,7 @@ from haystack_enterprise_sdk._api.deployments import (
 )
 from haystack_enterprise_sdk._api.haystack_enterprise_api import (
     HaystackEnterpriseAPI,
+    chat_completions_base_url,
     deployment_base_url,
 )
 from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, OnRetry
@@ -76,15 +77,22 @@ class AsyncDeploymentClient:
         return self._workspace_name
 
     def deployment_base_url(self, deployment_id: Any) -> str:
-        """The OpenAI-compatible base URL of a deployment in this client's workspace.
-
-        Append ``/chat/completions`` to call it directly, or hand it to an OpenAI client as ``base_url``.
-        Only usable once the deployment has an active revision.
+        """The per-deployment base URL (for per-deployment routes like ``/chat`` and ``/chat-stream``).
 
         :param deployment_id: Id of the deployment (e.g. ``DeployResult.deployment.deployment_id``).
         :return: The deployment's base URL.
         """
         return deployment_base_url(self._api_config.api_url, self._workspace_name, deployment_id)
+
+    def chat_completions_base_url(self) -> str:
+        """The workspace-scoped OpenAI-compatible base URL for chat completions.
+
+        Use ``POST <this>/chat/completions`` with ``model`` set to ``{workspace}/{deployment_id}`` (UUID).
+        Pass this as ``base_url`` to an OpenAI client.
+
+        :return: e.g. ``https://api.cloud.deepset.ai/api/v1/workspaces/my-ws/deployments/v1``.
+        """
+        return chat_completions_base_url(self._api_config.api_url, self._workspace_name)
 
     @asynccontextmanager
     async def _service(self) -> AsyncIterator[DeploymentService]:

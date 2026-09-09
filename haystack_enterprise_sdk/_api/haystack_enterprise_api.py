@@ -148,11 +148,9 @@ def raise_for_unexpected_status(
 
 
 def deployment_base_url(api_url: str, workspace_name: str, deployment_id: Any) -> str:
-    """Build the base URL of a deployment's OpenAI-compatible endpoint.
+    """Build the per-deployment base URL (used for per-deployment routes like ``/chat`` and ``/chat-stream``).
 
-    The platform serves ``POST <this>/chat/completions`` for a deployment with an active revision. It is
-    keyed on the deployment id, not the service name. Returned without the ``/chat/completions`` suffix
-    because that is exactly the ``base_url`` an OpenAI client expects (it appends the path itself).
+    Returned without a trailing path segment because callers append their own route (e.g. ``/chat``).
 
     :param api_url: Base API URL, already normalized (see :func:`~haystack_enterprise_sdk._api.config.normalize_base_url`).
     :param workspace_name: Name of the workspace the deployment lives in.
@@ -160,6 +158,20 @@ def deployment_base_url(api_url: str, workspace_name: str, deployment_id: Any) -
     :return: e.g. ``https://api.cloud.deepset.ai/api/v1/workspaces/my-ws/deployments/<uuid>``.
     """
     return f"{api_url}/{API_VERSION_PATH}/workspaces/{workspace_name}/deployments/{deployment_id}"
+
+
+def chat_completions_base_url(api_url: str, workspace_name: str) -> str:
+    """Build the workspace-scoped OpenAI-compatible chat-completions base URL.
+
+    The platform's OpenAI-compatible gateway lives at ``POST <this>/chat/completions``.
+    The ``model`` field must be ``{workspace_name}/{deployment_id}`` (UUID, not service name).
+    Returned without the ``/chat/completions`` suffix so an OpenAI client can use it as ``base_url``.
+
+    :param api_url: Base API URL, already normalized (see :func:`~haystack_enterprise_sdk._api.config.normalize_base_url`).
+    :param workspace_name: Name of the workspace.
+    :return: e.g. ``https://api.cloud.deepset.ai/api/v1/workspaces/my-ws/deployments/v1``.
+    """
+    return f"{api_url}/{API_VERSION_PATH}/workspaces/{workspace_name}/deployments/v1"
 
 
 class HaystackEnterpriseAPI:
