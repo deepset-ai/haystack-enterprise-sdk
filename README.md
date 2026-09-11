@@ -100,14 +100,14 @@ A deployed service is served over an OpenAI-compatible chat-completions endpoint
 once the service is running:
 
 ```bash
-curl -N https://api.cloud.deepset.ai/api/v1/workspaces/<workspace>/deployments/<deployment-id>/chat/completions \
+curl -N https://api.cloud.deepset.ai/api/v1/workspaces/<workspace>/deployments/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model": "<workspace>/<service-name>", "messages": [{"role": "user", "content": "Hello"}]}'
+  -d '{"model": "<workspace>/<deployment-id>", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 The response is a server-sent-event stream of `chat.completion.chunk` objects. Any OpenAI client works —
-point its `base_url` at everything up to and including `/deployments/<deployment-id>`.
+point its `base_url` at everything up to and including `/deployments/v1`.
 
 Pass `--verbose` to any command for INFO/DEBUG logs, and `<command> --help` for its arguments.
 

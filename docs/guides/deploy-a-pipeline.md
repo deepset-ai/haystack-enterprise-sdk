@@ -201,12 +201,12 @@ haystack-enterprise service-status my-service
 Once the service is serving, `deploy` prints its OpenAI-compatible chat-completions endpoint:
 
 ```
-POST https://api.cloud.deepset.ai/api/v1/workspaces/<workspace>/deployments/<deployment-id>/chat/completions
+POST https://api.cloud.deepset.ai/api/v1/workspaces/<workspace>/deployments/v1/chat/completions
 ```
 
-Send `{"model": "<workspace>/<service-name>", "messages": [...]}` with an `Authorization: Bearer` API
+Send `{"model": "<workspace>/<deployment-id>", "messages": [...]}` with an `Authorization: Bearer` API
 key and you get back a server-sent-event stream of `chat.completion.chunk` objects. Any OpenAI client
-works: use everything up to and including `/deployments/<deployment-id>` as its `base_url`.
+works: use everything up to and including `/deployments/v1` as its `base_url`.
 
 ### Optional: share a prototype link
 

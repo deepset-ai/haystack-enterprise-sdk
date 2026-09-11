@@ -53,11 +53,11 @@ if your socket names already make that obvious.
 When it is serving, `deploy` prints an OpenAI-compatible chat-completions endpoint:
 
 ```
-POST https://api.cloud.deepset.ai/api/v1/workspaces/<workspace>/deployments/<deployment-id>/chat/completions
+POST https://api.cloud.deepset.ai/api/v1/workspaces/<workspace>/deployments/v1/chat/completions
 ```
 
 Any OpenAI client works — point its `base_url` at everything up to and including
-`/deployments/<deployment-id>`.
+`/deployments/v1`.
 
 Check on it any time:
 
