@@ -15,6 +15,7 @@ from haystack_enterprise_sdk._api.deployments import (
     DeploymentRevisionStatus,
     DeploymentServiceLevel,
     DeploymentStatus,
+    FailedToTagDeploymentError,
     PipelineValidationError,
     PipelineValidationIssue,
     PipelineValidationResult,
@@ -187,6 +188,23 @@ class TestResolveAndPush:
         await service.deploy(FIXTURE, "svc", create=True)
 
         service._deployments.add_tag.assert_not_called()
+
+    async def test_create_with_tag_failure_does_not_abort_deploy(self, service: MockedDeploymentService) -> None:
+        # The service is already created by the time a tag add fails, so deploy must still push the
+        # revision rather than raising -- the tag can be retried independently via `tag-add`.
+        created = _deployment("svc")
+        service._deployments.find_by_name.return_value = None
+        service._deployments.create_deployment.return_value = created
+        service._deployments.add_tag.side_effect = FailedToTagDeploymentError("nope")
+        pushed = _revision(created.deployment_id)
+        service._deployments.push_revision.return_value = pushed
+
+        result = await service.deploy(
+            FIXTURE, "svc", create=True, create_options=CreateOptions(tags=("team-success",))
+        )
+
+        assert result.revision is pushed
+        assert result.deployment.tags == []
 
 
 class TestCreateOptions:

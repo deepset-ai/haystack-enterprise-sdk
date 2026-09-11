@@ -22,6 +22,7 @@ from haystack_enterprise_sdk._api.deployments import (
     DeploymentsAPI,
     DeploymentServiceLevel,
     DeploymentStatus,
+    FailedToTagDeploymentError,
     PipelineValidationError,
     PipelineValidationResult,
 )
@@ -589,7 +590,19 @@ class DeploymentService:
             # Sequential, not gathered: each call returns the full tag list so far, and the
             # platform's own duplicate/limit checks are per-request -- gathering could race two
             # adds past the 3-tag cap. There are at most 3 of these, so latency is not a concern.
-            deployment.tags = await self._deployments.add_tag(self._workspace_name, deployment.deployment_id, tag_name)
+            #
+            # Caught here rather than left to propagate: the service was already created, so raising
+            # would abort a deploy that otherwise fully succeeded. `tag-add` can retry independently.
+            try:
+                deployment.tags = await self._deployments.add_tag(
+                    self._workspace_name, deployment.deployment_id, tag_name
+                )
+            except FailedToTagDeploymentError:
+                logger.warning(
+                    "Failed to add tag to newly created service; retry with 'tag-add'.",
+                    service=service_name,
+                    tag=tag_name,
+                )
         return deployment
 
     async def _poll_until_settled(
