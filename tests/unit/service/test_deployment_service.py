@@ -199,9 +199,7 @@ class TestResolveAndPush:
         pushed = _revision(created.deployment_id)
         service._deployments.push_revision.return_value = pushed
 
-        result = await service.deploy(
-            FIXTURE, "svc", create=True, create_options=CreateOptions(tags=("team-success",))
-        )
+        result = await service.deploy(FIXTURE, "svc", create=True, create_options=CreateOptions(tags=("team-success",)))
 
         assert result.revision is pushed
         assert result.deployment.tags == []
