@@ -147,6 +147,9 @@ class CreateOptions:
     cpu_limit: Optional[str] = None
     memory_limit: Optional[str] = None
     gpu_limit_gigabyte: Optional[int] = None
+    # Applied with one add_tag call each, right after creation -- the create-deployment endpoint
+    # itself has no `tags` field. Not a sizing field: it applies to serverless services too.
+    tags: Tuple[str, ...] = ()
 
     _SIZING_FIELDS = (
         "service_level",
@@ -538,7 +541,7 @@ class DeploymentService:
             )
         options = create_options or CreateOptions()
         logger.info("Creating service deployment.", service=service_name, mode=options.deployment_mode.value)
-        return await self._deployments.create_deployment(
+        deployment = await self._deployments.create_deployment(
             self._workspace_name,
             name=service_name,
             deployment_mode=options.deployment_mode,
@@ -550,6 +553,12 @@ class DeploymentService:
             memory_limit=options.memory_limit,
             gpu_limit_gigabyte=options.gpu_limit_gigabyte,
         )
+        for tag_name in options.tags:
+            # Sequential, not gathered: each call returns the full tag list so far, and the
+            # platform's own duplicate/limit checks are per-request -- gathering could race two
+            # adds past the 3-tag cap. There are at most 3 of these, so latency is not a concern.
+            deployment.tags = await self._deployments.add_tag(self._workspace_name, deployment.deployment_id, tag_name)
+        return deployment
 
     async def _poll_until_settled(
         self,

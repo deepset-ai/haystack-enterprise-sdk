@@ -281,6 +281,27 @@ class TestDeployCommand:
         assert "DEPLOYMENT_IN_PROGRESS" not in result.stdout
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_create_with_tags_passes_options(self, client_cls: Mock) -> None:
+        client_cls.return_value.find_service.return_value = None
+        client_cls.return_value.deploy.return_value = _result(activated=True, mode=DeploymentMode.SERVERLESS)
+        result = runner.invoke(
+            cli_app,
+            ["deploy", FIXTURE, "svc", "--create", "--tag", "team-success", "--tag", "hackathon"],
+        )
+        assert result.exit_code == 0
+        _, kwargs = client_cls.return_value.deploy.call_args
+        assert kwargs["create_options"].tags == ("team-success", "hackathon")
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_tag_on_existing_service_fails(self, client_cls: Mock) -> None:
+        client_cls.return_value.find_service.return_value = _deployment()
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--tag", "hackathon"])
+        assert result.exit_code == 1
+        assert "already exists" in result.stdout
+        assert "--tag" in result.stdout
+        client_cls.return_value.deploy.assert_not_called()
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_sizing_flags_without_managed_fail(self, client_cls: Mock) -> None:
         # This guard is pure flag validation: it fires before the service is even looked up.
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--cpu", "2", "--max-replicas", "3"])
