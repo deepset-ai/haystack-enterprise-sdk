@@ -210,6 +210,20 @@ class AsyncDeploymentClient:
         async with self._service() as service:
             return await service.get_service_status(service_name)
 
+    async def add_tag(self, service_name: str, tag_name: str) -> List[str]:
+        """Add a tag to a service by name, independent of deploy/create. See
+        :meth:`haystack_enterprise_sdk._service.deployment_service.DeploymentService.add_tag`.
+        """
+        async with self._service() as service:
+            return await service.add_tag(service_name, tag_name)
+
+    async def remove_tag(self, service_name: str, tag_name: str) -> List[str]:
+        """Remove a tag from a service by name. See
+        :meth:`haystack_enterprise_sdk._service.deployment_service.DeploymentService.remove_tag`.
+        """
+        async with self._service() as service:
+            return await service.remove_tag(service_name, tag_name)
+
     async def create_shared_prototype(
         self, service_name: str, options: Optional[ShareOptions] = None
     ) -> SharedPrototype:

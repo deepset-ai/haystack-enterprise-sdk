@@ -10,7 +10,7 @@ list endpoint and matching client-side.
 
 import asyncio
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Type, TypeVar
 from uuid import UUID
 
@@ -97,6 +97,10 @@ class Deployment:
     # revision, so it stays None until a revision is activated. This is the platform's own answer to
     # "is this a chat pipeline?" -- the CLI reads it rather than guessing from components or sockets.
     output_type: Optional[PipelineOutputType] = None
+    # Free-form labels, capped server-side at MAX_SERVICE_TAGS (3). Not settable at creation --
+    # the platform has no `tags` field on its create-deployment request, only the dedicated
+    # add/remove-tag endpoints below, so this always reflects a create followed by N tag calls.
+    tags: List[str] = field(default_factory=list)
 
     @classmethod
     def from_response(cls, body: Dict[str, Any]) -> "Deployment":
@@ -120,6 +124,7 @@ class Deployment:
             # The platform enum has values this SDK does not model (e.g. "unknown"), and the field is
             # absent until a revision is active, so anything unrecognized degrades to None.
             output_type=_enum_or_none(PipelineOutputType, body.get("output_type")),
+            tags=list(body.get("tags") or []),
         )
 
 
@@ -242,6 +247,15 @@ class FailedToPushRevisionError(Exception):
 
 class FailedToActivateRevisionError(Exception):
     """Raised when a deployment revision could not be activated."""
+
+
+class FailedToTagDeploymentError(Exception):
+    """Raised when a tag could not be added to, or removed from, a deployment.
+
+    Covers the platform's own rejections too: a name over 50 chars or outside
+    ``[A-Za-z0-9 _-]``, a duplicate (case-insensitive), or a fourth tag past MAX_SERVICE_TAGS (3)
+    all come back as a 4xx from the tag endpoints, not just a network/auth failure.
+    """
 
 
 class FailedToValidatePipelineError(Exception):
@@ -452,6 +466,50 @@ class DeploymentsAPI:
             response, (codes.OK,), FailedToActivateRevisionError, f"Failed to activate revision '{revision_id}'."
         )
         return Deployment.from_response(response.json())
+
+    async def add_tag(self, workspace_name: str, deployment_id: UUID, tag_name: str) -> List[str]:
+        """Add a tag to a deployment.
+
+        :param workspace_name: Name of the workspace.
+        :param deployment_id: Deployment id.
+        :param tag_name: Tag name (1-50 chars; letters, digits, spaces, underscores, hyphens).
+            Rejected as a duplicate case-insensitively, and past the third tag on one deployment.
+        :raises FailedToTagDeploymentError: If the tag could not be added.
+        :return: The deployment's full tag list after the add.
+        """
+        response = await self._haystack_enterprise_api.post(
+            workspace_name=workspace_name,
+            endpoint=f"{self._ENDPOINT}/{deployment_id}/tags",
+            json={"name": tag_name},
+        )
+        raise_for_unexpected_status(
+            response,
+            (codes.OK,),
+            FailedToTagDeploymentError,
+            f"Failed to add tag {tag_name!r} to deployment '{deployment_id}'.",
+        )
+        return list(response.json())
+
+    async def remove_tag(self, workspace_name: str, deployment_id: UUID, tag_name: str) -> List[str]:
+        """Remove a tag from a deployment. Matching is case-insensitive.
+
+        :param workspace_name: Name of the workspace.
+        :param deployment_id: Deployment id.
+        :param tag_name: Tag name to remove.
+        :raises FailedToTagDeploymentError: If the tag could not be removed (including "not found").
+        :return: The deployment's full tag list after the removal.
+        """
+        response = await self._haystack_enterprise_api.delete(
+            workspace_name=workspace_name,
+            endpoint=f"{self._ENDPOINT}/{deployment_id}/tags/{tag_name}",
+        )
+        raise_for_unexpected_status(
+            response,
+            (codes.OK,),
+            FailedToTagDeploymentError,
+            f"Failed to remove tag {tag_name!r} from deployment '{deployment_id}'.",
+        )
+        return list(response.json())
 
     async def validate_pipeline(
         self,

@@ -27,6 +27,7 @@ from haystack_enterprise_sdk._api.config import (
 from haystack_enterprise_sdk._api.deployments import (
     DeploymentMode,
     DeploymentServiceLevel,
+    FailedToTagDeploymentError,
     PipelineValidationError,
 )
 from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPIError
@@ -449,6 +450,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     memory: Optional[str] = None,
     gpu: Optional[int] = None,
     idle_timeout: Optional[int] = None,
+    tag: Optional[List[str]] = typer.Option(
+        None, "--tag", help="Tag to add when creating the service (repeatable; up to 3)."
+    ),
     python: Optional[str] = None,
     dry_run: bool = False,
     output: Optional[Path] = None,
@@ -492,6 +496,11 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param memory: Memory limit, e.g. '2Gi' (with --managed).
     :param gpu: GPU memory limit in gigabytes (with --managed).
     :param idle_timeout: Idle timeout in seconds before scale-down (with --managed).
+    :param tag: Tag to add to the service when it is created (repeatable; the platform allows at
+        most 3 per service). Only applies when the service is created -- pass --create, or omit
+        --create against a service name that does not exist yet. Rejected if the service already
+        exists, same as --managed and the sizing flags -- use `tag-add`/`tag-remove` to change
+        tags on a service after creation.
     :param python: Path to the Python interpreter used to load your pipeline (defaults to an
         auto-detected virtualenv near the target file, else the current interpreter).
     :param dry_run: Transform the pipeline and print/write the resulting YAML without deploying. No
@@ -523,6 +532,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
 
     Create a managed service with explicit sizing (activates and waits for the rollout):
     `haystack-enterprise deploy pipeline.py my-service --managed --service-level PRODUCTION --cpu 2`
+
+    Create a service tagged for a team and a hackathon, up to 3 tags:
+    `haystack-enterprise deploy pipeline.py my-service --create --tag team-success --tag hackathon`
 
     Describe the revision instead of using the auto-generated comment:
     `haystack-enterprise deploy pipeline.py my-service -m "Bump embedder model to bge-large"`
@@ -575,8 +587,8 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     if create is False and existing is None:
         typer.echo(f"No service named '{service_name}' in workspace '{workspace_name}'. Drop --no-create to create it.")
         raise typer.Exit(1)
-    if existing is not None and (managed or given_sizing):
-        creation_flags = (["--managed"] if managed else []) + given_sizing
+    if existing is not None and (managed or given_sizing or tag):
+        creation_flags = (["--managed"] if managed else []) + given_sizing + (["--tag"] if tag else [])
         applies = "only applies" if len(creation_flags) == 1 else "only apply"
         typer.echo(
             f"Service '{service_name}' already exists; {', '.join(creation_flags)} {applies} when a "
@@ -596,9 +608,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             cpu_limit=cpu,
             memory_limit=memory,
             gpu_limit_gigabyte=gpu,
+            tags=tuple(tag or ()),
         )
     else:
-        create_options = CreateOptions(deployment_mode=DeploymentMode.SERVERLESS)
+        create_options = CreateOptions(deployment_mode=DeploymentMode.SERVERLESS, tags=tuple(tag or ()))
 
     activate = not skip_activation
 
@@ -1649,10 +1662,68 @@ def service_status(
                 "pending_revision_id": (
                     str(deployment.pending_revision_id) if deployment.pending_revision_id else None
                 ),
+                "tags": deployment.tags,
             },
             indent=4,
         )
     )
+
+
+@cli_app.command()
+def tag_add(
+    service_name: str,
+    tag_name: str,
+    api_key: Optional[str] = None,
+    api_url: Optional[str] = None,
+    workspace_name: str = DEFAULT_WORKSPACE_NAME,
+) -> None:
+    """Add a tag to a service deployment, independent of deploy/create.
+
+    :param service_name: Name of the service deployment.
+    :param tag_name: Tag name (1-50 chars; letters, digits, spaces, underscores, hyphens).
+        Rejected as a duplicate case-insensitively, and past the third tag on one service.
+    :param api_key: deepset API key to use for authentication.
+    :param api_url: API URL to use for authentication.
+    :param workspace_name: Workspace of the service. Uses the workspace from the .ENV file by default.
+
+    Example:
+    `haystack-enterprise tag-add my-service hackathon`
+    """
+    client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
+    try:
+        tags = client.add_tag(service_name, tag_name)
+    except (ServiceNotFoundError, FailedToTagDeploymentError) as err:
+        typer.echo(str(err))
+        raise typer.Exit(1)  # noqa: B904
+    typer.echo(f"Tags on '{service_name}': {', '.join(tags) or '(none)'}")
+
+
+@cli_app.command()
+def tag_remove(
+    service_name: str,
+    tag_name: str,
+    api_key: Optional[str] = None,
+    api_url: Optional[str] = None,
+    workspace_name: str = DEFAULT_WORKSPACE_NAME,
+) -> None:
+    """Remove a tag from a service deployment. Matching is case-insensitive.
+
+    :param service_name: Name of the service deployment.
+    :param tag_name: Tag name to remove.
+    :param api_key: deepset API key to use for authentication.
+    :param api_url: API URL to use for authentication.
+    :param workspace_name: Workspace of the service. Uses the workspace from the .ENV file by default.
+
+    Example:
+    `haystack-enterprise tag-remove my-service hackathon`
+    """
+    client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
+    try:
+        tags = client.remove_tag(service_name, tag_name)
+    except (ServiceNotFoundError, FailedToTagDeploymentError) as err:
+        typer.echo(str(err))
+        raise typer.Exit(1)  # noqa: B904
+    typer.echo(f"Tags on '{service_name}': {', '.join(tags) or '(none)'}")
 
 
 def version_callback(value: bool) -> None:

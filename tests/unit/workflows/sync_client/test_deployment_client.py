@@ -96,6 +96,30 @@ def test_get_service_status_forwards(async_cls: Mock) -> None:
 
 
 @patch("haystack_enterprise_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
+def test_add_tag_forwards(async_cls: Mock) -> None:
+    async_instance = async_cls.return_value
+    async_instance.add_tag = AsyncMock(return_value=["hackathon"])
+
+    client = DeploymentClient()
+    result = client.add_tag("svc", "hackathon")
+
+    assert result == ["hackathon"]
+    async_instance.add_tag.assert_awaited_once_with("svc", "hackathon")
+
+
+@patch("haystack_enterprise_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
+def test_remove_tag_forwards(async_cls: Mock) -> None:
+    async_instance = async_cls.return_value
+    async_instance.remove_tag = AsyncMock(return_value=[])
+
+    client = DeploymentClient()
+    result = client.remove_tag("svc", "hackathon")
+
+    assert result == []
+    async_instance.remove_tag.assert_awaited_once_with("svc", "hackathon")
+
+
+@patch("haystack_enterprise_sdk.workflows.sync_client.deployment_client.AsyncDeploymentClient")
 def test_create_shared_prototype_forwards(async_cls: Mock) -> None:
     from haystack_enterprise_sdk._api.shared_prototypes import SharedPrototype
     from haystack_enterprise_sdk._service.deployment_service import ShareOptions

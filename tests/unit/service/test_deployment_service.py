@@ -15,6 +15,7 @@ from haystack_enterprise_sdk._api.deployments import (
     DeploymentRevisionStatus,
     DeploymentServiceLevel,
     DeploymentStatus,
+    FailedToTagDeploymentError,
     PipelineValidationError,
     PipelineValidationIssue,
     PipelineValidationResult,
@@ -159,6 +160,50 @@ class TestResolveAndPush:
         assert kwargs["service_level"] is None
         assert kwargs["cpu_limit"] is None
 
+    async def test_create_with_tags_adds_each_after_creation(self, service: MockedDeploymentService) -> None:
+        created = _deployment("svc")
+        service._deployments.find_by_name.return_value = None
+        service._deployments.create_deployment.return_value = created
+        service._deployments.add_tag.side_effect = [["team-success"], ["team-success", "hackathon"]]
+        service._deployments.push_revision.return_value = _revision(created.deployment_id)
+
+        result = await service.deploy(
+            FIXTURE, "svc", create=True, create_options=CreateOptions(tags=("team-success", "hackathon"))
+        )
+
+        # No tags endpoint on create-deployment itself: one add_tag call per tag, in order, against
+        # the id the create call returned.
+        assert service._deployments.add_tag.await_args_list == [
+            (("ws", created.deployment_id, "team-success"),),
+            (("ws", created.deployment_id, "hackathon"),),
+        ]
+        assert result.deployment.tags == ["team-success", "hackathon"]
+
+    async def test_create_without_tags_never_calls_add_tag(self, service: MockedDeploymentService) -> None:
+        created = _deployment("svc")
+        service._deployments.find_by_name.return_value = None
+        service._deployments.create_deployment.return_value = created
+        service._deployments.push_revision.return_value = _revision(created.deployment_id)
+
+        await service.deploy(FIXTURE, "svc", create=True)
+
+        service._deployments.add_tag.assert_not_called()
+
+    async def test_create_with_tag_failure_does_not_abort_deploy(self, service: MockedDeploymentService) -> None:
+        # The service is already created by the time a tag add fails, so deploy must still push the
+        # revision rather than raising -- the tag can be retried independently via `tag-add`.
+        created = _deployment("svc")
+        service._deployments.find_by_name.return_value = None
+        service._deployments.create_deployment.return_value = created
+        service._deployments.add_tag.side_effect = FailedToTagDeploymentError("nope")
+        pushed = _revision(created.deployment_id)
+        service._deployments.push_revision.return_value = pushed
+
+        result = await service.deploy(FIXTURE, "svc", create=True, create_options=CreateOptions(tags=("team-success",)))
+
+        assert result.revision is pushed
+        assert result.deployment.tags == []
+
 
 class TestCreateOptions:
     def test_serverless_rejects_sizing_options(self) -> None:
@@ -177,6 +222,14 @@ class TestCreateOptions:
 
     def test_default_mode_is_serverless(self) -> None:
         assert CreateOptions().deployment_mode is DeploymentMode.SERVERLESS
+
+    def test_default_tags_is_empty(self) -> None:
+        assert CreateOptions().tags == ()
+
+    def test_serverless_accepts_tags(self) -> None:
+        # Tags are not a sizing option: they apply to a serverless service too.
+        options = CreateOptions(tags=("a", "b"))
+        assert options.tags == ("a", "b")
 
 
 @pytest.mark.asyncio
@@ -440,6 +493,41 @@ class TestGetServiceStatus:
         service._deployments.find_by_name.return_value = None
         with pytest.raises(ServiceNotFoundError):
             await service.get_service_status("svc")
+
+
+@pytest.mark.asyncio
+class TestTagByName:
+    async def test_add_tag_resolves_name_to_id(self, service: MockedDeploymentService) -> None:
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.add_tag.return_value = ["hackathon"]
+
+        result = await service.add_tag("svc", "hackathon")
+
+        assert result == ["hackathon"]
+        service._deployments.add_tag.assert_awaited_once_with("ws", deployment.deployment_id, "hackathon")
+
+    async def test_add_tag_missing_service_raises(self, service: MockedDeploymentService) -> None:
+        service._deployments.find_by_name.return_value = None
+        with pytest.raises(ServiceNotFoundError):
+            await service.add_tag("svc", "hackathon")
+        service._deployments.add_tag.assert_not_called()
+
+    async def test_remove_tag_resolves_name_to_id(self, service: MockedDeploymentService) -> None:
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.remove_tag.return_value = []
+
+        result = await service.remove_tag("svc", "hackathon")
+
+        assert result == []
+        service._deployments.remove_tag.assert_awaited_once_with("ws", deployment.deployment_id, "hackathon")
+
+    async def test_remove_tag_missing_service_raises(self, service: MockedDeploymentService) -> None:
+        service._deployments.find_by_name.return_value = None
+        with pytest.raises(ServiceNotFoundError):
+            await service.remove_tag("svc", "hackathon")
+        service._deployments.remove_tag.assert_not_called()
 
 
 @pytest.mark.asyncio

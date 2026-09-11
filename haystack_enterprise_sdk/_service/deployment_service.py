@@ -22,6 +22,7 @@ from haystack_enterprise_sdk._api.deployments import (
     DeploymentsAPI,
     DeploymentServiceLevel,
     DeploymentStatus,
+    FailedToTagDeploymentError,
     PipelineValidationError,
     PipelineValidationResult,
 )
@@ -147,6 +148,9 @@ class CreateOptions:
     cpu_limit: Optional[str] = None
     memory_limit: Optional[str] = None
     gpu_limit_gigabyte: Optional[int] = None
+    # Applied with one add_tag call each, right after creation -- the create-deployment endpoint
+    # itself has no `tags` field. Not a sizing field: it applies to serverless services too.
+    tags: Tuple[str, ...] = ()
 
     _SIZING_FIELDS = (
         "service_level",
@@ -493,6 +497,38 @@ class DeploymentService:
             )
         return await self._deployments.get_deployment(self._workspace_name, deployment.deployment_id)
 
+    async def add_tag(self, service_name: str, tag_name: str) -> List[str]:
+        """Add a tag to a service by name, independent of deploy/create.
+
+        :param service_name: Name of the service deployment.
+        :param tag_name: Tag name (1-50 chars; letters, digits, spaces, underscores, hyphens).
+        :raises ServiceNotFoundError: If no service with that name exists.
+        :raises FailedToTagDeploymentError: If the platform rejected it (limit, duplicate, bad name).
+        :return: The service's full tag list after the add.
+        """
+        deployment = await self._deployments.find_by_name(self._workspace_name, service_name)
+        if deployment is None:
+            raise ServiceNotFoundError(
+                f"No service deployment named '{service_name}' in workspace '{self._workspace_name}'."
+            )
+        return await self._deployments.add_tag(self._workspace_name, deployment.deployment_id, tag_name)
+
+    async def remove_tag(self, service_name: str, tag_name: str) -> List[str]:
+        """Remove a tag from a service by name. Matching is case-insensitive.
+
+        :param service_name: Name of the service deployment.
+        :param tag_name: Tag name to remove.
+        :raises ServiceNotFoundError: If no service with that name exists.
+        :raises FailedToTagDeploymentError: If the tag could not be removed (including "not found").
+        :return: The service's full tag list after the removal.
+        """
+        deployment = await self._deployments.find_by_name(self._workspace_name, service_name)
+        if deployment is None:
+            raise ServiceNotFoundError(
+                f"No service deployment named '{service_name}' in workspace '{self._workspace_name}'."
+            )
+        return await self._deployments.remove_tag(self._workspace_name, deployment.deployment_id, tag_name)
+
     async def create_shared_prototype(
         self, service_name: str, options: Optional[ShareOptions] = None
     ) -> SharedPrototype:
@@ -538,7 +574,7 @@ class DeploymentService:
             )
         options = create_options or CreateOptions()
         logger.info("Creating service deployment.", service=service_name, mode=options.deployment_mode.value)
-        return await self._deployments.create_deployment(
+        deployment = await self._deployments.create_deployment(
             self._workspace_name,
             name=service_name,
             deployment_mode=options.deployment_mode,
@@ -550,6 +586,24 @@ class DeploymentService:
             memory_limit=options.memory_limit,
             gpu_limit_gigabyte=options.gpu_limit_gigabyte,
         )
+        for tag_name in options.tags:
+            # Sequential, not gathered: each call returns the full tag list so far, and the
+            # platform's own duplicate/limit checks are per-request -- gathering could race two
+            # adds past the 3-tag cap. There are at most 3 of these, so latency is not a concern.
+            #
+            # Caught here rather than left to propagate: the service was already created, so raising
+            # would abort a deploy that otherwise fully succeeded. `tag-add` can retry independently.
+            try:
+                deployment.tags = await self._deployments.add_tag(
+                    self._workspace_name, deployment.deployment_id, tag_name
+                )
+            except FailedToTagDeploymentError:
+                logger.warning(
+                    "Failed to add tag to newly created service; retry with 'tag-add'.",
+                    service=service_name,
+                    tag=tag_name,
+                )
+        return deployment
 
     async def _poll_until_settled(
         self,

@@ -18,6 +18,7 @@ from haystack_enterprise_sdk._api.deployments import (
     FailedToActivateRevisionError,
     FailedToCreateDeploymentError,
     FailedToPushRevisionError,
+    FailedToTagDeploymentError,
     FailedToValidatePipelineError,
     PipelineValidationResult,
 )
@@ -153,6 +154,54 @@ class TestCreate:
         mocked_haystack_enterprise_api.post.return_value = _resp(codes.CONFLICT, text="exists")
         with pytest.raises(FailedToCreateDeploymentError):
             await deployments_api.create_deployment("ws", name="svc")
+
+    async def test_create_deployment_parses_tags(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        body = _deployment_body("svc")
+        body["tags"] = ["team-success", "hackathon"]
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=body)
+        result = await deployments_api.create_deployment("ws", name="svc")
+        assert result.tags == ["team-success", "hackathon"]
+
+    async def test_deployment_without_tags_defaults_to_empty_list(self) -> None:
+        assert Deployment.from_response(_deployment_body("svc")).tags == []
+
+
+@pytest.mark.asyncio
+class TestTags:
+    async def test_add_tag(self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock) -> None:
+        deployment_id = uuid4()
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.OK, json=["a"])
+        result = await deployments_api.add_tag("ws", deployment_id, "a")
+        assert result == ["a"]
+        mocked_haystack_enterprise_api.post.assert_called_once_with(
+            workspace_name="ws", endpoint=f"deployments/{deployment_id}/tags", json={"name": "a"}
+        )
+
+    async def test_add_tag_failure_raises(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        # e.g. a 4th tag past MAX_SERVICE_TAGS, or a case-insensitive duplicate: both come back 409.
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.CONFLICT, text="tag limit exceeded")
+        with pytest.raises(FailedToTagDeploymentError):
+            await deployments_api.add_tag("ws", uuid4(), "one-too-many")
+
+    async def test_remove_tag(self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock) -> None:
+        deployment_id = uuid4()
+        mocked_haystack_enterprise_api.delete.return_value = _resp(codes.OK, json=[])
+        result = await deployments_api.remove_tag("ws", deployment_id, "a")
+        assert result == []
+        mocked_haystack_enterprise_api.delete.assert_called_once_with(
+            workspace_name="ws", endpoint=f"deployments/{deployment_id}/tags/a"
+        )
+
+    async def test_remove_tag_failure_raises(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.delete.return_value = _resp(codes.NOT_FOUND, text="tag not found")
+        with pytest.raises(FailedToTagDeploymentError):
+            await deployments_api.remove_tag("ws", uuid4(), "missing")
 
 
 @pytest.mark.asyncio
