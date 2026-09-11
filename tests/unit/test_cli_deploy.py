@@ -65,13 +65,13 @@ def _deployment(
     )
 
 
-BASE_URL = "https://api.example/api/v1/workspaces/ws/deployments/dep-1"
+BASE_URL = "https://api.example/api/v1/workspaces/ws/deployments/v1"
 
 
 def _stub_endpoint(client_cls: Mock) -> None:
     """Give the mocked client the pieces `_echo_endpoint` prints (a bare Mock renders as junk)."""
     client_cls.return_value.workspace_name = "ws"
-    client_cls.return_value.deployment_base_url.return_value = BASE_URL
+    client_cls.return_value.chat_completions_base_url.return_value = BASE_URL
 
 
 def _result(
@@ -477,9 +477,9 @@ class TestDeployCommand:
         invocation = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert invocation.exit_code == 0
         assert f"POST {BASE_URL}/chat/completions" in invocation.stdout
-        assert '"model": "ws/svc"' in invocation.stdout
-        # Keyed on the deployment, and the snippet must never bake in a real key.
-        client_cls.return_value.deployment_base_url.assert_called_once_with(result.deployment.deployment_id)
+        # model must use the deployment UUID, not the service name — the gateway requires it.
+        assert f'"model": "ws/{result.deployment.deployment_id}"' in invocation.stdout
+        client_cls.return_value.chat_completions_base_url.assert_called_once_with()
         assert "$API_KEY" in invocation.stdout
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")

@@ -1165,8 +1165,8 @@ def _echo_endpoint(client: DeploymentClient, service_name: str, result: DeployRe
     if not result.is_deployed:
         return
 
-    base_url = client.deployment_base_url(result.deployment.deployment_id)
-    model = f"{client.workspace_name}/{service_name}"
+    base_url = client.chat_completions_base_url()
+    model = f"{client.workspace_name}/{result.deployment.deployment_id}"
     typer.echo(f"\nChat completions endpoint (OpenAI-compatible):\n  POST {base_url}/chat/completions")
     typer.echo(
         f"\n  curl -N {base_url}/chat/completions \\\n"

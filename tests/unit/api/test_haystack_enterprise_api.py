@@ -12,6 +12,7 @@ from haystack_enterprise_sdk._api.haystack_enterprise_api import (
     HaystackEnterpriseAPI,
     HaystackEnterpriseAPIError,
     WorkspaceNotDefinedError,
+    chat_completions_base_url,
     deployment_base_url,
 )
 
@@ -190,6 +191,30 @@ class TestDeploymentBaseUrl:
     def test_uuid_deployment_ids_render_as_their_string_form(self) -> None:
         deployment_id = uuid4()
         assert deployment_base_url("https://fake.dc.api", "my-ws", deployment_id).endswith(f"/{deployment_id}")
+
+
+class TestChatCompletionsBaseUrl:
+    """The workspace-scoped OpenAI-compatible chat-completions URL printed by ``deploy``."""
+
+    def test_builds_the_versioned_workspace_scoped_gateway_path(self) -> None:
+        assert (
+            chat_completions_base_url("https://fake.dc.api", "my-ws")
+            == "https://fake.dc.api/api/v1/workspaces/my-ws/deployments/v1"
+        )
+
+    def test_omits_the_chat_completions_suffix(self) -> None:
+        # An OpenAI client appends /chat/completions itself.
+        assert not chat_completions_base_url("https://fake.dc.api", "my-ws").endswith("chat/completions")
+
+    @pytest.mark.parametrize("given", ["https://fake.dc.api/", "https://fake.dc.api/api/v1"])
+    def test_a_denormalized_api_url_is_normalized_first(self, given: str) -> None:
+        url = chat_completions_base_url(normalize_base_url(given), "my-ws")
+        assert url == "https://fake.dc.api/api/v1/workspaces/my-ws/deployments/v1"
+
+    def test_takes_no_deployment_id(self) -> None:
+        # The gateway is workspace-scoped; the deployment ID goes in the model field instead.
+        url = chat_completions_base_url("https://fake.dc.api", "my-ws")
+        assert "/v1/workspaces/my-ws/deployments/v1" in url
 
 
 @pytest.mark.asyncio
