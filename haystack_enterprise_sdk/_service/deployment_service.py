@@ -496,6 +496,38 @@ class DeploymentService:
             )
         return await self._deployments.get_deployment(self._workspace_name, deployment.deployment_id)
 
+    async def add_tag(self, service_name: str, tag_name: str) -> List[str]:
+        """Add a tag to a service by name, independent of deploy/create.
+
+        :param service_name: Name of the service deployment.
+        :param tag_name: Tag name (1-50 chars; letters, digits, spaces, underscores, hyphens).
+        :raises ServiceNotFoundError: If no service with that name exists.
+        :raises FailedToTagDeploymentError: If the platform rejected it (limit, duplicate, bad name).
+        :return: The service's full tag list after the add.
+        """
+        deployment = await self._deployments.find_by_name(self._workspace_name, service_name)
+        if deployment is None:
+            raise ServiceNotFoundError(
+                f"No service deployment named '{service_name}' in workspace '{self._workspace_name}'."
+            )
+        return await self._deployments.add_tag(self._workspace_name, deployment.deployment_id, tag_name)
+
+    async def remove_tag(self, service_name: str, tag_name: str) -> List[str]:
+        """Remove a tag from a service by name. Matching is case-insensitive.
+
+        :param service_name: Name of the service deployment.
+        :param tag_name: Tag name to remove.
+        :raises ServiceNotFoundError: If no service with that name exists.
+        :raises FailedToTagDeploymentError: If the tag could not be removed (including "not found").
+        :return: The service's full tag list after the removal.
+        """
+        deployment = await self._deployments.find_by_name(self._workspace_name, service_name)
+        if deployment is None:
+            raise ServiceNotFoundError(
+                f"No service deployment named '{service_name}' in workspace '{self._workspace_name}'."
+            )
+        return await self._deployments.remove_tag(self._workspace_name, deployment.deployment_id, tag_name)
+
     async def create_shared_prototype(
         self, service_name: str, options: Optional[ShareOptions] = None
     ) -> SharedPrototype:

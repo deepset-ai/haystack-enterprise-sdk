@@ -16,6 +16,7 @@ from haystack_enterprise_sdk._api.deployments import (
     DeploymentRevisionStatus,
     DeploymentServiceLevel,
     DeploymentStatus,
+    FailedToTagDeploymentError,
     PipelineValidationError,
     PipelineValidationIssue,
     PipelineValidationResult,
@@ -746,6 +747,55 @@ class TestServiceStatusCommand:
     def test_service_status_not_found(self, client_cls: Mock) -> None:
         client_cls.return_value.get_service_status.side_effect = ServiceNotFoundError("missing")
         result = runner.invoke(cli_app, ["service-status", "svc"])
+        assert result.exit_code == 1
+        assert "missing" in result.stdout
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_service_status_reports_tags(self, client_cls: Mock) -> None:
+        deployment = _deployment(DeploymentStatus.DEPLOYED)
+        deployment.tags = ["team-success", "hackathon"]
+        client_cls.return_value.get_service_status.return_value = deployment
+        result = runner.invoke(cli_app, ["service-status", "svc"])
+        assert result.exit_code == 0
+        assert json.loads(result.stdout)["tags"] == ["team-success", "hackathon"]
+
+
+class TestTagCommands:
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_tag_add(self, client_cls: Mock) -> None:
+        client_cls.return_value.add_tag.return_value = ["hackathon"]
+        result = runner.invoke(cli_app, ["tag-add", "svc", "hackathon"])
+        assert result.exit_code == 0
+        assert "hackathon" in result.stdout
+        client_cls.return_value.add_tag.assert_called_once_with("svc", "hackathon")
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_tag_add_service_not_found(self, client_cls: Mock) -> None:
+        client_cls.return_value.add_tag.side_effect = ServiceNotFoundError("missing")
+        result = runner.invoke(cli_app, ["tag-add", "svc", "hackathon"])
+        assert result.exit_code == 1
+        assert "missing" in result.stdout
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_tag_add_rejected_by_platform(self, client_cls: Mock) -> None:
+        # e.g. a 4th tag past MAX_SERVICE_TAGS, or a case-insensitive duplicate.
+        client_cls.return_value.add_tag.side_effect = FailedToTagDeploymentError("tag limit exceeded")
+        result = runner.invoke(cli_app, ["tag-add", "svc", "one-too-many"])
+        assert result.exit_code == 1
+        assert "tag limit exceeded" in result.stdout
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_tag_remove(self, client_cls: Mock) -> None:
+        client_cls.return_value.remove_tag.return_value = []
+        result = runner.invoke(cli_app, ["tag-remove", "svc", "hackathon"])
+        assert result.exit_code == 0
+        assert "(none)" in result.stdout
+        client_cls.return_value.remove_tag.assert_called_once_with("svc", "hackathon")
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_tag_remove_service_not_found(self, client_cls: Mock) -> None:
+        client_cls.return_value.remove_tag.side_effect = ServiceNotFoundError("missing")
+        result = runner.invoke(cli_app, ["tag-remove", "svc", "hackathon"])
         assert result.exit_code == 1
         assert "missing" in result.stdout
 

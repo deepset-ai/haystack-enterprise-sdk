@@ -480,6 +480,41 @@ class TestGetServiceStatus:
 
 
 @pytest.mark.asyncio
+class TestTagByName:
+    async def test_add_tag_resolves_name_to_id(self, service: MockedDeploymentService) -> None:
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.add_tag.return_value = ["hackathon"]
+
+        result = await service.add_tag("svc", "hackathon")
+
+        assert result == ["hackathon"]
+        service._deployments.add_tag.assert_awaited_once_with("ws", deployment.deployment_id, "hackathon")
+
+    async def test_add_tag_missing_service_raises(self, service: MockedDeploymentService) -> None:
+        service._deployments.find_by_name.return_value = None
+        with pytest.raises(ServiceNotFoundError):
+            await service.add_tag("svc", "hackathon")
+        service._deployments.add_tag.assert_not_called()
+
+    async def test_remove_tag_resolves_name_to_id(self, service: MockedDeploymentService) -> None:
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.remove_tag.return_value = []
+
+        result = await service.remove_tag("svc", "hackathon")
+
+        assert result == []
+        service._deployments.remove_tag.assert_awaited_once_with("ws", deployment.deployment_id, "hackathon")
+
+    async def test_remove_tag_missing_service_raises(self, service: MockedDeploymentService) -> None:
+        service._deployments.find_by_name.return_value = None
+        with pytest.raises(ServiceNotFoundError):
+            await service.remove_tag("svc", "hackathon")
+        service._deployments.remove_tag.assert_not_called()
+
+
+@pytest.mark.asyncio
 class TestCreateSharedPrototype:
     async def test_computes_expiration_and_forwards_options(
         self, service: MockedDeploymentService, monkeypatch: pytest.MonkeyPatch
