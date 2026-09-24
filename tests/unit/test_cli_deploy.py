@@ -922,7 +922,7 @@ class TestEnsureQueryInput:
         with patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True):
             with runner.isolation(input="1\n") as outstreams:
                 _resolve_io_interactive(bundle, {}, {}, mode="query")
-            printed = outstreams[0].getvalue().decode()
+                printed = outstreams[0].getvalue().decode()
         assert "answers" not in printed
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
