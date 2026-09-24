@@ -2,15 +2,22 @@
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Optional
 
 import structlog
 from dotenv import load_dotenv
 
+if TYPE_CHECKING:
+    from haystack_enterprise_sdk._api.oauth import OAuthAuth
+
 logger = structlog.get_logger(__name__)
 
 ENV_FILE_PATH = Path.home() / ".haystack-enterprise" / ".env"
+
+# Tokens from `haystack-enterprise login` via OAuth, used when no API key is configured.
+CREDENTIALS_PATH = ENV_FILE_PATH.parent / "credentials.json"
 
 # The deepset platform base URL (without a version suffix).
 PLATFORM_URL = "https://api.cloud.deepset.ai"
@@ -70,7 +77,9 @@ def load_environment(show_warnings: bool = True) -> bool:
         return False
 
     # Check for required environment variables
-    required_vars = ["API_KEY", "API_URL", "DEFAULT_WORKSPACE_NAME"]
+    required_vars = ["API_URL", "DEFAULT_WORKSPACE_NAME"]
+    if not CREDENTIALS_PATH.is_file():
+        required_vars.insert(0, "API_KEY")
     missing_vars = [var for var in required_vars if not os.getenv(var)]
 
     if missing_vars and show_warnings:
@@ -115,6 +124,8 @@ class CommonConfig:
     api_key: str = ""
     api_url: str = ""
     safe_mode: bool = False
+    # Set from stored OAuth credentials when no API key is configured.
+    oauth: Optional["OAuthAuth"] = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         """Validate config."""
@@ -126,10 +137,17 @@ class CommonConfig:
             if not self.api_url:
                 self.api_url = os.getenv("API_URL", PLATFORM_URL)
 
-        if not self.api_key:
-            raise ValueError(
-                "API key is required. Either set the API_KEY environment variable or pass api_key parameter. Go to [API Keys](https://cloud.deepset.ai/settings/api-keys) in Haystack Enterprise Platform to get an API key."
-            )
-
         # Normalize to a bare base URL; the version suffix is appended when building requests.
         self.api_url = normalize_base_url(self.api_url)
+
+        if not self.api_key and self.oauth is None:
+            from haystack_enterprise_sdk._api.oauth import OAuthAuth, OAuthCredentials  # noqa: PLC0415 - import cycle
+
+            credentials = OAuthCredentials.load(self.api_url)
+            if credentials is not None:
+                self.oauth = OAuthAuth(credentials)
+
+        if not self.api_key and self.oauth is None:
+            raise ValueError(
+                "API key is required. Run `haystack-enterprise login`, set the API_KEY environment variable, or pass the api_key parameter. Go to [API Keys](https://cloud.deepset.ai/settings/api-keys) in Haystack Enterprise Platform to get an API key."
+            )

@@ -1,9 +1,10 @@
 import datetime
 import logging
 import threading
+import time
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Generator, List
+from typing import Any, Dict, Generator, List
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
@@ -16,6 +17,7 @@ from typer.testing import CliRunner
 
 __version__ = version("haystack-enterprise-sdk")
 from haystack_enterprise_sdk._api.files import File
+from haystack_enterprise_sdk._api.oauth import CliOAuthConfig, OAuthCredentials
 from haystack_enterprise_sdk._api.upload_sessions import (
     UploadSessionDetail,
     UploadSessionIngestionStatus,
@@ -29,6 +31,16 @@ from haystack_enterprise_sdk.models import UserInfo
 from haystack_enterprise_sdk.workflows.sync_client.files import download as sync_download
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Keep login/logout off the real ~/.haystack-enterprise and the network; OAuth is off unless a test enables it."""
+    credentials_path = tmp_path / "credentials.json"
+    monkeypatch.setattr("haystack_enterprise_sdk._api.oauth.CREDENTIALS_PATH", credentials_path)
+    monkeypatch.setattr("haystack_enterprise_sdk.cli.CREDENTIALS_PATH", credentials_path)
+    monkeypatch.setattr("haystack_enterprise_sdk.cli.fetch_cli_config", lambda api_url: None)
+    return credentials_path
 
 
 class TestCLIMethods:
@@ -523,6 +535,70 @@ class TestCLIUtils:
     )
     def test_ui_url_for(self, api_url: str, ui_url: str) -> None:
         assert _ui_url_for(api_url) == ui_url
+
+    def test_login_with_oauth(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_login: Path) -> None:
+        global_env_path = tmp_path / ".haystack-enterprise" / ".env"
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", global_env_path)
+        config = CliOAuthConfig(issuer="https://auth.example.com/", client_id="cli", scopes=["openid"])
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.fetch_cli_config", lambda api_url: config)
+        credentials = OAuthCredentials(
+            api_url="https://api.cloud.deepset.ai",
+            client_id="cli",
+            token_endpoint="https://auth.example.com/token",
+            access_token="access",
+            refresh_token="refresh",
+            expires_at=time.time() + 600,
+        )
+        responses = {
+            "https://api.cloud.deepset.ai/api/v1/sso/organizations": {
+                "organizations": [
+                    {"organization_id": "org-a", "name": "Acme"},
+                    {"organization_id": "org-b", "name": "Beta"},
+                ]
+            },
+            "https://api.cloud.deepset.ai/api/v1/workspaces": [{"name": "default"}],
+        }
+
+        def fake_get(url: str, headers: Dict[str, str], timeout: int) -> httpx.Response:
+            assert headers["Authorization"] == "Bearer access"
+            return httpx.Response(200, json=responses[url], request=httpx.Request("GET", url))
+
+        with (
+            patch("haystack_enterprise_sdk.cli.authorization_code_login", return_value=credentials),
+            patch("haystack_enterprise_sdk.cli.httpx.get", side_effect=fake_get),
+        ):
+            result = runner.invoke(cli_app, ["login"], input="2\n")
+
+        assert result.exit_code == 0, result.stdout
+        assert "API_URL=https://api.cloud.deepset.ai\nDEFAULT_WORKSPACE_NAME=default" == global_env_path.read_text()
+        stored = OAuthCredentials.load()
+        assert stored is not None and stored.organization_id == "org-b"
+        assert _isolate_login.stat().st_mode & 0o777 == 0o600
+
+    def test_login_device_needs_platform_support(self) -> None:
+        result = runner.invoke(cli_app, ["login", "--device"])
+        assert result.exit_code == 1
+        assert "doesn't support device login" in result.output
+
+    def test_logout_revokes_oauth_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_login: Path
+    ) -> None:
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", tmp_path / ".env")
+        OAuthCredentials(
+            api_url="https://api.cloud.deepset.ai",
+            client_id="cli",
+            token_endpoint="https://auth.example.com/token",
+            access_token="access",
+            refresh_token="refresh",
+            expires_at=0,
+        ).save()
+
+        with patch("haystack_enterprise_sdk.cli.revoke") as revoke_mock:
+            result = runner.invoke(cli_app, ["logout"])
+
+        assert result.exit_code == 0
+        assert revoke_mock.call_args.args[0].refresh_token == "refresh"
+        assert not _isolate_login.exists()
 
     def test_logout_if_not_logged_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", Path("/nonexistent/path/.env"))

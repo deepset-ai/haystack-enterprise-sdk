@@ -75,8 +75,11 @@ def _decode_jwt_expiry(token: str) -> Optional[datetime]:
 def _unauthorized_message(api_key: str) -> str:
     """Build a friendly 401 message, naming an expired API key explicitly when the token says so.
 
-    :param api_key: The API key sent as the bearer token on the failing request.
+    :param api_key: The API key sent as the bearer token on the failing request. Empty when the request
+        was authenticated with an OAuth login instead.
     """
+    if not api_key:
+        return "Authentication failed. Your login session expired or was revoked. Run `haystack-enterprise login`."
     expiry = _decode_jwt_expiry(api_key)
     if expiry is None:
         return "Authentication failed. Your API key may be missing, invalid, or expired."
@@ -174,6 +177,11 @@ def chat_completions_base_url(api_url: str, workspace_name: str) -> str:
     return f"{api_url}/{API_VERSION_PATH}/workspaces/{workspace_name}/deployments/v1"
 
 
+def _client_auth(config: CommonConfig) -> Optional[httpx.Auth]:
+    """:return: The OAuth auth flow when the config has no API key, otherwise None (the key is sent as a header)."""
+    return None if config.api_key else config.oauth
+
+
 class HaystackEnterpriseAPI:
     """Haystack Enterprise Platform API client.
 
@@ -192,9 +200,11 @@ class HaystackEnterpriseAPI:
         self.api_key = config.api_key
         self.headers = {
             "Accept": "application/json",
-            "Authorization": f"Bearer {config.api_key}",
             "X-Client-Source": "haystack-enterprise-sdk",
         }
+        # With OAuth, the client's auth flow sets the (refreshing) bearer token instead.
+        if config.api_key:
+            self.headers["Authorization"] = f"Bearer {config.api_key}"
         self.base_url = lambda workspace_name: self._get_base_url(config.api_url)(workspace_name)
         self.client = client
         self.max_attempts = SAFE_MODE_MAX_ATTEMPTS if config.safe_mode else DEFAULT_MAX_ATTEMPTS
@@ -226,10 +236,12 @@ class HaystackEnterpriseAPI:
         if config.safe_mode:
             safe_mode_limits = httpx.Limits(max_keepalive_connections=1, max_connections=1)
             safe_mode_timeout = httpx.Timeout(None)
-            async with httpx.AsyncClient(limits=safe_mode_limits, timeout=safe_mode_timeout) as client:
+            async with httpx.AsyncClient(
+                limits=safe_mode_limits, timeout=safe_mode_timeout, auth=_client_auth(config)
+            ) as client:
                 yield cls(config, client)
         else:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(auth=_client_auth(config)) as client:
                 yield cls(config, client)
 
     async def get(

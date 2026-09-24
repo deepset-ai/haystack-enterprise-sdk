@@ -17,13 +17,17 @@ from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Se
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
+import click
+import httpx
 import structlog
 import typer
 from tabulate import tabulate
 
 __version__ = version("haystack-enterprise-sdk")
 from haystack_enterprise_sdk._api.config import (
+    API_VERSION_PATH,
     ASYNC_CLIENT_TIMEOUT,
+    CREDENTIALS_PATH,
     DEFAULT_WORKSPACE_NAME,
     ENV_FILE_PATH,
     PLATFORM_URL,
@@ -36,6 +40,16 @@ from haystack_enterprise_sdk._api.deployments import (
     PipelineValidationError,
 )
 from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPIError
+from haystack_enterprise_sdk._api.oauth import (
+    CliOAuthConfig,
+    OAuthCredentials,
+    OAuthError,
+    authorization_code_login,
+    delete_credentials,
+    device_login,
+    fetch_cli_config,
+    revoke,
+)
 from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, PipelineRunError
 from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
@@ -237,15 +251,17 @@ def login(
     api_url: Optional[str] = None,
     ui_url: Optional[str] = None,
     browser: bool = True,
+    device: bool = False,
 ) -> None:
     """Log in to Haystack Enterprise Platform.
 
     Run `haystack-enterprise login` before performing any tasks in Haystack Enterprise Platform using the SDK or CLI,
     unless you already created the .ENV file.
 
-    By default, this command opens the platform in your browser, where you authorize the CLI. The platform creates
-    an API key for you and hands it back to the CLI. The key is stored in a global .env file at
-    ~/.haystack-enterprise/.env together with the `API_URL` and `DEFAULT_WORKSPACE_NAME` used for all operations.
+    By default, this command opens the platform in your browser, where you log in and authorize the CLI. Where the
+    platform supports it, the CLI gets an OAuth session that refreshes itself, stored in
+    ~/.haystack-enterprise/credentials.json. Otherwise the platform creates an API key and hands it back to the CLI.
+    Either way, ~/.haystack-enterprise/.env stores the `API_URL` and `DEFAULT_WORKSPACE_NAME` used for all operations.
 
     The SDK uses a cascading configuration model with the following precedence:
     1. Explicit parameters (passed via code or CLI)
@@ -258,7 +274,8 @@ def login(
     :param workspace_name: Default workspace to store.
     :param api_url: Base API URL. Defaults to the deepset platform URL.
     :param ui_url: Platform UI URL to open in the browser. Derived from the API URL by default.
-    :param browser: Log in through the browser. Use `--no-browser` to paste an API key instead, for example over SSH.
+    :param browser: Log in through the browser. Use `--no-browser` to paste an API key instead.
+    :param device: Log in with a code you enter in a browser on any device, for example over SSH.
     """
     typer.echo("Log in to Haystack Enterprise Platform")
 
@@ -274,8 +291,19 @@ def login(
         _write_env(api_key, normalize_base_url(api_url or PLATFORM_URL), workspace_name)
         return
 
-    if browser:
+    if browser or device:
         api_url = normalize_base_url(api_url or PLATFORM_URL)
+        oauth_config = fetch_cli_config(api_url)
+        if oauth_config is not None:
+            _oauth_login(api_url, oauth_config, workspace_name, device)
+            return
+        if device:
+            typer.echo(
+                "This platform doesn't support device login yet. Run `haystack-enterprise login --no-browser` "
+                "to paste an API key instead.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
         browser_api_key, browser_workspace_name = _browser_login(ui_url or _ui_url_for(api_url))
         _write_env(browser_api_key, api_url, browser_workspace_name)
         return
@@ -303,12 +331,14 @@ _LOGIN_SUCCESS_PAGE = (
 )
 
 
-def _write_env(api_key: str, api_url: str, workspace_name: str) -> None:
-    """Write the global .env file, readable by the current user only, since it holds the API key."""
+def _write_env(api_key: Optional[str], api_url: str, workspace_name: str) -> None:
+    """Write the global .env file, readable by the current user only, since it may hold the API key.
+
+    :param api_key: The API key, or None after an OAuth login, whose credentials live in their own file.
+    """
     ENV_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ENV_FILE_PATH.write_text(
-        f"API_KEY={api_key}\nAPI_URL={api_url}\nDEFAULT_WORKSPACE_NAME={workspace_name}", encoding="utf-8"
-    )
+    key_line = f"API_KEY={api_key}\n" if api_key else ""
+    ENV_FILE_PATH.write_text(f"{key_line}API_URL={api_url}\nDEFAULT_WORKSPACE_NAME={workspace_name}", encoding="utf-8")
     ENV_FILE_PATH.chmod(0o600)
     typer.echo(f"Global configuration file created at {ENV_FILE_PATH}.")
 
@@ -383,14 +413,86 @@ def _browser_login(ui_url: str, timeout: float = LOGIN_TIMEOUT_SECONDS) -> Tuple
     return received["api_key"], received["workspace"]
 
 
+def _oauth_login(api_url: str, config: CliOAuthConfig, workspace_name: Optional[str], device: bool) -> None:
+    """Log in with OAuth, pick an organization and workspace, and store the session.
+
+    :param api_url: The normalized base API URL.
+    :param config: The platform's CLI OAuth client.
+    :param workspace_name: The default workspace, or None to pick one.
+    :param device: Use the device flow instead of a local browser.
+    """
+    try:
+        if device:
+            credentials = device_login(api_url, config, _show_device_code)
+        else:
+            credentials = authorization_code_login(api_url, config, _open_login_url, LOGIN_TIMEOUT_SECONDS)
+    except OAuthError as error:
+        typer.echo(f"Login failed: {error}", err=True)
+        raise typer.Exit(code=1) from error
+
+    headers = {"Authorization": f"Bearer {credentials.access_token}"}
+    credentials.organization_id = _pick_organization(api_url, headers)
+    headers["X-Organization-ID"] = credentials.organization_id
+    workspace = workspace_name or _pick_workspace(api_url, headers)
+
+    credentials.save()
+    _write_env(None, api_url, workspace)
+    typer.echo(f"Logged in. Your session is stored at {CREDENTIALS_PATH}.")
+
+
+def _open_login_url(url: str) -> None:
+    typer.echo(f"Opening your browser to log in. If it doesn't open, visit:\n\n  {url}\n")
+    webbrowser.open(url)
+
+
+def _show_device_code(user_code: str, verification_uri: str, verification_uri_complete: Optional[str]) -> None:
+    typer.echo(f"On any device, open:\n\n  {verification_uri_complete or verification_uri}\n")
+    typer.echo(f"and confirm the code {user_code}. Waiting for approval...")
+
+
+def _choose(label: str, options: List[str], default: Optional[str] = None) -> str:
+    """Let the user pick one of ``options`` by number. A single option is picked without asking."""
+    if len(options) == 1:
+        return options[0]
+    for number, option in enumerate(options, start=1):
+        typer.echo(f"  {number}. {option}")
+    default_number = options.index(default) + 1 if default in options else 1
+    choice: int = typer.prompt(label, default=default_number, type=click.IntRange(1, len(options)))
+    return options[choice - 1]
+
+
+def _pick_organization(api_url: str, headers: Dict[str, str]) -> str:
+    """:return: The id of the organization the CLI acts in, asking if the user belongs to several."""
+    response = httpx.get(f"{api_url}/{API_VERSION_PATH}/sso/organizations", headers=headers, timeout=30)
+    response.raise_for_status()
+    organizations = {org["name"]: str(org["organization_id"]) for org in response.json()["organizations"]}
+    if not organizations:
+        typer.echo("Your account doesn't belong to any organization.", err=True)
+        raise typer.Exit(code=1)
+    return organizations[_choose("Organization", sorted(organizations))]
+
+
+def _pick_workspace(api_url: str, headers: Dict[str, str]) -> str:
+    """:return: The default workspace, asking if there are several."""
+    response = httpx.get(f"{api_url}/{API_VERSION_PATH}/workspaces", headers=headers, timeout=30)
+    response.raise_for_status()
+    names = sorted(workspace["name"] for workspace in response.json())
+    return _choose("Default workspace", names, default="default") if names else "default"
+
+
 @cli_app.command()
 def logout() -> None:
-    """Log out of Haystack Enterprise Platform. This command deletes the .ENV file created during login.
+    """Log out of Haystack Enterprise Platform. This command revokes your login session and deletes the .ENV file.
 
     Example:
     `haystack-enterprise logout`
     """
     typer.echo("Log out of Haystack Enterprise Platform.")
+    credentials = OAuthCredentials.load()
+    if credentials is not None:
+        revoke(credentials)
+    if delete_credentials():
+        typer.echo(f"Login session revoked and {CREDENTIALS_PATH} removed.")
     if not ENV_FILE_PATH.exists():
         typer.echo("No global configuration file found. Nothing to do!")
         return
