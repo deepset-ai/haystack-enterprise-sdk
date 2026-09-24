@@ -1,13 +1,17 @@
 import datetime
 import logging
+import threading
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Generator, List
 from unittest.mock import AsyncMock, Mock, patch
+from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
+import httpx
 import pytest
 import structlog
+import typer
 from typer.testing import CliRunner
 
 __version__ = version("haystack-enterprise-sdk")
@@ -20,7 +24,7 @@ from haystack_enterprise_sdk._api.upload_sessions import (
     UploadSessionWriteModeEnum,
     WriteMode,
 )
-from haystack_enterprise_sdk.cli import _configure_cli_logging, cli_app
+from haystack_enterprise_sdk.cli import _browser_login, _configure_cli_logging, _ui_url_for, cli_app
 from haystack_enterprise_sdk.models import UserInfo
 from haystack_enterprise_sdk.workflows.sync_client.files import download as sync_download
 
@@ -411,7 +415,7 @@ class TestCLIUtils:
         monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", global_env_path)
 
         # Accept the platform URL (empty confirm defaults to yes), default workspace.
-        result = runner.invoke(cli_app, ["login"], input="\ntest_api_key\n\n")
+        result = runner.invoke(cli_app, ["login", "--no-browser"], input="\ntest_api_key\n\n")
         assert result.exit_code == 0
         assert f"Global configuration file created at {global_env_path}" in result.stdout
         assert (
@@ -429,7 +433,7 @@ class TestCLIUtils:
         # Decline the platform URL, then provide a custom base URL.
         result = runner.invoke(
             cli_app,
-            ["login"],
+            ["login", "--no-browser"],
             input="n\nhttps://custom-api.example.com\ntest_api_key\nmy_workspace\n",
         )
         assert result.exit_code == 0
@@ -449,7 +453,7 @@ class TestCLIUtils:
         # A pasted URL that still includes the version suffix is normalized to the base.
         result = runner.invoke(
             cli_app,
-            ["login"],
+            ["login", "--no-browser"],
             input="n\nhttps://custom-api.example.com/api/v1\ntest_api_key\nmy_workspace\n",
         )
         assert result.exit_code == 0
@@ -457,6 +461,68 @@ class TestCLIUtils:
             "API_KEY=test_api_key\nAPI_URL=https://custom-api.example.com\nDEFAULT_WORKSPACE_NAME=my_workspace"
             == global_env_path.read_text()
         )
+
+    def test_login_with_flags_skips_prompts(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        global_env_path = tmp_path / ".haystack-enterprise" / ".env"
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", global_env_path)
+
+        with patch("haystack_enterprise_sdk.cli.webbrowser.open") as open_mock:
+            result = runner.invoke(cli_app, ["login", "--api-key", "test_api_key", "--workspace-name", "my_workspace"])
+
+        assert result.exit_code == 0
+        open_mock.assert_not_called()
+        assert (
+            "API_KEY=test_api_key\nAPI_URL=https://api.cloud.deepset.ai\nDEFAULT_WORKSPACE_NAME=my_workspace"
+            == global_env_path.read_text()
+        )
+        assert global_env_path.stat().st_mode & 0o777 == 0o600
+
+    def test_login_through_browser(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        global_env_path = tmp_path / ".haystack-enterprise" / ".env"
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", global_env_path)
+        responses: List[int] = []
+
+        def fake_browser(url: str) -> bool:
+            # Stand in for the platform page: post a forged callback first, then the real one.
+            parsed = urlsplit(url)
+            query = {key: values[0] for key, values in parse_qs(parsed.query).items()}
+            assert parsed.netloc == "cloud.deepset.ai" and parsed.path == "/cli-login"
+            callback = f"http://127.0.0.1:{query['port']}/callback"
+
+            def post() -> None:
+                forged = {"state": "wrong", "api_key": "evil_key", "workspace": "evil"}
+                responses.append(httpx.post(callback, data=forged).status_code)
+                real = {"state": query["state"], "api_key": "browser_key", "workspace": "my_workspace"}
+                responses.append(httpx.post(callback, data=real).status_code)
+
+            threading.Thread(target=post).start()
+            return True
+
+        with patch("haystack_enterprise_sdk.cli.webbrowser.open", side_effect=fake_browser):
+            result = runner.invoke(cli_app, ["login"])
+
+        assert result.exit_code == 0, result.stdout
+        assert responses == [400, 200]
+        assert (
+            "API_KEY=browser_key\nAPI_URL=https://api.cloud.deepset.ai\nDEFAULT_WORKSPACE_NAME=my_workspace"
+            == global_env_path.read_text()
+        )
+        assert global_env_path.stat().st_mode & 0o777 == 0o600
+
+    def test_browser_login_times_out(self) -> None:
+        with patch("haystack_enterprise_sdk.cli.webbrowser.open"), pytest.raises(typer.Exit):
+            _browser_login("https://cloud.deepset.ai", timeout=0.2)
+
+    @pytest.mark.parametrize(
+        "api_url, ui_url",
+        [
+            ("https://api.cloud.deepset.ai", "https://cloud.deepset.ai"),
+            ("https://api.us.deepset.ai", "https://us.deepset.ai"),
+            ("http://localhost:8000", "http://localhost:8000"),
+        ],
+    )
+    def test_ui_url_for(self, api_url: str, ui_url: str) -> None:
+        assert _ui_url_for(api_url) == ui_url
 
     def test_logout_if_not_logged_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", Path("/nonexistent/path/.env"))

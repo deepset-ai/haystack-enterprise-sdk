@@ -3,13 +3,18 @@
 import functools
 import json
 import logging
+import secrets
 import sys
 import threading
 import time
+import webbrowser
 from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from importlib.metadata import version
 from pathlib import Path
+from socket import gethostname
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
 import structlog
@@ -226,14 +231,21 @@ def download(  # pylint: disable=too-many-arguments
 
 
 @cli_app.command()
-def login() -> None:
+def login(
+    api_key: Optional[str] = None,
+    workspace_name: Optional[str] = None,
+    api_url: Optional[str] = None,
+    ui_url: Optional[str] = None,
+    browser: bool = True,
+) -> None:
     """Log in to Haystack Enterprise Platform.
 
     Run `haystack-enterprise login` before performing any tasks in Haystack Enterprise Platform using the SDK or CLI,
     unless you already created the .ENV file.
 
-    This command guides you through creating a global .env file at ~/.haystack-enterprise/.env with your
-    Haystack Enterprise Platform `API_KEY`, `API_URL` and `DEFAULT_WORKSPACE_NAME` used for all operations.
+    By default, this command opens the platform in your browser, where you authorize the CLI. The platform creates
+    an API key for you and hands it back to the CLI. The key is stored in a global .env file at
+    ~/.haystack-enterprise/.env together with the `API_URL` and `DEFAULT_WORKSPACE_NAME` used for all operations.
 
     The SDK uses a cascading configuration model with the following precedence:
     1. Explicit parameters (passed via code or CLI)
@@ -241,6 +253,12 @@ def login() -> None:
     3. Local .env file in project root
     4. Global ~/.haystack-enterprise/.env file (supplements local .env)
     5. Built-in defaults
+
+    :param api_key: API key to store. Together with `--workspace-name`, skips the browser and all prompts.
+    :param workspace_name: Default workspace to store.
+    :param api_url: Base API URL. Defaults to the deepset platform URL.
+    :param ui_url: Platform UI URL to open in the browser. Derived from the API URL by default.
+    :param browser: Log in through the browser. Use `--no-browser` to paste an API key instead, for example over SSH.
     """
     typer.echo("Log in to Haystack Enterprise Platform")
 
@@ -252,23 +270,117 @@ def login() -> None:
             "This local configuration will take precedence over the global configuration you're about to create."
         )
 
-    if typer.confirm(f"Use the deepset platform URL ({PLATFORM_URL})?", default=True):
-        api_url = PLATFORM_URL
-    else:
-        api_url = typer.prompt("Enter the base API URL")
+    if api_key and workspace_name:
+        _write_env(api_key, normalize_base_url(api_url or PLATFORM_URL), workspace_name)
+        return
+
+    if browser:
+        api_url = normalize_base_url(api_url or PLATFORM_URL)
+        browser_api_key, browser_workspace_name = _browser_login(ui_url or _ui_url_for(api_url))
+        _write_env(browser_api_key, api_url, browser_workspace_name)
+        return
+
+    if api_url is None:
+        if typer.confirm(f"Use the deepset platform URL ({PLATFORM_URL})?", default=True):
+            api_url = PLATFORM_URL
+        else:
+            api_url = typer.prompt("Enter the base API URL")
 
     # Store the bare base URL; the SDK appends the API version when building requests.
     api_url = normalize_base_url(api_url)
 
-    passed_api_key = typer.prompt("Your Haystack Enterprise Platform API_KEY", hide_input=True)
-    passed_default_workspace_name = typer.prompt("Your DEFAULT_WORKSPACE_NAME", default="default")
+    passed_api_key = api_key or typer.prompt("Your Haystack Enterprise Platform API_KEY", hide_input=True)
+    passed_default_workspace_name = workspace_name or typer.prompt("Your DEFAULT_WORKSPACE_NAME", default="default")
+    _write_env(passed_api_key, api_url, passed_default_workspace_name)
 
-    env_content = f"API_KEY={passed_api_key}\nAPI_URL={api_url}\nDEFAULT_WORKSPACE_NAME={passed_default_workspace_name}"
 
+# How long `login` waits for the browser to hand back an API key.
+LOGIN_TIMEOUT_SECONDS = 300.0
+
+_LOGIN_SUCCESS_PAGE = (
+    b"<!doctype html><title>Logged in</title>"
+    b"<p>You're logged in to Haystack Enterprise Platform. You can close this tab and return to your terminal.</p>"
+)
+
+
+def _write_env(api_key: str, api_url: str, workspace_name: str) -> None:
+    """Write the global .env file, readable by the current user only, since it holds the API key."""
     ENV_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ENV_FILE_PATH.write_text(env_content, encoding="utf-8")
-
+    ENV_FILE_PATH.write_text(
+        f"API_KEY={api_key}\nAPI_URL={api_url}\nDEFAULT_WORKSPACE_NAME={workspace_name}", encoding="utf-8"
+    )
+    ENV_FILE_PATH.chmod(0o600)
     typer.echo(f"Global configuration file created at {ENV_FILE_PATH}.")
+
+
+def _ui_url_for(api_url: str) -> str:
+    """Derive the platform UI URL from the API URL, for example `https://api.cloud.deepset.ai` -> `https://cloud.deepset.ai`.
+
+    :param api_url: The normalized base API URL.
+    :return: The UI base URL.
+    """
+    # ponytail: host-prefix heuristic, add a /config endpoint lookup if regions don't follow api.<ui-host>
+    parts = urlsplit(api_url)
+    return urlunsplit(parts._replace(netloc=parts.netloc.removeprefix("api."), path="", query="", fragment=""))
+
+
+def _browser_login(ui_url: str, timeout: float = LOGIN_TIMEOUT_SECONDS) -> Tuple[str, str]:
+    """Open the platform in the browser and wait for it to post an API key back to a loopback server.
+
+    The platform's `/cli-login` page creates the key once the user authorizes the CLI, then submits it in a form POST
+    to `http://127.0.0.1:<port>/callback`, together with the `state` we generated. A callback with any other state is
+    rejected, so only the page we opened can log us in.
+
+    :param ui_url: The platform UI base URL.
+    :param timeout: Seconds to wait for the callback.
+    :return: The API key and the workspace the user picked.
+    :raises typer.Exit: If no valid callback arrives in time.
+    """
+    state = secrets.token_urlsafe(32)
+    received: Dict[str, str] = {}
+
+    class _CallbackHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 - name required by BaseHTTPRequestHandler
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8", "replace")
+            form = {key: values[0] for key, values in parse_qs(body).items()}
+            valid = (
+                self.path == "/callback"
+                and secrets.compare_digest(form.get("state", "").encode(), state.encode())
+                and form.get("api_key")
+                and form.get("workspace")
+            )
+            if not valid:
+                self.send_error(400, "Invalid login callback")
+                return
+            received.update(form)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(_LOGIN_SUCCESS_PAGE)
+
+        def log_message(self, format: str, *args: Any) -> None:  # pylint: disable=redefined-builtin
+            """Keep the default request log off the terminal."""
+
+    with HTTPServer(("127.0.0.1", 0), _CallbackHandler) as server:
+        query = urlencode({"port": server.server_port, "state": state, "hostname": gethostname()})
+        url = f"{ui_url.rstrip('/')}/cli-login?{query}"
+        typer.echo(f"Opening your browser to log in. If it doesn't open, visit:\n\n  {url}\n")
+        webbrowser.open(url)
+
+        deadline = time.monotonic() + timeout
+        while not received:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                typer.echo(
+                    "Timed out waiting for the browser login. Run `haystack-enterprise login --no-browser` "
+                    "to paste an API key instead.",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            server.timeout = remaining
+            server.handle_request()
+
+    return received["api_key"], received["workspace"]
 
 
 @cli_app.command()
