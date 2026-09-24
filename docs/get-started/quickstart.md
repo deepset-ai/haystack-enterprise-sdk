@@ -15,8 +15,9 @@ If your project's environment lives somewhere else, add `--python /path/to/pytho
 haystack-enterprise login
 ```
 
-Paste your API key and pick a default workspace. This is stored once — see
-[Configuration](configuration.md).
+Your browser opens the platform. Pick a default workspace and click **Authorize**; the CLI stores the
+new API key once — see [Configuration](configuration.md). Working over SSH? Use `login --no-browser`
+and paste a key instead.
 
 ## 2. Check it is deployable
 
