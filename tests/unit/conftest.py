@@ -3,8 +3,13 @@
 from pathlib import Path
 
 import pytest
+import structlog
 
 from haystack_enterprise_sdk._api import config
+
+# Route structlog through stdlib logging so ``caplog`` sees SDK warnings. haystack-ai < 3 did this as an
+# import side effect; haystack-ai 3 no longer does.
+structlog.configure(logger_factory=structlog.stdlib.LoggerFactory())
 
 
 @pytest.fixture(autouse=True)
