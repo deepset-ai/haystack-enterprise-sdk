@@ -36,12 +36,21 @@ There is also a top-level `--version`, which prints the installed SDK version an
 
 ### `login`
 
-Prompts for the platform URL, your API key and a default workspace, then writes them to
-`~/.haystack-enterprise/.env`.
+Opens the platform in your browser. There you log in if needed, pick a default workspace and click
+**Authorize**. The platform creates an API key named after your machine and hands it back to the CLI,
+which writes it to `~/.haystack-enterprise/.env` (readable only by you). You can revoke the key under
+**Settings → API Keys**.
 
 ```shell
 haystack-enterprise login
 ```
+
+| Option | Description |
+| --- | --- |
+| `--no-browser` | Prompt for the API key and workspace instead. Use it when the browser runs on another machine, for example over SSH. |
+| `--api-key`, `--workspace-name` | Write these values directly, with no browser and no prompts. Useful in CI. |
+| `--api-url` | Base API URL. Defaults to `https://api.cloud.deepset.ai`. |
+| `--ui-url` | Platform UI to open. By default it's derived from the API URL by dropping the `api.` host prefix. |
 
 ### `logout`
 
