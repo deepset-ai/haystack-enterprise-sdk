@@ -579,6 +579,71 @@ class TestToolInlining:
         # `len` lives in builtins, not the project, so the tool stays a plain Tool (not a CodeTool).
         assert tools[0]["type"] != "deepset_cloud_custom_nodes.tools.code_tool.CodeTool"
 
+    def test_module_level_constant_chain_preserved_in_order(self, tmp_path: Path) -> None:
+        # Regression: _ROUTING_TABLE must come before SYSTEM_PROMPT in the generated code so that
+        # exec() doesn't raise NameError on the dependent constant.
+        tools_src = """
+            from haystack.tools import tool
+
+            _ROUTING_TABLE = {"a": 1}
+            SYSTEM_PROMPT = f"route via {_ROUTING_TABLE}"
+
+            @tool
+            def route() -> str:
+                \"\"\"Route a request.\"\"\"
+                return SYSTEM_PROMPT
+        """
+        agent_src = """
+            from haystack.components.agents import Agent
+            from haystack.components.generators.chat import OpenAIChatGenerator
+            from tools import route
+
+            agent = Agent(
+                chat_generator=OpenAIChatGenerator(model="gpt-4o-mini"),
+                tools=[route],
+            )
+        """
+        path = _write_project(tmp_path, {"pipeline.py": agent_src, "tools.py": tools_src})
+        pipeline = load_pipeline_from_file(path, entrypoint="agent")
+        bundle = extract_from_pipeline(pipeline, tmp_path)
+        code = bundle["pipeline"]["components"]["agent"]["init_parameters"]["tools"][0]["data"]["code"]
+        # Both constants must be present and in dependency order.
+        assert "_ROUTING_TABLE" in code
+        assert "SYSTEM_PROMPT" in code
+        assert code.index("_ROUTING_TABLE") < code.index("SYSTEM_PROMPT")
+        # The generated code must be executable without NameError.
+        exec(compile(code, "<tool>", "exec"), {})
+
+    def test_multi_target_assignment_not_duplicated(self, tmp_path: Path) -> None:
+        # Regression: A = B = value maps both names to the same AST node; if the tool references
+        # both A and B, the source segment must appear exactly once, not twice.
+        tools_src = """
+            from haystack.tools import tool
+
+            A = B = "shared"
+
+            @tool
+            def use_both() -> str:
+                \"\"\"Use both names.\"\"\"
+                return A + B
+        """
+        agent_src = """
+            from haystack.components.agents import Agent
+            from haystack.components.generators.chat import OpenAIChatGenerator
+            from tools import use_both
+
+            agent = Agent(
+                chat_generator=OpenAIChatGenerator(model="gpt-4o-mini"),
+                tools=[use_both],
+            )
+        """
+        path = _write_project(tmp_path, {"pipeline.py": agent_src, "tools.py": tools_src})
+        pipeline = load_pipeline_from_file(path, entrypoint="agent")
+        bundle = extract_from_pipeline(pipeline, tmp_path)
+        code = bundle["pipeline"]["components"]["agent"]["init_parameters"]["tools"][0]["data"]["code"]
+        # The multi-target assignment should appear exactly once.
+        assert code.count("A = B =") == 1
+
 
 class TestValidateToolCodeBlock:
     def test_rejects_no_tool_function(self) -> None:
