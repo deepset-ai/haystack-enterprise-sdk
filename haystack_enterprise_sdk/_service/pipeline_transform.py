@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import structlog
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 # Re-export the extractor's public surface so existing imports keep working.
 from haystack_enterprise_sdk._service.pipeline_extract import (
@@ -476,8 +477,6 @@ def bundle_from_yaml(target: Path) -> ExtractionBundle:
         a ``DocumentWriter``.
     :return: The extraction bundle.
     """
-    from ruamel.yaml.error import YAMLError  # pylint: disable=import-outside-toplevel
-
     try:
         data = YAML(typ="safe").load(Path(target).read_text(encoding="utf-8"))
     except (OSError, YAMLError) as err:
