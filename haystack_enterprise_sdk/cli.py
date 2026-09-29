@@ -56,6 +56,7 @@ from haystack_enterprise_sdk._service.pipeline_transform import (
     PipelineTransformError,
     SocketOption,
     build_config_yaml,
+    is_yaml_target,
     pins_haystack_3_or_later,
     socket_options,
     unmapped_mandatory_inputs,
@@ -471,7 +472,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     interpreter given by --python), so this CLI's own environment does not need your pipeline's
     dependencies installed.
 
-    :param target: Path to the Python file that defines the pipeline.
+    :param target: Path to the Python file or platform pipeline YAML that defines the pipeline.
     :param service_name: Name of the target service deployment.
     :param skip_activation: Push the revision without activating it (skips the rollout and wait).
         By default the new revision is activated and the CLI waits for the rollout to finish.
@@ -612,8 +613,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     # An io-config (explicit or auto-detected) pins the mapping, so nothing is asked. Otherwise --share
     # reviews the whole mapping, because its chat UI routes through all of it; a plain deploy asks only
     # for the two things the platform requires of a servable pipeline (a query input and one output) and
-    # only when inference did not already supply them.
-    if io_cfg.inputs is not None or io_cfg.outputs is not None:
+    # only when inference did not already supply them. A pipeline YAML has no live sockets to offer, so
+    # its own mapping is used as-is.
+    if io_cfg.inputs is not None or io_cfg.outputs is not None or is_yaml_target(target):
         io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="warn")
     elif share:
         io_resolver = functools.partial(
@@ -732,7 +734,7 @@ def validate(
     Runs the same transform the deploy uses, then checks the result against the platform and reports
     any issues. Exits non-zero if there are blocking (ERROR) issues.
 
-    :param target: Path to the Python file that defines the pipeline.
+    :param target: Path to the Python file or platform pipeline YAML that defines the pipeline.
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
     :param python: Path to the Python interpreter used to load your pipeline (defaults to an
         auto-detected virtualenv near the target file, else the current interpreter).
@@ -812,7 +814,7 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
     interpreter given by --python), so this CLI's own environment does not need your pipeline's
     dependencies installed.
 
-    :param target: Path to the Python file that defines the pipeline.
+    :param target: Path to the Python file or platform pipeline YAML that defines the pipeline.
     :param query: Query text routed to the sockets mapped under the pipeline's 'query' input. Convenient
         for the common case; on an interactive terminal you are prompted for it when neither --query,
         --set, nor --inputs is given.
@@ -864,11 +866,11 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
 
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
     # The mapping is only consumed to route a query onto a socket. With --inputs alone there is nothing
-    # to route, so there is nothing to ask about.
+    # to route, so there is nothing to ask about. Nor with a pipeline YAML, which has no sockets to offer.
     io_resolver = functools.partial(
         _resolve_io_interactive,
         skip_validation=skip_io_validation,
-        mode="query" if query is not None else "warn",
+        mode="query" if query is not None and not is_yaml_target(target) else "warn",
     )
 
     def _invoke(resolver: Any, on_retry: Optional[Any]) -> dict:

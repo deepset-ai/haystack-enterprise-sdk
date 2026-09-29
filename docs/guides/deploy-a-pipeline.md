@@ -289,6 +289,28 @@ nothing, has no search session, and renders no Playground result — are strippe
 
 ---
 
+## Working from YAML
+
+`validate`, `run`, and `deploy` also accept a pipeline YAML in the platform's own format, so you can
+edit the same file in your editor, with a coding agent, and on the platform:
+
+```bash
+haystack-enterprise deploy pipeline.yaml my-service --dry-run --output out.yaml
+haystack-enterprise validate pipeline.yaml
+haystack-enterprise deploy pipeline.yaml my-service
+```
+
+The file is not loaded in Python, so a few things work differently than with a `.py` file:
+
+- No socket inference, and no prompts. `inputs` and `outputs` come from the file itself, or from
+  `pipeline.io.yaml` next to it, which wins as usual.
+- Custom components must already be `Code` components. Nothing is inlined.
+- `haystack-ai` is not pinned automatically. Add a `dependencies:` list if you want validation against
+  a specific version.
+- `--entrypoint` and `--python` have no effect.
+
+---
+
 ## Iterating
 
 Because every step reads the same local file and applies the same transform, iterating is just

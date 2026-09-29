@@ -555,6 +555,35 @@ class TestDryRun:
         assert out.is_file()
         assert "components" in out.read_text()
 
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    def test_dry_run_from_pipeline_yaml(self, _isatty: Mock, tmp_path: Path) -> None:
+        target = tmp_path / "pipeline.yaml"
+        target.write_text(
+            "components:\n  c:\n    type: haystack.X\n    init_parameters: {}\n"
+            "inputs:\n  query:\n    - c.query\noutputs:\n  answers: c.answers\n"
+        )
+        (tmp_path / "pipeline.io.yaml").write_text("outputs:\n  documents: c.documents\n")
+        out = tmp_path / "out.yaml"
+
+        result = runner.invoke(cli_app, ["deploy", str(target), "svc", "--dry-run", "--output", str(out)])
+
+        assert result.exit_code == 0, result.stdout
+        rendered = out.read_text()
+        assert "c.query" in rendered
+        assert "documents: c.documents" in rendered  # the io-config wins over the file's own mapping
+        assert "c.answers" not in rendered
+
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_from_pipeline_yaml_never_prompts(self, client_cls: Mock, _isatty: Mock, tmp_path: Path) -> None:
+        target = tmp_path / "pipeline.yaml"
+        target.write_text("components: {}\n")
+
+        runner.invoke(cli_app, ["deploy", str(target), "svc", "--skip-activation"])
+
+        resolver = client_cls.return_value.deploy.call_args.kwargs["io_resolver"]
+        assert resolver.keywords["mode"] == "warn"
+
     @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_transform_error_exits_1(self, extract_mock: Mock) -> None:
         extract_mock.side_effect = PipelineTransformError("missing dependency 'tiktoken'")

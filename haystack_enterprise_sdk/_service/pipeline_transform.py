@@ -27,6 +27,7 @@ from ruamel.yaml import YAML
 
 # Re-export the extractor's public surface so existing imports keep working.
 from haystack_enterprise_sdk._service.pipeline_extract import (
+    _INDEX_MARKER_SUFFIXES,
     CODE_COMPONENT_TYPE,
     STANDARD_INPUT_KEYS,
     STANDARD_OUTPUT_KEYS,
@@ -56,6 +57,7 @@ __all__ = [
     "PipelineTransformError",
     "RESERVED_ROOT_KEYS",
     "build_config_yaml",
+    "bundle_from_yaml",
     "classify_module",
     "detect_project_python",
     "extract_from_file",
@@ -63,6 +65,7 @@ __all__ = [
     "extract_via_subprocess",
     "flatten_sockets",
     "haystack_pin",
+    "is_yaml_target",
     "pins_haystack_3_or_later",
     "load_pipeline_from_file",
     "render_config_yaml",
@@ -261,7 +264,10 @@ def build_config_yaml(
 
     :param settings: The top-level ``config_yaml`` keys to declare — see :class:`PipelineSettings`.
     """
-    bundle = extract_via_subprocess(target, entrypoint, python_executable)
+    if is_yaml_target(target):
+        bundle = bundle_from_yaml(target)
+    else:
+        bundle = extract_via_subprocess(target, entrypoint, python_executable)
     resolved_inputs, resolved_outputs = resolve_io(bundle, inputs, outputs, io_resolver)
     return render_config_yaml(bundle, inputs=resolved_inputs, outputs=resolved_outputs, settings=settings)
 
@@ -446,6 +452,57 @@ def socket_options(sockets_by_component: Dict[str, dict]) -> List[SocketOption]:
 def flatten_sockets(sockets_by_component: Dict[str, dict]) -> List[str]:
     """Flatten a bundle's ``available_*`` mapping into sorted ``"component.socket"`` paths."""
     return [option.path for option in socket_options(sockets_by_component)]
+
+
+def is_yaml_target(target: Path) -> bool:
+    """Whether ``target`` is a pipeline YAML rather than a Python file. An io-config never counts."""
+    name = Path(target).name
+    return name.endswith((".yaml", ".yml")) and not name.endswith((".io.yaml", ".io.yml"))
+
+
+def bundle_from_yaml(target: Path) -> ExtractionBundle:
+    """Build the extraction bundle from a platform pipeline YAML, without loading it in Python.
+
+    The file is taken as the platform stores it, so it can reference platform-only types such as the
+    ``Code`` component that no local interpreter could import. That also means there are no live
+    sockets: ``available_*`` and ``mandatory_inputs`` stay empty and the mapping comes from the file's
+    own ``inputs``/``outputs`` (or an io-config, which wins as usual).
+
+    The root keys :func:`render_config_yaml` writes are lifted out of ``pipeline`` onto the bundle, so
+    the renderer's overrides replace them instead of leaving the file's copies behind.
+
+    :param target: Path to the pipeline ``.yaml`` / ``.yml`` file.
+    :raises PipelineTransformError: If the file cannot be read or parsed, is not a mapping, or contains
+        a ``DocumentWriter``.
+    :return: The extraction bundle.
+    """
+    from ruamel.yaml.error import YAMLError  # pylint: disable=import-outside-toplevel
+
+    try:
+        data = YAML(typ="safe").load(Path(target).read_text(encoding="utf-8"))
+    except (OSError, YAMLError) as err:
+        raise PipelineTransformError(f"Could not load pipeline YAML '{target}': {err}") from err
+    if not isinstance(data, dict):
+        raise PipelineTransformError(f"Pipeline YAML '{target}' must be a mapping with a 'components' section.")
+
+    for component in (data.get("components") or {}).values():
+        if str((component or {}).get("type", "")).endswith(_INDEX_MARKER_SUFFIXES):
+            raise PipelineTransformError(
+                "This looks like an indexing pipeline (it contains a DocumentWriter). "
+                "Index deployment is not yet supported; deploy a query pipeline instead."
+            )
+
+    inputs = {
+        key: [value] if isinstance(value, str) else value for key, value in (data.pop("inputs", None) or {}).items()
+    }
+    return ExtractionBundle(
+        async_enabled=bool(data.pop("async_enabled", False)),
+        inferred_inputs=inputs,
+        inferred_outputs=data.pop("outputs", None) or {},
+        dependencies=data.pop("dependencies", None) or [],
+        suggested_pipeline_output_type=data.pop("pipeline_output_type", None),
+        pipeline=data,
+    )
 
 
 def extract_via_subprocess(
