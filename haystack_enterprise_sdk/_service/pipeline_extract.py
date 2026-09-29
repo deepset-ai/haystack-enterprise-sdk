@@ -751,7 +751,9 @@ def _build_tool_code_block(function_path: str, project_root: Path) -> str:
         return caches[mod]
 
     preserved_imports: list[str] = []
-    helpers: list[str] = []  # helper source segments, in discovery order
+    fn_helpers: list[str] = []  # function/class helpers; order is fine (late-binding)
+    const_helpers: list[tuple[str, ast.stmt]] = []  # (source, node); deduplicated and ordered below
+    seen_const_ids: set[int] = set()  # deduplicate multi-target assignments (A = B = v → one AST node)
     entry_source: Optional[str] = None
     by_name: dict[str, str] = {}  # symbol name -> module that first claimed it
     seen: set[tuple[str, str]] = set()
@@ -784,15 +786,26 @@ def _build_tool_code_block(function_path: str, project_root: Path) -> str:
                 f"(from '{by_name[sym]}' and '{mod}'). Rename one so they don't collide."
             )
         by_name[sym] = mod
-        helpers.append(idx.defs[sym])
+        node = idx.def_nodes[sym]
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            if id(node) not in seen_const_ids:
+                seen_const_ids.add(id(node))
+                const_helpers.append((idx.defs[sym], node))
+        else:
+            fn_helpers.append(idx.defs[sym])
 
     if entry_source is None:
         raise PipelineTransformError(f"Could not find the tool function '{func_name}' to inline for '{function_path}'.")
 
+    ordered_const_nodes = _order_constants([node for _, node in const_helpers])
+    node_to_src = {id(node): src for src, node in const_helpers}
+    ordered_const_srcs = [node_to_src[id(node)] for node in ordered_const_nodes]
+
     parts: list[str] = []
     if preserved_imports:
         parts.append("\n".join(preserved_imports))
-    parts.extend(helpers)
+    parts.extend(fn_helpers)
+    parts.extend(ordered_const_srcs)
     parts.append(entry_source)
     return "\n\n\n".join(parts) + "\n"
 
