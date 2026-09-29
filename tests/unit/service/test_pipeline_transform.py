@@ -1343,6 +1343,17 @@ class TestBuildFromYaml:
         with pytest.raises(PipelineTransformError, match="indexing pipeline"):
             build_config_yaml(target)
 
+    def test_code_wrapped_writer_is_not_detected(self, tmp_path: Path) -> None:
+        # Detection is by component type, like the Python path's class-name check. A platform Code
+        # component is opaque source, so a DocumentWriter inside one is not seen; the platform decides.
+        target = tmp_path / "pipeline.yaml"
+        target.write_text(
+            "components:\n  writer:\n    type: deepset_cloud_custom_nodes.code.code_component.Code\n"
+            "    init_parameters:\n      code: |\n        from haystack.components.writers import DocumentWriter\n"
+        )
+
+        assert "writer" in build_config_yaml(target)
+
     def test_non_mapping_root_is_rejected(self, tmp_path: Path) -> None:
         target = tmp_path / "pipeline.yaml"
         target.write_text("- not a pipeline\n")

@@ -866,11 +866,11 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
 
     client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
     # The mapping is only consumed to route a query onto a socket. With --inputs alone there is nothing
-    # to route, so there is nothing to ask about. Nor with a pipeline YAML, which has no sockets to offer.
+    # to route, so there is nothing to ask about.
     io_resolver = functools.partial(
         _resolve_io_interactive,
         skip_validation=skip_io_validation,
-        mode="query" if query is not None and not is_yaml_target(target) else "warn",
+        mode="query" if query is not None else "warn",
     )
 
     def _invoke(resolver: Any, on_retry: Optional[Any]) -> dict:
@@ -1231,6 +1231,16 @@ def _resolve_io_interactive(
     outputs = dict(current_outputs)
     if skip_validation:
         return inputs, outputs
+
+    if mode == "query" and not extraction.available_inputs:
+        # No live sockets to offer (a pipeline YAML), so nothing to ask. Say so when the query would be
+        # dropped, instead of letting it vanish.
+        if not (inputs.get("query") or inputs.get("messages")):
+            typer.echo(
+                "Warning: --query is not routed anywhere: the pipeline maps no 'query' or 'messages' input. "
+                "Add one under 'inputs:' or pass the value with --set/--inputs."
+            )
+        mode = "warn"
 
     if mode == "warn" or not _stdin_is_tty():
         _warn_unmapped_mandatory(extraction, inputs)

@@ -826,6 +826,19 @@ class TestRunCommand:
         assert resolver.func is _resolve_io_interactive
         assert resolver.keywords["mode"] == "warn"
 
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    def test_query_without_sockets_warns_when_unmapped(self, _isatty: Mock) -> None:
+        # A pipeline YAML offers no sockets: nothing is asked, and an unroutable --query is called out.
+        from haystack_enterprise_sdk.cli import _resolve_io_interactive
+
+        with patch("haystack_enterprise_sdk.cli.typer.echo") as echo:
+            assert _resolve_io_interactive(_bundle(), {}, {}, mode="query") == ({}, {})
+        assert "--query is not routed" in echo.call_args.args[0]
+
+        with patch("haystack_enterprise_sdk.cli.typer.echo") as echo:
+            _resolve_io_interactive(_bundle(), {"query": ["c.query"]}, {}, mode="query")
+        echo.assert_not_called()
+
 
 class TestEnsureQueryInput:
     """`run`'s single question: which socket a --query is routed to (mode="query")."""
