@@ -74,13 +74,13 @@ haystack-enterprise = "haystack_enterprise_sdk.cli:run_packaged"
 [dependency-groups]
 test = [
   "pytest-cov==7.1.0",
-  "pytest==8.4.2",
+  "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
   "haystack-ai>=2.13.2",    # only for testing
   "respx==0.23.1",
 ]
 code-quality = [
-  "ruff==0.16.7",
+  "ruff==0.16.9",
   "mypy==2.3.1",
   "pre-commit==4.6.2",
   "types-aiofiles==25.1.0.20260518",
