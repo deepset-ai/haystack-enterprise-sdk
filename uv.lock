@@ -2714,12 +2714,12 @@ wheels = [
 
 [[package]]
 name = "yaspin"
-version = "3.5.0"
+version = "3.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "termcolor" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a7/67/065003157da680eacd9225ffb92943d0f579a192961ea6c29ebfd258647f/yaspin-3.5.0.tar.gz", hash = "sha256:736d08081bcfc1a18e0c0610939f9cb419441f305ff5d50055d0e4688b36baf9", size = 44051, upload-time = "2026-09-06T18:14:47.156Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/20/4b44e31e5a1bfe09624267656dc02c31fe920e35e81697722dd45caac9f1/yaspin-3.5.1.tar.gz", hash = "sha256:5cb55fb774eae3543fdd30b5958c46e348dfd316a8b289c9f8db2c6f8a511846", size = 44488, upload-time = "2026-09-18T19:05:39.82Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/b6/cc8809db183b011e0cfb49998358b3a3547fa8448bad3f1761a26c8d1e9a/yaspin-3.5.0-py3-none-any.whl", hash = "sha256:e7bce1ee10b5702b03b8cb3ef18793bb0613f0808d0829b26e3f763290f4a57d", size = 22768, upload-time = "2026-09-06T18:14:45.934Z" },
+    { url = "https://files.pythonhosted.org/packages/53/54/74737771bfc9b945b7e11968100c096fc2d1af075644e43d5fa51ab773a7/yaspin-3.5.1-py3-none-any.whl", hash = "sha256:193ef981f0796a93f77d91221dd19bd2c83b0f6a26f43edbc0507c457c54c1cb", size = 22875, upload-time = "2026-09-18T19:05:38.334Z" },
 ]
