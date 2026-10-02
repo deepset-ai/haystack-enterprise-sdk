@@ -21,6 +21,7 @@ from haystack_enterprise_sdk._api.config import (
     ASYNC_CLIENT_TIMEOUT,
     DEFAULT_WORKSPACE_NAME,
     ENV_FILE_PATH,
+    LEGACY_ENV_FILE_PATH,
     PLATFORM_URL,
     normalize_base_url,
 )
@@ -240,7 +241,8 @@ def login() -> None:
     2. Environment variables
     3. Local .env file in project root
     4. Global ~/.haystack-enterprise/.env file (supplements local .env)
-    5. Built-in defaults
+    5. Legacy ~/.deepset-cloud/.env file from deepset-cloud-sdk 1.x (supplements both)
+    6. Built-in defaults
     """
     typer.echo("Log in to Haystack Enterprise Platform")
 
@@ -273,17 +275,20 @@ def login() -> None:
 
 @cli_app.command()
 def logout() -> None:
-    """Log out of Haystack Enterprise Platform. This command deletes the .ENV file created during login.
+    """Log out of Haystack Enterprise Platform. This command deletes the .ENV file created during login,
+    and the legacy ~/.deepset-cloud/.env file if it exists.
 
     Example:
     `haystack-enterprise logout`
     """
     typer.echo("Log out of Haystack Enterprise Platform.")
-    if not ENV_FILE_PATH.exists():
+    env_files = [path for path in (ENV_FILE_PATH, LEGACY_ENV_FILE_PATH) if path.exists()]
+    if not env_files:
         typer.echo("No global configuration file found. Nothing to do!")
         return
-    ENV_FILE_PATH.unlink()
-    typer.echo(f"Global configuration file {ENV_FILE_PATH} removed successfully.")
+    for path in env_files:
+        path.unlink()
+        typer.echo(f"Global configuration file {path} removed successfully.")
 
 
 @cli_app.command()
