@@ -80,6 +80,14 @@ io-config section of [docs/cli_command_flow.md](docs/cli_command_flow.md).
 
 `--skip-io-validation` silences the warning without fixing the mapping.
 
+## Working from a pipeline YAML
+
+`deploy`, `validate`, and `run` also take a `.yaml` / `.yml` file in the platform's own format. It is
+sent as-is: nothing is imported, nothing is inlined, and there is no socket inference or I/O prompt.
+The `inputs:` / `outputs:` in the file (or in `<target>.io.yaml`, which wins) are the mapping. Custom
+components must already be `Code` components. `haystack-ai` is not pinned unless the file lists it
+under `dependencies:`.
+
 ## What a pipeline file must contain
 
 Discovery is by type, not by name. Any module-level `Pipeline`, `AsyncPipeline`, or bare `Agent` whose

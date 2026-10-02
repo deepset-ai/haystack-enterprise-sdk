@@ -14,6 +14,7 @@ import pytest
 from haystack import Pipeline
 from ruamel.yaml import YAML
 
+from haystack_enterprise_sdk._service import pipeline_transform
 from haystack_enterprise_sdk._service.pipeline_extract import (
     _classify_origin,
     _sanitize_agent_init_params,
@@ -35,6 +36,7 @@ from haystack_enterprise_sdk._service.pipeline_transform import (
     extract_from_file,
     extract_via_subprocess,
     haystack_pin,
+    is_yaml_target,
     load_pipeline_from_file,
     pins_haystack_3_or_later,
     render_config_yaml,
@@ -1296,8 +1298,6 @@ class TestBuildConfigYaml:
         )
 
     def test_resolver_invoked_when_io_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from haystack_enterprise_sdk._service import pipeline_transform
-
         monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: self._bundle({}, {}))
         resolver = Mock(return_value=({"query": ["retriever.query"]}, {"answers": "reader.answers"}))
 
@@ -1310,8 +1310,6 @@ class TestBuildConfigYaml:
     def test_resolver_called_with_inferred_io_and_empty_return_keeps_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The resolver is always consulted (it decides whether to interact); returning empty dicts
         # keeps the inferred mappings untouched.
-        from haystack_enterprise_sdk._service import pipeline_transform
-
         bundle = self._bundle({"query": ["retriever.query"]}, {"answers": "reader.answers"})
         monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: bundle)
         resolver = Mock(return_value=({}, {}))
@@ -1326,8 +1324,6 @@ class TestBuildConfigYaml:
         assert "reader.answers" in yaml
 
     def test_resolver_invoked_when_only_outputs_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from haystack_enterprise_sdk._service import pipeline_transform
-
         bundle = self._bundle({"query": ["retriever.query"]}, {})
         monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", lambda *a, **k: bundle)
         resolver = Mock(return_value=({}, {"answers": "reader.answers"}))
@@ -1340,8 +1336,6 @@ class TestBuildConfigYaml:
     def test_resolver_invoked_when_mandatory_input_unmapped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Inference produced inputs and outputs, but a mandatory socket is not routed to any platform
         # input — the resolver must still be consulted (same rule as --dry-run).
-        from haystack_enterprise_sdk._service import pipeline_transform
-
         bundle = self._bundle(
             {"query": ["retriever.query"]},
             {"answers": "reader.answers"},
@@ -1354,6 +1348,90 @@ class TestBuildConfigYaml:
 
         resolver.assert_called_once()
         assert "prompt_builder.passage" in yaml
+
+
+class TestBuildFromYaml:
+    """A pipeline YAML is taken as the platform stores it, with no interpreter involved."""
+
+    _PIPELINE_YAML = textwrap.dedent(
+        """\
+        components:
+          code:
+            type: deepset_cloud_custom_nodes.code.code_component.Code
+            init_parameters:
+              code: "class X: ..."
+        connections: []
+        inputs:
+          query: code.query
+        outputs:
+          answers: code.answers
+        pipeline_output_type: generative
+        session_storage: true
+        dependencies:
+          - haystack-ai==2.30.2
+        """
+    )
+
+    def test_yaml_target_skips_the_extractor(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        extractor = Mock()
+        monkeypatch.setattr(pipeline_transform, "extract_via_subprocess", extractor)
+        target = tmp_path / "pipeline.yaml"
+        target.write_text(self._PIPELINE_YAML)
+
+        rendered = YAML(typ="safe").load(build_config_yaml(target))
+
+        extractor.assert_not_called()
+        assert rendered["components"]["code"]["type"] == CODE_COMPONENT_TYPE
+        assert rendered["inputs"] == {"query": ["code.query"]}
+        assert rendered["outputs"] == {"answers": "code.answers"}
+        assert rendered["pipeline_output_type"] == "generative"
+        assert rendered["session_storage"] is True
+        assert rendered["dependencies"] == ["haystack-ai==2.30.2"]
+
+    def test_explicit_mapping_replaces_the_files_own(self, tmp_path: Path) -> None:
+        target = tmp_path / "pipeline.yml"
+        target.write_text(self._PIPELINE_YAML)
+
+        rendered = YAML(typ="safe").load(
+            build_config_yaml(
+                target, inputs={"messages": ["code.messages"]}, settings=PipelineSettings(dependencies=[])
+            )
+        )
+
+        assert rendered["inputs"] == {"messages": ["code.messages"]}
+        assert "dependencies" not in rendered
+
+    def test_index_pipeline_is_rejected(self, tmp_path: Path) -> None:
+        target = tmp_path / "index.yaml"
+        target.write_text("components:\n  writer:\n    type: haystack.components.writers.DocumentWriter\n")
+
+        with pytest.raises(PipelineTransformError, match="indexing pipeline"):
+            build_config_yaml(target)
+
+    def test_code_wrapped_writer_is_not_detected(self, tmp_path: Path) -> None:
+        # Detection is by component type, like the Python path's class-name check. A platform Code
+        # component is opaque source, so a DocumentWriter inside one is not seen; the platform decides.
+        target = tmp_path / "pipeline.yaml"
+        target.write_text(
+            "components:\n  writer:\n    type: deepset_cloud_custom_nodes.code.code_component.Code\n"
+            "    init_parameters:\n      code: |\n        from haystack.components.writers import DocumentWriter\n"
+        )
+
+        assert "writer" in build_config_yaml(target)
+
+    def test_non_mapping_root_is_rejected(self, tmp_path: Path) -> None:
+        target = tmp_path / "pipeline.yaml"
+        target.write_text("- not a pipeline\n")
+
+        with pytest.raises(PipelineTransformError, match="must be a mapping"):
+            build_config_yaml(target)
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [("p.yaml", True), ("p.yml", True), ("p.py", False), ("p.io.yaml", False), ("p.io.yml", False)],
+    )
+    def test_is_yaml_target(self, name: str, expected: bool) -> None:
+        assert is_yaml_target(Path(name)) is expected
 
 
 class TestClassifyOrigin:
