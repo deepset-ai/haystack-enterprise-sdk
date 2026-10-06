@@ -2,7 +2,6 @@ name: PyPI Release
 
 on:
   # Publishing a GitHub Release is the single human action that ships a version.
-  # It also fires api-docs.yaml, so the package and the docs site move together.
   release:
     types:
       - published
