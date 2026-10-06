@@ -212,7 +212,7 @@ class TestCLIMethods:
                 ]
 
             sync_list_files_mock.side_effect = mocked_list_files
-            result = runner.invoke(cli_app, ["list-files"])
+            result = runner.invoke(cli_app, ["list-files"], input="y\n")
             assert result.exit_code == 0
             assert (
                 " cd16435f-f6eb-423f-bf6f-994dc8a36a10 | /api/v1/workspaces/search tests/files/cd16435f-f6eb-423f-bf6f-994dc8a36a10 | silly_things_1.txt |    611 | 2022-06-21 16:40:00.634653+00:00 | {}  "
@@ -270,7 +270,7 @@ class TestCLIMethods:
                 ]
 
             sync_list_files_mock.side_effect = mocked_list_files
-            result = runner.invoke(cli_app, ["list-files", "--batch-size", "1"], input="y")
+            result = runner.invoke(cli_app, ["list-files", "--batch-size", "1"], input="y\n\n")
             assert result.exit_code == 0
             # check that two batches are printed
             assert (
@@ -337,7 +337,7 @@ class TestCLIMethods:
                 ]
 
             sync_list_upload_sessions.side_effect = mocked_list_upload_sessions
-            result = runner.invoke(cli_app, ["list-upload-sessions"])
+            result = runner.invoke(cli_app, ["list-upload-sessions"], input="y\n")
             assert result.exit_code == 0
             assert (
                 "cd16435f-f6eb-423f-bf6f-994dc8a36a10 | Fake User    | 2022-06-21 16:10:00.634653+00:00 | 2022-06-21 16:40:00.634653+00:00 | KEEP         | OPEN"
@@ -434,6 +434,17 @@ class TestCLIUtils:
             "API_KEY=test_api_key\nAPI_URL=https://api.cloud.deepset.ai\nDEFAULT_WORKSPACE_NAME=default"
             == global_env_path.read_text()
         )
+
+    def test_login_removes_legacy_env_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        legacy_file = tmp_path / "deepset-cloud" / ".env"
+        legacy_file.parent.mkdir()
+        legacy_file.write_text("API_KEY=old_key")
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", tmp_path / "haystack-enterprise" / ".env")
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.LEGACY_ENV_FILE_PATH", legacy_file)
+
+        result = runner.invoke(cli_app, ["login", "--no-browser"], input="\ntest_api_key\n\n")
+        assert result.exit_code == 0
+        assert not legacy_file.exists()
 
     def test_login_with_custom_base_url(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Create a temporary directory for the global .env file
@@ -616,6 +627,31 @@ class TestCLIUtils:
         assert result.exit_code == 0
         assert "removed successfully" in result.stdout
         assert not env_file.exists()
+
+    def test_logout_removes_legacy_env_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        env_file = tmp_path / "haystack-enterprise" / ".env"
+        legacy_file = tmp_path / "deepset-cloud" / ".env"
+        for path in (env_file, legacy_file):
+            path.parent.mkdir()
+            path.touch()
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", env_file)
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.LEGACY_ENV_FILE_PATH", legacy_file)
+
+        result = runner.invoke(cli_app, ["logout"])
+        assert result.exit_code == 0
+        assert not env_file.exists()
+        assert not legacy_file.exists()
+
+    def test_logout_with_only_legacy_env_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        legacy_file = tmp_path / ".env"
+        legacy_file.touch()
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", tmp_path / "missing" / ".env")
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.LEGACY_ENV_FILE_PATH", legacy_file)
+
+        result = runner.invoke(cli_app, ["logout"])
+        assert result.exit_code == 0
+        assert f"{legacy_file} removed successfully" in result.stdout
+        assert not legacy_file.exists()
 
     def test_get_version(self) -> None:
         result = runner.invoke(cli_app, ["--version"])

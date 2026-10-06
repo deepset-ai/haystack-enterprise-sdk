@@ -136,6 +136,10 @@ All three pipeline commands take the path to a local Python file as their first 
 `--entrypoint` (which pipeline in the file), `--python` (which interpreter loads it), `--io-config` and
 `--skip-io-validation`.
 
+The first argument can also be a platform pipeline YAML (`.yaml` / `.yml`). It is sent as-is, with no
+interpreter involved, so `--entrypoint` and `--python` are ignored. See
+[Working from YAML](../guides/deploy-a-pipeline.md#working-from-yaml).
+
 ### `validate`
 
 ```shell

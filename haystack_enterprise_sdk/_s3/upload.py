@@ -97,7 +97,7 @@ class S3:
 
         try:
             # pyrate-limiter 3.x
-            self.limiter = Limiter(rate_limit, raise_when_fail=False, max_delay=Duration.SECOND * 1)
+            self.limiter = Limiter(rate_limit, raise_when_fail=False, max_delay=Duration.SECOND * 1)  # type: ignore[call-arg,unused-ignore]
             self._try_acquire_kwargs: Dict[str, Any] = {}
         except TypeError:
             # pyrate-limiter 4.0.0+ removed raise_when_fail and max_delay

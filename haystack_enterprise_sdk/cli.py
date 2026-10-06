@@ -30,6 +30,7 @@ from haystack_enterprise_sdk._api.config import (
     CREDENTIALS_PATH,
     DEFAULT_WORKSPACE_NAME,
     ENV_FILE_PATH,
+    LEGACY_ENV_FILE_PATH,
     PLATFORM_URL,
     normalize_base_url,
 )
@@ -76,6 +77,7 @@ from haystack_enterprise_sdk._service.pipeline_transform import (
     PipelineTransformError,
     SocketOption,
     build_config_yaml,
+    is_yaml_target,
     pins_haystack_3_or_later,
     socket_options,
     unmapped_mandatory_inputs,
@@ -262,13 +264,15 @@ def login(
     platform supports it, the CLI gets an OAuth session that refreshes itself, stored in
     ~/.haystack-enterprise/credentials.json. Otherwise the platform creates an API key and hands it back to the CLI.
     Either way, ~/.haystack-enterprise/.env stores the `API_URL` and `DEFAULT_WORKSPACE_NAME` used for all operations.
+    It also removes the legacy ~/.deepset-cloud/.env file from deepset-cloud-sdk 1.x, if present.
 
     The SDK uses a cascading configuration model with the following precedence:
     1. Explicit parameters (passed via code or CLI)
     2. Environment variables
     3. Local .env file in project root
     4. Global ~/.haystack-enterprise/.env file (supplements local .env)
-    5. Built-in defaults
+    5. Legacy ~/.deepset-cloud/.env file from deepset-cloud-sdk 1.x (supplements both)
+    6. Built-in defaults
 
     :param api_key: API key to store. Together with `--workspace-name`, skips the browser and all prompts.
     :param workspace_name: Default workspace to store.
@@ -340,6 +344,8 @@ def _write_env(api_key: Optional[str], api_url: str, workspace_name: str) -> Non
     key_line = f"API_KEY={api_key}\n" if api_key else ""
     ENV_FILE_PATH.write_text(f"{key_line}API_URL={api_url}\nDEFAULT_WORKSPACE_NAME={workspace_name}", encoding="utf-8")
     ENV_FILE_PATH.chmod(0o600)
+    # The new file supersedes the 1.x login; drop it so it stops supplementing the new one.
+    LEGACY_ENV_FILE_PATH.unlink(missing_ok=True)
     typer.echo("Logged in.")
 
 
@@ -481,7 +487,8 @@ def _pick_workspace(api_url: str, headers: Dict[str, str]) -> str:
 
 @cli_app.command()
 def logout() -> None:
-    """Log out of Haystack Enterprise Platform. This command revokes your login session and deletes the .ENV file.
+    """Log out of Haystack Enterprise Platform. This command revokes your login session and deletes the .ENV file,
+    and the legacy ~/.deepset-cloud/.env file if it exists.
 
     Example:
     `haystack-enterprise logout`
@@ -492,11 +499,13 @@ def logout() -> None:
         revoke(credentials)
     if delete_credentials():
         typer.echo(f"Login session revoked and {CREDENTIALS_PATH} removed.")
-    if not ENV_FILE_PATH.exists():
+    env_files = [path for path in (ENV_FILE_PATH, LEGACY_ENV_FILE_PATH) if path.exists()]
+    if not env_files:
         typer.echo("No global configuration file found. Nothing to do!")
         return
-    ENV_FILE_PATH.unlink()
-    typer.echo(f"Global configuration file {ENV_FILE_PATH} removed successfully.")
+    for path in env_files:
+        path.unlink()
+        typer.echo(f"Global configuration file {path} removed successfully.")
 
 
 @cli_app.command()
@@ -688,7 +697,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     interpreter given by --python), so this CLI's own environment does not need your pipeline's
     dependencies installed.
 
-    :param target: Path to the Python file that defines the pipeline.
+    :param target: Path to the Python file or platform pipeline YAML that defines the pipeline.
     :param service_name: Name of the target service deployment.
     :param skip_activation: Push the revision without activating it (skips the rollout and wait).
         By default the new revision is activated and the CLI waits for the rollout to finish.
@@ -838,8 +847,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     # An io-config (explicit or auto-detected) pins the mapping, so nothing is asked. Otherwise --share
     # reviews the whole mapping, because its chat UI routes through all of it; a plain deploy asks only
     # for the two things the platform requires of a servable pipeline (a query input and one output) and
-    # only when inference did not already supply them.
-    if io_cfg.inputs is not None or io_cfg.outputs is not None:
+    # only when inference did not already supply them. A pipeline YAML has no live sockets to offer, so
+    # its own mapping is used as-is.
+    if io_cfg.inputs is not None or io_cfg.outputs is not None or is_yaml_target(target):
         io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="warn")
     elif share:
         io_resolver = functools.partial(
@@ -958,7 +968,7 @@ def validate(
     Runs the same transform the deploy uses, then checks the result against the platform and reports
     any issues. Exits non-zero if there are blocking (ERROR) issues.
 
-    :param target: Path to the Python file that defines the pipeline.
+    :param target: Path to the Python file or platform pipeline YAML that defines the pipeline.
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
     :param python: Path to the Python interpreter used to load your pipeline (defaults to an
         auto-detected virtualenv near the target file, else the current interpreter).
@@ -1038,7 +1048,7 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
     interpreter given by --python), so this CLI's own environment does not need your pipeline's
     dependencies installed.
 
-    :param target: Path to the Python file that defines the pipeline.
+    :param target: Path to the Python file or platform pipeline YAML that defines the pipeline.
     :param query: Query text routed to the sockets mapped under the pipeline's 'query' input. Convenient
         for the common case; on an interactive terminal you are prompted for it when neither --query,
         --set, nor --inputs is given.
@@ -1455,6 +1465,16 @@ def _resolve_io_interactive(
     outputs = dict(current_outputs)
     if skip_validation:
         return inputs, outputs
+
+    if mode == "query" and not extraction.available_inputs:
+        # No live sockets to offer (a pipeline YAML), so nothing to ask. Say so when the query would be
+        # dropped, instead of letting it vanish.
+        if not (inputs.get("query") or inputs.get("messages")):
+            typer.echo(
+                "Warning: --query is not routed anywhere: the pipeline maps no 'query' or 'messages' input. "
+                "Add one under 'inputs:' or pass the value with --set/--inputs."
+            )
+        mode = "warn"
 
     if mode == "warn" or not _stdin_is_tty():
         _warn_unmapped_mandatory(extraction, inputs)

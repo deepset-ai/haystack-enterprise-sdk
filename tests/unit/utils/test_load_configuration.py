@@ -4,6 +4,7 @@ from typing import Generator
 from unittest.mock import Mock
 
 import pytest
+from structlog.testing import capture_logs
 
 from haystack_enterprise_sdk._api.config import load_environment
 
@@ -106,6 +107,52 @@ class TestLoadEnvironment:
         assert os.environ["API_URL"] == "global_url"
         # Global DEFAULT_WORKSPACE_NAME should be available
         assert os.environ["DEFAULT_WORKSPACE_NAME"] == "global_workspace"
+
+    def test_load_legacy_env_only(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """A login from the old `deepset-cloud` CLI is still picked up."""
+        legacy_env = tmp_path / "legacy" / ".env"
+        legacy_env.parent.mkdir()
+        legacy_env.write_text(
+            "API_KEY=legacy_key\nAPI_URL=https://api.cloud.deepset.ai/api/v1\nDEFAULT_WORKSPACE_NAME=legacy_workspace"
+        )
+
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.LEGACY_ENV_FILE_PATH", legacy_env)
+
+        assert load_environment()
+        assert os.environ["API_KEY"] == "legacy_key"
+        assert os.environ["DEFAULT_WORKSPACE_NAME"] == "legacy_workspace"
+
+    def test_global_env_takes_precedence_over_legacy(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """The new global file wins; the legacy file only fills in what it lacks."""
+        global_env = tmp_path / "global" / ".env"
+        global_env.parent.mkdir()
+        global_env.write_text("API_KEY=global_key\nAPI_URL=global_url")
+        legacy_env = tmp_path / "legacy" / ".env"
+        legacy_env.parent.mkdir()
+        legacy_env.write_text("API_KEY=legacy_key\nAPI_URL=legacy_url\nDEFAULT_WORKSPACE_NAME=legacy_workspace")
+
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.ENV_FILE_PATH", global_env)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.LEGACY_ENV_FILE_PATH", legacy_env)
+
+        assert load_environment()
+        assert os.environ["API_KEY"] == "global_key"
+        assert os.environ["API_URL"] == "global_url"
+        assert os.environ["DEFAULT_WORKSPACE_NAME"] == "legacy_workspace"
+
+    def test_no_legacy_message_after_login(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Once `login` has replaced the legacy file, the move-to-new-file hint is no longer logged."""
+        global_env = tmp_path / "global" / ".env"
+        global_env.parent.mkdir()
+        global_env.write_text("API_KEY=global_key\nAPI_URL=global_url")
+
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.ENV_FILE_PATH", global_env)
+
+        with capture_logs() as logs:
+            load_environment()
+        assert not any("legacy configuration" in log["event"] for log in logs)
 
     def test_pre_existing_env_vars_take_precedence(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Test that pre-existing environment variables take precedence over .env files."""

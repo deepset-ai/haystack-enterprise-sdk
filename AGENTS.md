@@ -17,7 +17,8 @@ DEFAULT_WORKSPACE_NAME
 ```
 
 Precedence, highest first: an explicit `--api-key` / `--workspace-name` argument, then a real
-environment variable, then `./.env`, then `~/.haystack-enterprise/.env`.
+environment variable, then `./.env`, then `~/.haystack-enterprise/.env`, then the legacy
+`~/.deepset-cloud/.env` from deepset-cloud-sdk 1.x.
 
 `DEFAULT_WORKSPACE_NAME` is read once at import and never again, unlike `API_KEY` and `API_URL`.
 Setting `os.environ["DEFAULT_WORKSPACE_NAME"]` after `import haystack_enterprise_sdk` has no effect.
@@ -80,6 +81,14 @@ file carries `pipeline_output_type`, `session_storage`, `dependencies`, and `asy
 io-config section of [docs/cli_command_flow.md](docs/cli_command_flow.md).
 
 `--skip-io-validation` silences the warning without fixing the mapping.
+
+## Working from a pipeline YAML
+
+`deploy`, `validate`, and `run` also take a `.yaml` / `.yml` file in the platform's own format. It is
+sent as-is: nothing is imported, nothing is inlined, and there is no socket inference or I/O prompt.
+The `inputs:` / `outputs:` in the file (or in `<target>.io.yaml`, which wins) are the mapping. Custom
+components must already be `Code` components. `haystack-ai` is not pinned unless the file lists it
+under `dependencies:`.
 
 ## What a pipeline file must contain
 
