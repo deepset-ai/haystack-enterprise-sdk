@@ -47,6 +47,23 @@ def normalize_base_url(url: str) -> str:
     return url.rstrip("/")
 
 
+def _write_private_file(path: Path, text: str) -> None:
+    """Write a file atomically, readable by the current user only.
+
+    The file is created with mode 600 instead of being tightened after the write, so secrets in it are never
+    readable by other users, not even briefly.
+
+    :param path: The file to write. Its parent directory is created if needed.
+    :param text: The file contents.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as file:
+        file.write(text)
+    os.replace(tmp_path, path)
+
+
 def load_environment(show_warnings: bool = True) -> bool:
     """Load environment variables using a cascading fallback model.
 

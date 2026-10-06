@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 from structlog.testing import capture_logs
 
-from haystack_enterprise_sdk._api.config import load_environment
+from haystack_enterprise_sdk._api.config import _write_private_file, load_environment
 
 
 class TestLoadEnvironment:
@@ -279,3 +279,24 @@ class TestLoadEnvironment:
         assert mock_logger.warning.call_count == 1
         warning_call = mock_logger.warning.call_args[0][0]
         assert "Missing required environment variables" in warning_call
+
+
+class TestWritePrivateFile:
+    def test_creates_file_and_parent_with_owner_only_mode(self, tmp_path: Path) -> None:
+        path = tmp_path / "haystack-enterprise" / ".env"
+
+        _write_private_file(path, "API_KEY=secret")
+
+        assert path.read_text(encoding="utf-8") == "API_KEY=secret"
+        assert path.stat().st_mode & 0o777 == 0o600
+
+    def test_replaces_world_readable_file_without_leftovers(self, tmp_path: Path) -> None:
+        path = tmp_path / ".env"
+        path.write_text("API_KEY=old", encoding="utf-8")
+        path.chmod(0o644)
+
+        _write_private_file(path, "API_KEY=new")
+
+        assert path.read_text(encoding="utf-8") == "API_KEY=new"
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert list(tmp_path.iterdir()) == [path]

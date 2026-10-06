@@ -32,6 +32,7 @@ from haystack_enterprise_sdk._api.config import (
     ENV_FILE_PATH,
     LEGACY_ENV_FILE_PATH,
     PLATFORM_URL,
+    _write_private_file,
     normalize_base_url,
 )
 from haystack_enterprise_sdk._api.deployments import (
@@ -340,10 +341,8 @@ def _write_env(api_key: Optional[str], api_url: str, workspace_name: str) -> Non
 
     :param api_key: The API key, or None after an OAuth login, whose credentials live in their own file.
     """
-    ENV_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     key_line = f"API_KEY={api_key}\n" if api_key else ""
-    ENV_FILE_PATH.write_text(f"{key_line}API_URL={api_url}\nDEFAULT_WORKSPACE_NAME={workspace_name}", encoding="utf-8")
-    ENV_FILE_PATH.chmod(0o600)
+    _write_private_file(ENV_FILE_PATH, f"{key_line}API_URL={api_url}\nDEFAULT_WORKSPACE_NAME={workspace_name}")
     # The new file supersedes the 1.x login; drop it so it stops supplementing the new one.
     LEGACY_ENV_FILE_PATH.unlink(missing_ok=True)
     typer.echo("Logged in.")

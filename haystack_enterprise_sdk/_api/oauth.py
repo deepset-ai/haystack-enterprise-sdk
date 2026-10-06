@@ -11,7 +11,6 @@ import asyncio
 import base64
 import hashlib
 import json
-import os
 import secrets
 import time
 from dataclasses import asdict, dataclass
@@ -21,7 +20,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
 
-from haystack_enterprise_sdk._api.config import API_VERSION_PATH, CREDENTIALS_PATH
+from haystack_enterprise_sdk._api.config import API_VERSION_PATH, CREDENTIALS_PATH, _write_private_file
 
 # Refresh this many seconds before the access token expires, so a request never goes out with a dying token.
 EXPIRY_SKEW_SECONDS = 60
@@ -67,12 +66,7 @@ class OAuthCredentials:
 
     def save(self) -> None:
         """Write the credentials atomically, readable by the current user only."""
-        CREDENTIALS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = CREDENTIALS_PATH.with_suffix(".tmp")
-        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as file:
-            json.dump(asdict(self), file)
-        os.replace(tmp_path, CREDENTIALS_PATH)
+        _write_private_file(CREDENTIALS_PATH, json.dumps(asdict(self)))
 
     @classmethod
     def load(cls, api_url: Optional[str] = None) -> Optional[OAuthCredentials]:
