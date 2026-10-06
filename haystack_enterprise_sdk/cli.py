@@ -340,7 +340,7 @@ def _write_env(api_key: Optional[str], api_url: str, workspace_name: str) -> Non
     key_line = f"API_KEY={api_key}\n" if api_key else ""
     ENV_FILE_PATH.write_text(f"{key_line}API_URL={api_url}\nDEFAULT_WORKSPACE_NAME={workspace_name}", encoding="utf-8")
     ENV_FILE_PATH.chmod(0o600)
-    typer.echo(f"Global configuration file created at {ENV_FILE_PATH}.")
+    typer.echo("Logged in.")
 
 
 def _ui_url_for(api_url: str) -> str:
@@ -437,7 +437,6 @@ def _oauth_login(api_url: str, config: CliOAuthConfig, workspace_name: Optional[
 
     credentials.save()
     _write_env(None, api_url, workspace)
-    typer.echo(f"Logged in. Your session is stored at {CREDENTIALS_PATH}.")
 
 
 def _open_login_url(url: str) -> None:

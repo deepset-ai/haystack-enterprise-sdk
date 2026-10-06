@@ -429,7 +429,7 @@ class TestCLIUtils:
         # Accept the platform URL (empty confirm defaults to yes), default workspace.
         result = runner.invoke(cli_app, ["login", "--no-browser"], input="\ntest_api_key\n\n")
         assert result.exit_code == 0
-        assert f"Global configuration file created at {global_env_path}" in result.stdout
+        assert "Logged in." in result.stdout
         assert (
             "API_KEY=test_api_key\nAPI_URL=https://api.cloud.deepset.ai\nDEFAULT_WORKSPACE_NAME=default"
             == global_env_path.read_text()
@@ -449,7 +449,7 @@ class TestCLIUtils:
             input="n\nhttps://custom-api.example.com\ntest_api_key\nmy_workspace\n",
         )
         assert result.exit_code == 0
-        assert f"Global configuration file created at {global_env_path}" in result.stdout
+        assert "Logged in." in result.stdout
         assert (
             "API_KEY=test_api_key\nAPI_URL=https://custom-api.example.com\nDEFAULT_WORKSPACE_NAME=my_workspace"
             == global_env_path.read_text()
