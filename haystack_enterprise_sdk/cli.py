@@ -235,6 +235,7 @@ def login() -> None:
 
     This command guides you through creating a global .env file at ~/.haystack-enterprise/.env with your
     Haystack Enterprise Platform `API_KEY`, `API_URL` and `DEFAULT_WORKSPACE_NAME` used for all operations.
+    It also removes the legacy ~/.deepset-cloud/.env file from deepset-cloud-sdk 1.x, if present.
 
     The SDK uses a cascading configuration model with the following precedence:
     1. Explicit parameters (passed via code or CLI)
@@ -269,6 +270,8 @@ def login() -> None:
 
     ENV_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     ENV_FILE_PATH.write_text(env_content, encoding="utf-8")
+    # The new file supersedes the 1.x login; drop it so it stops supplementing the new one.
+    LEGACY_ENV_FILE_PATH.unlink(missing_ok=True)
 
     typer.echo(f"Global configuration file created at {ENV_FILE_PATH}.")
 

@@ -26,8 +26,8 @@ uv tool uninstall deepset-cloud-sdk
 
 **2. Install the new one.** See [Install](../get-started/install.md).
 
-**3. Log in again.** The SDK reads `~/.haystack-enterprise/.env`; your old `~/.deepset-cloud/.env` is
-ignored.
+**3. Log in again.** The SDK reads `~/.haystack-enterprise/.env`. Your old `~/.deepset-cloud/.env` still
+works as a fallback until you do; `login` writes the new file and removes the old one.
 
 ```shell
 haystack-enterprise login
@@ -38,7 +38,7 @@ Or move the file yourself — the contents are unchanged (`API_KEY`, `API_URL`,
 
 ```bash
 mkdir -p ~/.haystack-enterprise
-cp ~/.deepset-cloud/.env ~/.haystack-enterprise/.env
+mv ~/.deepset-cloud/.env ~/.haystack-enterprise/.env
 ```
 
 Project-local `.env` files need no change.
