@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import threading
@@ -219,6 +220,28 @@ async def test_auth_refreshes_once_after_401() -> None:
     assert response.status_code == 200
     assert seen == ["access-1", "access-2"]
     assert len(refreshes) == 1
+
+
+def test_auth_refreshes_on_each_new_event_loop() -> None:
+    # The sync clients share one OAuthAuth across calls but run each call on a new event loop.
+    refreshes: List[str] = []
+
+    async def token_endpoint(request: httpx.Request) -> httpx.Response:
+        refreshes.append(request.url.path)
+        await asyncio.sleep(0.01)  # hold the lock, so the second refresh has to wait for it
+        return httpx.Response(200, json={"access_token": f"access-{len(refreshes) + 1}", "expires_in": 10})
+
+    auth = OAuthAuth(_credentials(expires_at=time.time() + 10), transport=httpx.MockTransport(token_endpoint))
+
+    async def two_concurrent_refreshes() -> None:
+        stale_token = auth.credentials.access_token
+        await asyncio.gather(auth._refresh(stale_token), auth._refresh(stale_token))
+
+    asyncio.run(two_concurrent_refreshes())
+    asyncio.run(two_concurrent_refreshes())  # a lock bound to the first loop raised RuntimeError here
+
+    assert len(refreshes) == 2  # one per loop; the waiting refresh reuses the new token
+    assert auth.credentials.access_token == "access-3"
 
 
 def test_config_uses_oauth_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -316,9 +316,21 @@ class OAuthAuth(httpx.Auth):
         self.credentials = credentials
         self._transport = transport
         self._lock = asyncio.Lock()
+        self._lock_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def _loop_lock(self) -> asyncio.Lock:
+        """:return: The refresh lock for the running event loop.
+
+        An asyncio.Lock binds to the first loop it makes a request wait on, but the sync clients share one auth across
+        calls and run each call on a new loop, so each loop gets its own lock.
+        """
+        loop = asyncio.get_running_loop()
+        if self._lock_loop is not loop:
+            self._lock, self._lock_loop = asyncio.Lock(), loop
+        return self._lock
 
     async def _refresh(self, stale_token: str) -> None:
-        async with self._lock:
+        async with self._loop_lock():
             if self.credentials.access_token != stale_token:
                 return  # another request refreshed while we waited
             # Another process (a second CLI run) may have refreshed already; its refresh token supersedes ours.
