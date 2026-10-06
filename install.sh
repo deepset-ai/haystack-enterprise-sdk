@@ -8,7 +8,7 @@
 set -euo pipefail
 
 PACKAGE="haystack-enterprise-sdk${HE_EXTRAS:-}${HE_VERSION:+==$HE_VERSION}"
-DOCS_URL="https://deepset-ai.github.io/haystack-enterprise-sdk/"
+DOCS_URL="https://docs.cloud.deepset.ai/reference/sdk-overview"
 
 case "$(uname -s)" in
   Linux | Darwin) ;;
