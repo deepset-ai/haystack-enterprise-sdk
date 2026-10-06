@@ -90,6 +90,25 @@ jobs:
       - run: ./gitleaks detect --log-opts "${{  github.event.before }}..${{ github.event.after }}"
         if: github.event_name == 'push'
 
+  install-script:
+    name: Install script (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck install.sh
+      # Installs the released package from PyPI: this checks the script, not this branch's code.
+      - name: Run install.sh
+        run: bash install.sh
+      - name: CLI runs
+        run: ~/.local/bin/haystack-enterprise --version
+
   tests:
     name: Tests
     runs-on: ubuntu-latest
