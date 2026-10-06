@@ -21,6 +21,7 @@ from haystack_enterprise_sdk._api.config import (
     ASYNC_CLIENT_TIMEOUT,
     DEFAULT_WORKSPACE_NAME,
     ENV_FILE_PATH,
+    LEGACY_ENV_FILE_PATH,
     PLATFORM_URL,
     normalize_base_url,
 )
@@ -235,13 +236,15 @@ def login() -> None:
 
     This command guides you through creating a global .env file at ~/.haystack-enterprise/.env with your
     Haystack Enterprise Platform `API_KEY`, `API_URL` and `DEFAULT_WORKSPACE_NAME` used for all operations.
+    It also removes the legacy ~/.deepset-cloud/.env file from deepset-cloud-sdk 1.x, if present.
 
     The SDK uses a cascading configuration model with the following precedence:
     1. Explicit parameters (passed via code or CLI)
     2. Environment variables
     3. Local .env file in project root
     4. Global ~/.haystack-enterprise/.env file (supplements local .env)
-    5. Built-in defaults
+    5. Legacy ~/.deepset-cloud/.env file from deepset-cloud-sdk 1.x (supplements both)
+    6. Built-in defaults
     """
     typer.echo("Log in to Haystack Enterprise Platform")
 
@@ -268,23 +271,28 @@ def login() -> None:
 
     ENV_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     ENV_FILE_PATH.write_text(env_content, encoding="utf-8")
+    # The new file supersedes the 1.x login; drop it so it stops supplementing the new one.
+    LEGACY_ENV_FILE_PATH.unlink(missing_ok=True)
 
     typer.echo(f"Global configuration file created at {ENV_FILE_PATH}.")
 
 
 @cli_app.command()
 def logout() -> None:
-    """Log out of Haystack Enterprise Platform. This command deletes the .ENV file created during login.
+    """Log out of Haystack Enterprise Platform. This command deletes the .ENV file created during login,
+    and the legacy ~/.deepset-cloud/.env file if it exists.
 
     Example:
     `haystack-enterprise logout`
     """
     typer.echo("Log out of Haystack Enterprise Platform.")
-    if not ENV_FILE_PATH.exists():
+    env_files = [path for path in (ENV_FILE_PATH, LEGACY_ENV_FILE_PATH) if path.exists()]
+    if not env_files:
         typer.echo("No global configuration file found. Nothing to do!")
         return
-    ENV_FILE_PATH.unlink()
-    typer.echo(f"Global configuration file {ENV_FILE_PATH} removed successfully.")
+    for path in env_files:
+        path.unlink()
+        typer.echo(f"Global configuration file {path} removed successfully.")
 
 
 @cli_app.command()

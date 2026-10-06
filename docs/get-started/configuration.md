@@ -40,7 +40,10 @@ Settings are resolved in this order — the first one that supplies a value wins
 3. **A local `.env`** in the directory you run the command from.
 4. **The global `~/.haystack-enterprise/.env`** written by `login`. This *supplements* the local file
    rather than replacing it: a key missing from the local `.env` is still picked up from the global one.
-5. **Built-in defaults**, for the two settings that have them.
+5. **The legacy `~/.deepset-cloud/.env`** written by `deepset-cloud login` in deepset-cloud-sdk 1.x, so
+   an existing login keeps working. It supplements the files above in the same way. Run `login` again to
+   move to the new file; `logout` removes both.
+6. **Built-in defaults**, for the two settings that have them.
 
 So a project can override just the workspace in its own `.env` and keep using the API key from `login`.
 If a local `.env` exists when you run `login`, the CLI points out that it will take precedence over the

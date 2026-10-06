@@ -16,7 +16,8 @@ DEFAULT_WORKSPACE_NAME
 ```
 
 Precedence, highest first: an explicit `--api-key` / `--workspace-name` argument, then a real
-environment variable, then `./.env`, then `~/.haystack-enterprise/.env`.
+environment variable, then `./.env`, then `~/.haystack-enterprise/.env`, then the legacy
+`~/.deepset-cloud/.env` from deepset-cloud-sdk 1.x.
 
 `DEFAULT_WORKSPACE_NAME` is read once at import and never again, unlike `API_KEY` and `API_URL`.
 Setting `os.environ["DEFAULT_WORKSPACE_NAME"]` after `import haystack_enterprise_sdk` has no effect.

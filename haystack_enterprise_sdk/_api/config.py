@@ -12,6 +12,9 @@ logger = structlog.get_logger(__name__)
 
 ENV_FILE_PATH = Path.home() / ".haystack-enterprise" / ".env"
 
+# Written by `deepset-cloud login` in deepset-cloud-sdk 1.x; still read so existing logins keep working.
+LEGACY_ENV_FILE_PATH = Path.home() / ".deepset-cloud" / ".env"
+
 # The deepset platform base URL (without a version suffix).
 PLATFORM_URL = "https://api.cloud.deepset.ai"
 
@@ -42,7 +45,8 @@ def load_environment(show_warnings: bool = True) -> bool:
 
     1. Load local .env file in current directory if it exists
     2. Load from global ~/.haystack-enterprise/.env to supplement local .env file
-    3. Environment variables can override both local and global .env files
+    3. Load from legacy ~/.deepset-cloud/.env to supplement both
+    4. Environment variables can override all .env files
 
     :param show_warnings: Whether to show warnings about missing files/variables
     :return: True if required environment variables were loaded successfully, False otherwise.
@@ -50,6 +54,7 @@ def load_environment(show_warnings: bool = True) -> bool:
     current_path_env = Path.cwd() / ".env"
     local_loaded = current_path_env.is_file() and load_dotenv(current_path_env)
     global_loaded = ENV_FILE_PATH.is_file() and load_dotenv(ENV_FILE_PATH, override=False)
+    legacy_loaded = LEGACY_ENV_FILE_PATH.is_file() and load_dotenv(LEGACY_ENV_FILE_PATH, override=False)
 
     # These success messages are gated on ``show_warnings`` so the import-time call
     # (``show_warnings=False``) stays silent, before structlog is even configured.
@@ -61,8 +66,13 @@ def load_environment(show_warnings: bool = True) -> bool:
                 logger.info(f"Loaded global .env file at {ENV_FILE_PATH} to supplement local .env file.")
             else:
                 logger.info(f"Environment variables successfully loaded from global .env file at {ENV_FILE_PATH}.")
+        if legacy_loaded:
+            logger.info(
+                f"Using legacy configuration at {LEGACY_ENV_FILE_PATH}. "
+                f"Run `haystack-enterprise login` to move to {ENV_FILE_PATH}."
+            )
 
-    if not (local_loaded or global_loaded) and show_warnings:
+    if not (local_loaded or global_loaded or legacy_loaded) and show_warnings:
         logger.warning(
             "No .env files found. Run `haystack-enterprise login` to create a global configuration file. "
             "You can also create a custom local .env file in your project directory."
@@ -109,7 +119,8 @@ class CommonConfig:
     2. Environment variables
     3. Local .env file in project root
     4. Global .env file in ~/.haystack-enterprise/ (supplements local .env)
-    5. Built-in defaults
+    5. Legacy .env file in ~/.deepset-cloud/ (supplements both)
+    6. Built-in defaults
     """
 
     api_key: str = ""

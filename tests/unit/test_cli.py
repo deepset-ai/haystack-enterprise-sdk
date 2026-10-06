@@ -419,6 +419,17 @@ class TestCLIUtils:
             == global_env_path.read_text()
         )
 
+    def test_login_removes_legacy_env_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        legacy_file = tmp_path / "deepset-cloud" / ".env"
+        legacy_file.parent.mkdir()
+        legacy_file.write_text("API_KEY=old_key")
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", tmp_path / "haystack-enterprise" / ".env")
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.LEGACY_ENV_FILE_PATH", legacy_file)
+
+        result = runner.invoke(cli_app, ["login"], input="\ntest_api_key\n\n")
+        assert result.exit_code == 0
+        assert not legacy_file.exists()
+
     def test_login_with_custom_base_url(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Create a temporary directory for the global .env file
         global_env_dir = tmp_path / ".haystack-enterprise"
@@ -474,6 +485,31 @@ class TestCLIUtils:
         assert result.exit_code == 0
         assert "removed successfully" in result.stdout
         assert not env_file.exists()
+
+    def test_logout_removes_legacy_env_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        env_file = tmp_path / "haystack-enterprise" / ".env"
+        legacy_file = tmp_path / "deepset-cloud" / ".env"
+        for path in (env_file, legacy_file):
+            path.parent.mkdir()
+            path.touch()
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", env_file)
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.LEGACY_ENV_FILE_PATH", legacy_file)
+
+        result = runner.invoke(cli_app, ["logout"])
+        assert result.exit_code == 0
+        assert not env_file.exists()
+        assert not legacy_file.exists()
+
+    def test_logout_with_only_legacy_env_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        legacy_file = tmp_path / ".env"
+        legacy_file.touch()
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", tmp_path / "missing" / ".env")
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.LEGACY_ENV_FILE_PATH", legacy_file)
+
+        result = runner.invoke(cli_app, ["logout"])
+        assert result.exit_code == 0
+        assert f"{legacy_file} removed successfully" in result.stdout
+        assert not legacy_file.exists()
 
     def test_get_version(self) -> None:
         result = runner.invoke(cli_app, ["--version"])
