@@ -38,7 +38,7 @@ fi
 echo "✅ Using $(uv --version)"
 
 echo "📦 Installing ${PACKAGE}..."
-uv tool install --upgrade --python 3.12 "$PACKAGE"
+uv tool install --quiet --upgrade --python 3.12 "$PACKAGE"
 
 echo "🔗 Making sure the uv tool directory is on your PATH..."
 uv tool update-shell >/dev/null 2>&1 || true
