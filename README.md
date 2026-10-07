@@ -13,6 +13,15 @@ Python SDK and CLI for the Haystack Enterprise Platform.
 
 ## Installation
 
+On macOS or Linux, one command installs the CLI. It installs [uv](https://docs.astral.sh/uv/) first if
+you don't have it, and running it again upgrades the CLI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/install.sh | bash
+```
+
+Or install it yourself:
+
 ```bash
 # Install as a CLI tool
 uv tool install haystack-enterprise-sdk
