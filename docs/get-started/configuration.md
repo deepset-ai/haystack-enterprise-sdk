@@ -1,7 +1,7 @@
 # Configuration
 
-The SDK needs three things to talk to Haystack Enterprise Platform: an API key, an API URL, and a
-default workspace. The easiest way to set all three is `haystack-enterprise login`.
+The SDK needs three things to talk to Haystack Enterprise Platform: credentials (a login session or an
+API key), an API URL, and a default workspace. The easiest way to set all three is `haystack-enterprise login`.
 
 ## Log in
 
@@ -9,14 +9,15 @@ default workspace. The easiest way to set all three is `haystack-enterprise logi
 haystack-enterprise login
 ```
 
-It asks for the platform URL (press enter for `https://api.cloud.deepset.ai`), your API key, and a
-default workspace name (press enter for `default`), then writes them to a global config file at
-`~/.haystack-enterprise/.env`.
+It opens your browser to log in, then stores a session that refreshes itself in
+`~/.haystack-enterprise/credentials.json`, and the API URL and default workspace in
+`~/.haystack-enterprise/.env`. Over SSH, use `login --device`. See the [CLI reference](../reference/cli.md#login)
+for the other options.
 
-Get an API key from [API Keys](https://cloud.deepset.ai/settings/api-keys) in Haystack Enterprise
-Platform.
+An API key always takes precedence over the login session. Use one in CI: get it from
+[API Keys](https://cloud.deepset.ai/settings/api-keys) in Haystack Enterprise Platform and set `API_KEY`.
 
-To remove that file again:
+To log out and revoke the session:
 
 ```shell
 haystack-enterprise logout
@@ -26,7 +27,7 @@ haystack-enterprise logout
 
 | Variable | What it is | Default |
 | --- | --- | --- |
-| `API_KEY` | Your Haystack Enterprise Platform API key. **Required** — there is no default, and every command fails without it. | — |
+| `API_KEY` | Your Haystack Enterprise Platform API key. Required unless you logged in with `haystack-enterprise login`; when set, it wins over the login session. | — |
 | `API_URL` | Base URL of the platform API. A trailing version segment (`/api/v1`, `/v2`) is stripped, so pasting a full URL works. | `https://api.cloud.deepset.ai` |
 | `DEFAULT_WORKSPACE_NAME` | Workspace used when a command takes no `--workspace-name`. | — (`login` suggests `default`) |
 | `ASYNC_CLIENT_TIMEOUT` | Timeout in seconds for the async client. | `300` |
