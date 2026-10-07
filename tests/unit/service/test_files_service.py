@@ -6,6 +6,7 @@ from typing import List
 from unittest.mock import AsyncMock, Mock, PropertyMock, call
 from uuid import UUID
 
+import httpx
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 from structlog.testing import capture_logs
@@ -30,6 +31,7 @@ from haystack_enterprise_sdk._api.upload_sessions import (
 from haystack_enterprise_sdk._s3.upload import S3UploadResult, S3UploadSummary
 from haystack_enterprise_sdk._service.files_service import (
     DEFAULT_S3_CONCURRENCY,
+    DIRECT_UPLOAD_THRESHOLD,
     PROXY_S3_CONCURRENCY,
     SAFE_MODE_CONCURRENCY,
     FilesService,
@@ -200,6 +202,38 @@ class TestFilePathsUpload:
         )
 
         assert not mocked_upload_sessions_api.create.called, "We should not have created a session for a single file"
+
+    @pytest.mark.parametrize("doc_count", [10, 11])
+    async def test_connect_timeout_is_reported_per_file_regardless_of_file_count(
+        self,
+        doc_count: int,
+        tmp_path: Path,
+        file_service: FilesService,
+        mocked_upload_sessions_api: Mock,
+        mocked_files_api: Mock,
+    ) -> None:
+        # User report: behind a broken proxy, 10 docs + 10 meta files (20 paths, the direct-upload
+        # threshold) returned 10 failed uploads, while 11 docs crashed with httpx.ConnectTimeout from
+        # upload-session creation. Both paths must report the failure the same way.
+        file_paths: List[Path] = []
+        for i in range(doc_count):
+            doc = tmp_path / f"doc{i}.pdf"
+            doc.write_bytes(b"%PDF")
+            meta = tmp_path / f"doc{i}.pdf.meta.json"
+            meta.write_text("{}")
+            file_paths += [doc, meta]
+
+        error = httpx.ConnectTimeout("")
+        mocked_files_api.direct_upload_path.side_effect = error
+        mocked_upload_sessions_api.create.side_effect = error
+
+        result = await file_service.upload_file_paths(workspace_name="test_workspace", file_paths=file_paths)
+
+        assert result.total_files == doc_count
+        assert result.successful_upload_count == 0
+        assert result.failed_upload_count == doc_count
+        assert {r.file_name for r in result.failed} == {f"doc{i}.pdf" for i in range(doc_count)}
+        assert all(r.exception is error for r in result.failed)
 
 
 @pytest.mark.asyncio
@@ -438,6 +472,21 @@ class TestUploadTexts:
             file_name="test_file.txt",
             write_mode=WriteMode.OVERWRITE,
         )
+
+    async def test_upload_in_memory_reports_failed_session_creation_per_file(
+        self,
+        file_service: FilesService,
+        mocked_upload_sessions_api: Mock,
+    ) -> None:
+        error = httpx.ConnectTimeout("")
+        mocked_upload_sessions_api.create.side_effect = error
+        files = [HaystackEnterpriseFile(name=f"doc{i}.txt", text="hi") for i in range(DIRECT_UPLOAD_THRESHOLD + 1)]
+
+        result = await file_service.upload_in_memory(workspace_name="test_workspace", files=files)
+
+        assert result.total_files == len(files)
+        assert result.failed_upload_count == len(files)
+        assert all(r.exception is error for r in result.failed)
 
 
 @pytest.mark.asyncio
