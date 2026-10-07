@@ -61,6 +61,18 @@ def _resolve_s3_concurrency(safe_mode: bool) -> int:
     return DEFAULT_S3_CONCURRENCY
 
 
+def _all_failed(file_names: List[str], error: Exception) -> S3UploadSummary:
+    """Report every file as failed when the upload session could not be created.
+
+    Mirrors the direct-upload path, which reports per-file failures instead of raising.
+    """
+    logger.error("Failed creating upload session.", error=error)
+    failed = [S3UploadResult(file_name=name, success=False, exception=error) for name in file_names]
+    return S3UploadSummary(
+        total_files=len(failed), successful_upload_count=0, failed_upload_count=len(failed), failed=failed
+    )
+
+
 class FilesService:
     """Service for all file-related operations."""
 
@@ -263,20 +275,28 @@ class FilesService:
             )
 
         # create session to upload files to
-        async with self._create_upload_session(
-            workspace_name=workspace_name, write_mode=write_mode, enable_parallel_processing=enable_parallel_processing
-        ) as upload_session:
-            # upload file paths to session
+        upload_session: Optional[UploadSession] = None
+        try:
+            async with self._create_upload_session(
+                workspace_name=workspace_name,
+                write_mode=write_mode,
+                enable_parallel_processing=enable_parallel_processing,
+            ) as upload_session:
+                # upload file paths to session
 
-            upload_summary = await self._s3.upload_files_from_paths(
-                upload_session=upload_session, file_paths=file_paths, show_progress=show_progress
-            )
-            logger.info(
-                "Summary of S3 Uploads",
-                successful_uploads=upload_summary.successful_upload_count,
-                failed_uploads=upload_summary.failed_upload_count,
-                failed=upload_summary.failed,
-            )
+                upload_summary = await self._s3.upload_files_from_paths(
+                    upload_session=upload_session, file_paths=file_paths, show_progress=show_progress
+                )
+                logger.info(
+                    "Summary of S3 Uploads",
+                    successful_uploads=upload_summary.successful_upload_count,
+                    failed_uploads=upload_summary.failed_upload_count,
+                    failed=upload_summary.failed,
+                )
+        except Exception as error:
+            if upload_session is not None:
+                raise
+            return _all_failed([path.name for path in file_paths if not path.name.endswith(META_SUFFIX)], error)
 
         # wait for ingestion to finish
         if blocking:
@@ -619,19 +639,27 @@ class FilesService:
             )
 
         # create session to upload files to
-        async with self._create_upload_session(
-            workspace_name=workspace_name, write_mode=write_mode, enable_parallel_processing=enable_parallel_processing
-        ) as upload_session:
-            upload_summary = await self._s3.upload_in_memory(
-                upload_session=upload_session, files=files, show_progress=show_progress
-            )
+        upload_session: Optional[UploadSession] = None
+        try:
+            async with self._create_upload_session(
+                workspace_name=workspace_name,
+                write_mode=write_mode,
+                enable_parallel_processing=enable_parallel_processing,
+            ) as upload_session:
+                upload_summary = await self._s3.upload_in_memory(
+                    upload_session=upload_session, files=files, show_progress=show_progress
+                )
 
-            logger.info(
-                "Summary of S3 Uploads",
-                successful_uploads=upload_summary.successful_upload_count,
-                failed_uploads=upload_summary.failed_upload_count,
-                failed=upload_summary.failed,
-            )
+                logger.info(
+                    "Summary of S3 Uploads",
+                    successful_uploads=upload_summary.successful_upload_count,
+                    failed_uploads=upload_summary.failed_upload_count,
+                    failed=upload_summary.failed,
+                )
+        except Exception as error:
+            if upload_session is not None:
+                raise
+            return _all_failed([file.name for file in files], error)
 
         if blocking:
             await self._wait_for_finished(
