@@ -70,7 +70,7 @@ from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedP
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
 from haystack_enterprise_sdk._console import animations_enabled, status_spinner
 from haystack_enterprise_sdk._service import deployment_service
-from haystack_enterprise_sdk._service.code_bundle import build_code_bundle
+from haystack_enterprise_sdk._service.code_bundle import build_code_bundle, has_project_file
 from haystack_enterprise_sdk._service.deployment_service import (
     CreateOptions,
     DeploymentFailedError,
@@ -758,7 +758,12 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
     # Phase A: `code` works but stays undocumented until code builds are generally available, so the
     # value is checked by hand instead of a Choice that would list it in --help.
-    build: str = typer.Option("auto", "--build", help="How to build the deployable: auto (default) or yaml."),
+    build: str = typer.Option(
+        "auto",
+        "--build",
+        help="How to build the deployable: auto (default) or yaml. auto ships the project as-is when its "
+        "root has a deepset.yaml (entrypoint, kind, dependencies).",
+    ),
 ) -> None:
     """Deploy a pipeline as a new revision of a service, creating the service if it does not exist.
 
@@ -857,8 +862,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     if build not in _BUILDS:
         typer.echo(f"--build must be 'auto' or 'yaml', got '{build}'.")
         raise typer.Exit(1)
-    # `auto` still means YAML; directory targets and zero-arg deploys will default to code later.
-    build = "yaml" if build == "auto" else build
+    # `auto` means a code build for a project with a deepset.yaml, else YAML.
+    if build == "auto":
+        build = "code" if not is_yaml_target(target) and has_project_file(target) else "yaml"
 
     io_config_path = _resolve_io_config_path(target, io_config)
     io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
@@ -1533,6 +1539,10 @@ def _echo_endpoint(client: DeploymentClient, service_name: str, result: DeployRe
     if not result.is_deployed:
         return
 
+    if result.code_bundle is not None and result.code_bundle.kind == "function":
+        _echo_run_endpoint(client, result.deployment.deployment_id, result.code_bundle.input_schema)
+        return
+
     base_url = client.chat_completions_base_url()
     model = f"{client.workspace_name}/{result.deployment.deployment_id}"
     typer.echo(f"\nChat completions endpoint (OpenAI-compatible):\n  POST {base_url}/chat/completions")
@@ -1546,6 +1556,34 @@ def _echo_endpoint(client: DeploymentClient, service_name: str, result: DeployRe
 
     if not shared and result.deployment.output_type is PipelineOutputType.CHAT:
         typer.echo("\nThis is a chat pipeline — re-run with --share for a shareable chat UI link.")
+
+
+# Placeholder values for the example payload of a function build, by JSON schema type.
+_EXAMPLE_VALUES: Dict[str, Any] = {
+    "string": "...",
+    "integer": 0,
+    "number": 0,
+    "boolean": False,
+    "array": [],
+    "object": {},
+}
+
+
+def _echo_run_endpoint(client: DeploymentClient, deployment_id: Any, input_schema: Optional[dict]) -> None:
+    """Print the ``/run`` endpoint of a function build, with a curl whose body follows the input schema."""
+    schema = input_schema or {}
+    payload = {
+        name: prop.get("default", _EXAMPLE_VALUES.get(prop.get("type", ""), "..."))
+        for name, prop in (schema.get("properties") or {}).items()
+    }
+    url = f"{client.deployment_base_url(deployment_id)}/run"
+    typer.echo(f'\nRun endpoint (responds with {{"result": ...}}):\n  POST {url}')
+    typer.echo(
+        f"\n  curl {url} \\\n"
+        f'    -H "Authorization: Bearer $API_KEY" \\\n'
+        f'    -H "Content-Type: application/json" \\\n'
+        f"    -d '{json.dumps(payload)}'"
+    )
 
 
 # Sentinel returned by _select_socket when the user keeps the current mapping (Enter in edit mode).

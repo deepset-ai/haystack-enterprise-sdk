@@ -217,6 +217,8 @@ class DeployResult:
     revision: DeploymentRevision
     activated: bool
     timed_out: bool
+    #: The code bundle a code build pushed (its ``kind`` and ``input_schema`` shape the endpoint to call).
+    code_bundle: Optional[code_bundle.CodeBundle] = None
 
     @property
     def is_deployed(self) -> bool:
@@ -397,7 +399,9 @@ class DeploymentService:
         logger.info("Pushed deployment revision.", service=service_name, revision_id=str(revision.revision_id))
 
         if not activate:
-            return DeployResult(deployment=deployment, revision=revision, activated=False, timed_out=False)
+            return DeployResult(
+                deployment=deployment, revision=revision, activated=False, timed_out=False, code_bundle=packed
+            )
 
         deployment = await self._deployments.activate_revision(
             self._workspace_name, deployment.deployment_id, revision.revision_id
@@ -408,7 +412,9 @@ class DeploymentService:
             # status to wait for: the activated revision is what gets run per request. Polling here
             # would only burn the timeout on a status that never settles.
             logger.info("Activated serverless revision; no rollout to wait for.", service=service_name)
-            return DeployResult(deployment=deployment, revision=revision, activated=True, timed_out=False)
+            return DeployResult(
+                deployment=deployment, revision=revision, activated=True, timed_out=False, code_bundle=packed
+            )
 
         deployment, timed_out = await self._poll_until_settled(
             deployment.deployment_id, timeout_s, poll_interval_s, on_status
@@ -417,7 +423,9 @@ class DeploymentService:
         if deployment.status in _FAILURE_STATUSES:
             raise DeploymentFailedError(deployment, self._ui_hint(service_name))
 
-        return DeployResult(deployment=deployment, revision=revision, activated=True, timed_out=timed_out)
+        return DeployResult(
+            deployment=deployment, revision=revision, activated=True, timed_out=timed_out, code_bundle=packed
+        )
 
     async def _upsert_secrets(self, deployment_id: UUID, secrets: Dict[str, str]) -> None:
         """Create or update the service's secrets. Secrets not in ``secrets`` are left untouched."""

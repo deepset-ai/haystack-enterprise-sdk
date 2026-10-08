@@ -654,6 +654,64 @@ class TestBuildOption:
         assert "Code bundle abc" in result.stdout
 
 
+class TestProjectFileBuild:
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_auto_is_code_with_a_project_file(self, client_cls: Mock, tmp_path: Path) -> None:
+        (tmp_path / "deepset.yaml").write_text("entrypoint: app.py:run\n", encoding="utf-8")
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        result = runner.invoke(cli_app, ["deploy", str(tmp_path), "svc", "--skip-activation"])
+        assert result.exit_code == 0
+        assert client_cls.return_value.deploy.call_args.kwargs["build"] == "code"
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_explicit_yaml_wins_over_the_project_file(self, client_cls: Mock, tmp_path: Path) -> None:
+        (tmp_path / "deepset.yaml").write_text("", encoding="utf-8")
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        result = runner.invoke(cli_app, ["deploy", str(tmp_path), "svc", "--skip-activation", "--build", "yaml"])
+        assert result.exit_code == 0
+        assert client_cls.return_value.deploy.call_args.kwargs["build"] == "yaml"
+
+    def test_help_mentions_the_project_file(self) -> None:
+        assert "deepset.yaml" in runner.invoke(cli_app, ["deploy", "--help"]).stdout
+
+    @patch("haystack_enterprise_sdk.cli.build_code_bundle")
+    def test_dry_run_shows_function_kind_and_settings(self, build_mock: Mock, tmp_path: Path) -> None:
+        (tmp_path / "deepset.yaml").write_text("entrypoint: app.py:run\n", encoding="utf-8")
+        build_mock.return_value = Mock(
+            config_yaml="inputs:\n  payload:\n  - app.payload\noutputs:\n  result: app.result\n",
+            sha256="abc",
+            files=["app.py", "deepset.yaml"],
+            archive=b"tgz",
+            entrypoint="app.py:run",
+            kind="function",
+        )
+        result = runner.invoke(cli_app, ["deploy", str(tmp_path), "svc", "--dry-run"])
+        assert result.exit_code == 0
+        assert "result: app.result" in result.stdout
+        assert "entrypoint app.py:run (function)" in result.stdout
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_function_deploy_prints_the_run_endpoint(self, client_cls: Mock) -> None:
+        _stub_endpoint(client_cls)
+        client_cls.return_value.deployment_base_url.return_value = (
+            "https://api.example/api/v1/workspaces/ws/deployments/d1"
+        )
+        deployed = _result(activated=True)
+        deployed.code_bundle = Mock(
+            kind="function",
+            input_schema={
+                "type": "object",
+                "properties": {"name": {"type": "string", "default": "world"}, "n": {"type": "integer"}},
+            },
+        )
+        client_cls.return_value.deploy.return_value = deployed
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
+        assert result.exit_code == 0
+        assert "POST https://api.example/api/v1/workspaces/ws/deployments/d1/run" in result.stdout
+        assert """-d '{"name": "world", "n": 0}'""" in result.stdout
+        assert "chat/completions" not in result.stdout
+
+
 class TestDryRun:
     @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_prints_yaml_and_skips_api(self, extract_mock: Mock) -> None:

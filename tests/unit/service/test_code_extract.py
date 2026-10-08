@@ -7,7 +7,7 @@ from typing import Generator
 
 import pytest
 
-from haystack_enterprise_sdk._service.pipeline_extract import extract_code_entrypoint
+from haystack_enterprise_sdk._service.pipeline_extract import PipelineTransformError, extract_code_entrypoint
 from haystack_enterprise_sdk._service.pipeline_transform import extract_code_via_subprocess
 
 
@@ -117,3 +117,72 @@ class TestCodeMode:
         assert extraction.pipeline == {}
         assert extraction.inferred_inputs == {"query": ["app.query"]}
         assert extraction.dependencies and extraction.dependencies[0].startswith("haystack-ai==")
+
+
+_FUNCTION_SRC = """
+from haystack import Pipeline
+
+def run(name: str, times: int = 2) -> dict:
+    return {"message": name * times}
+
+def hello():
+    return "hello"
+
+def make_pipeline():
+    return Pipeline()
+
+def anything(**kwargs):
+    return kwargs
+
+class Greeter:
+    def __call__(self, name: str) -> str:
+        return name
+
+greeter = Greeter()
+"""
+
+
+class TestFunctionKind:
+    def test_function_with_parameters_is_a_function(self, tmp_path: Path) -> None:
+        bundle = extract_code_entrypoint(_write(tmp_path, _FUNCTION_SRC), "run")
+
+        assert bundle["kind"] == "function"
+        assert bundle["entrypoint_attr"] == "run"
+        assert bundle["inferred_inputs"] == {"payload": ["app.payload"]}
+        assert bundle["inferred_outputs"] == {"result": "app.result"}
+        assert "suggested_pipeline_output_type" not in bundle
+        schema = bundle["input_schema"]
+        assert schema["required"] == ["name"]
+        assert schema["properties"]["name"]["type"] == "string"
+        assert schema["properties"]["times"] == {"default": 2, "title": "Times", "type": "integer"}
+
+    def test_zero_arg_function_returning_a_value_is_a_function(self, tmp_path: Path) -> None:
+        bundle = extract_code_entrypoint(_write(tmp_path, _FUNCTION_SRC), "hello")
+        assert bundle["kind"] == "function"
+        assert bundle["input_schema"] == {"type": "object"}
+
+    def test_zero_arg_function_returning_a_pipeline_is_a_factory(self, tmp_path: Path) -> None:
+        bundle = extract_code_entrypoint(_write(tmp_path, _FUNCTION_SRC), "make_pipeline")
+        assert bundle["kind"] == "pipeline"
+
+    def test_kwargs_only_accepts_any_object(self, tmp_path: Path) -> None:
+        assert extract_code_entrypoint(_write(tmp_path, _FUNCTION_SRC), "anything")["input_schema"] == {
+            "type": "object"
+        }
+
+    def test_callable_object_is_a_function(self, tmp_path: Path) -> None:
+        bundle = extract_code_entrypoint(_write(tmp_path, _FUNCTION_SRC), "greeter")
+        assert bundle["kind"] == "function"
+        assert bundle["input_schema"]["required"] == ["name"]
+
+    def test_declared_kind_overrides_detection(self, tmp_path: Path) -> None:
+        bundle = extract_code_entrypoint(_write(tmp_path, _FUNCTION_SRC), "make_pipeline", kind="function")
+        assert bundle["kind"] == "function"
+
+    def test_declared_kind_must_match(self, tmp_path: Path) -> None:
+        with pytest.raises(PipelineTransformError, match="kind: agent"):
+            extract_code_entrypoint(_write(tmp_path, _FUNCTION_SRC), "make_pipeline", kind="agent")
+
+    def test_auto_detection_never_picks_a_function(self, tmp_path: Path) -> None:
+        with pytest.raises(PipelineTransformError, match="needs an entrypoint"):
+            extract_code_entrypoint(_write(tmp_path, _FUNCTION_SRC), kind="function")

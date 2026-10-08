@@ -22,8 +22,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import structlog
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 from haystack_enterprise_sdk._service import deployment_service, pipeline_transform
+from haystack_enterprise_sdk._service.pipeline_extract import CODE_KINDS
 from haystack_enterprise_sdk._service.pipeline_transform import PipelineTransformError
 
 if sys.version_info >= (3, 11):
@@ -38,6 +41,9 @@ DEFAULT_MAX_BYTES = 50 * 1024 * 1024
 
 #: gitignore-style patterns, one per line, applied on top of git's own ignores.
 IGNORE_FILE = ".deepsetignore"
+
+#: Optional project file in the project root: ``entrypoint``, ``kind`` and ``dependencies``.
+PROJECT_FILE = "deepset.yaml"
 
 # Never shipped, whatever git or the ignore file says: environments, VCS data, bytecode.
 _ALWAYS_EXCLUDED_DIRS = frozenset({".git", ".venv", "venv", "__pycache__"})
@@ -76,6 +82,51 @@ class CodeBundle:
         return {key: value for key, value in fields.items() if value is not None}
 
 
+@dataclass(frozen=True)
+class ProjectFile:
+    """The settings of a project's ``deepset.yaml``; ``None`` means not declared."""
+
+    entrypoint: Optional[str] = None  # "path/relative/to/root.py:attr"
+    kind: Optional[str] = None
+    dependencies: Optional[List[str]] = None
+
+
+def load_project_file(root: Path) -> ProjectFile:
+    """Read ``deepset.yaml`` from ``root``; an empty :class:`ProjectFile` when there is none.
+
+    :raises CodeBundleError: If the file is not valid YAML, has unknown keys or a value of the wrong shape.
+    """
+    path = Path(root) / PROJECT_FILE
+    if not path.is_file():
+        return ProjectFile()
+    try:
+        data = YAML(typ="safe").load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, YAMLError) as err:
+        raise CodeBundleError(f"Could not read '{path}': {err}") from err
+    allowed = ", ".join(field.name for field in dataclasses.fields(ProjectFile))
+    if not isinstance(data, dict):
+        raise CodeBundleError(f"'{path}' must be a mapping with any of: {allowed}.")
+    unknown = sorted(set(data) - {field.name for field in dataclasses.fields(ProjectFile)})
+    if unknown:
+        raise CodeBundleError(f"Unknown key(s) in '{path}': {', '.join(unknown)}. Allowed keys: {allowed}.")
+    entrypoint, kind, dependencies = data.get("entrypoint"), data.get("kind"), data.get("dependencies")
+    if entrypoint is not None and not (isinstance(entrypoint, str) and ":" in entrypoint):
+        raise CodeBundleError(f"'entrypoint' in '{path}' must be 'path.py:attr', got {entrypoint!r}.")
+    if kind is not None and kind not in CODE_KINDS:
+        raise CodeBundleError(f"'kind' in '{path}' must be one of {', '.join(CODE_KINDS)}, got {kind!r}.")
+    if dependencies is not None and not (
+        isinstance(dependencies, list) and all(isinstance(dep, str) for dep in dependencies)
+    ):
+        raise CodeBundleError(f"'dependencies' in '{path}' must be a list of requirement strings.")
+    return ProjectFile(entrypoint=entrypoint, kind=kind, dependencies=dependencies)
+
+
+def has_project_file(target: Path) -> bool:
+    """Whether the project ``target`` (a directory or a file in it) belongs to has a ``deepset.yaml``."""
+    target = Path(target).resolve()
+    return (find_project_root(target if target.is_dir() else target.parent) / PROJECT_FILE).is_file()
+
+
 def build_code_bundle(
     target: Path,
     *,
@@ -88,6 +139,11 @@ def build_code_bundle(
     max_bytes: int = DEFAULT_MAX_BYTES,
 ) -> CodeBundle:
     """Describe the entrypoint, pack the project and render the settings-only ``config_yaml``. No API calls.
+
+    The project's ``deepset.yaml`` (see :func:`load_project_file`) fills in what the arguments leave
+    open: its ``entrypoint`` (relative to the project root), its ``kind``, and its ``dependencies``,
+    which replace the ones read from ``pyproject.toml``/``requirements.txt``. Declared ``settings`` still
+    win over all of them. A ``function`` entrypoint always gets the fixed ``payload``/``result`` mapping.
 
     :param target: A project directory or the entrypoint's ``.py`` file.
     :param entrypoint: ``path.py:attr`` (relative to a directory target, or to the file's directory),
@@ -104,15 +160,24 @@ def build_code_bundle(
     """
     target = Path(target).resolve()
     base = target if target.is_dir() else target.parent
+    root = find_project_root(base)
+    project = load_project_file(root)
+    # A file target names the entrypoint file itself, so deepset.yaml's entrypoint only applies to it
+    # when it points at that same file.
+    if not entrypoint and project.entrypoint:
+        declared_file = (root / project.entrypoint.rpartition(":")[0]).resolve()
+        if target.is_dir() or declared_file == target:
+            entrypoint, base = project.entrypoint, root
     if entrypoint and ":" in entrypoint:
         file_part, _, attr = entrypoint.rpartition(":")
         entry_file, entry_attr = (base / file_part).resolve(), attr or None
     elif target.is_dir():
-        raise CodeBundleError(f"'{target}' is a directory: pass --entrypoint path.py:attr to name the entrypoint.")
+        raise CodeBundleError(
+            f"'{target}' is a directory: pass --entrypoint path.py:attr or set 'entrypoint:' in {PROJECT_FILE}."
+        )
     else:
         entry_file, entry_attr = target, entrypoint
 
-    root = find_project_root(base)
     try:
         entry_rel = entry_file.relative_to(root).as_posix()
     except ValueError:
@@ -123,12 +188,17 @@ def build_code_bundle(
         raise CodeBundleError(f"Entrypoint '{entry_rel}' is excluded from the code bundle (git or {IGNORE_FILE}).")
 
     extraction, code = pipeline_transform.extract_code_via_subprocess(
-        entry_file, entry_attr, python_executable, project_root=root
+        entry_file, entry_attr, python_executable, project_root=root, kind=project.kind
     )
-    dependencies = project_dependencies(root)
-    if dependencies:
+    dependencies = project.dependencies if project.dependencies is not None else project_dependencies(root)
+    if dependencies is not None:
         extraction = dataclasses.replace(extraction, dependencies=dependencies)
-    resolved_inputs, resolved_outputs = pipeline_transform.resolve_io(extraction, inputs, outputs, io_resolver)
+    if code.kind == "function":
+        # The runtime's contract for a function: one ``payload`` dict in, one ``result`` out, no output type.
+        resolved_inputs, resolved_outputs = extraction.inferred_inputs, extraction.inferred_outputs
+        settings = dataclasses.replace(settings or pipeline_transform.PipelineSettings(), pipeline_output_type=None)
+    else:
+        resolved_inputs, resolved_outputs = pipeline_transform.resolve_io(extraction, inputs, outputs, io_resolver)
     config_yaml = pipeline_transform.render_config_yaml(
         extraction, inputs=resolved_inputs, outputs=resolved_outputs, settings=settings
     )

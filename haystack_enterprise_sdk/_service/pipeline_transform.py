@@ -534,7 +534,7 @@ class CodeEntrypoint:
     """What the extractor's code mode found at the entrypoint of a code build."""
 
     attr: str
-    kind: str  # pipeline | agent | super_component
+    kind: str  # pipeline | agent | super_component | function
     input_schema: Optional[dict] = None
     graph: Optional[dict] = None
 
@@ -544,6 +544,7 @@ def extract_code_via_subprocess(
     entrypoint: Optional[str] = None,
     python_executable: Optional[str] = None,
     project_root: Optional[Path] = None,
+    kind: Optional[str] = None,
 ) -> Tuple[ExtractionBundle, CodeEntrypoint]:
     """Describe a code build's entrypoint by running the extractor's code mode in the project's interpreter.
 
@@ -554,10 +555,12 @@ def extract_code_via_subprocess(
     :param entrypoint: Attribute name in ``target``; auto-detected when omitted.
     :param python_executable: Interpreter to run the extractor with (see :func:`extract_via_subprocess`).
     :param project_root: Root of the code bundle, put on ``sys.path`` like the runtime does.
+    :param kind: Declared entrypoint kind; overrides the extractor's detection.
     :raises PipelineTransformError: If extraction fails.
     :return: The extraction bundle and the entrypoint description.
     """
     extra = ["--mode", "code"] + (["--project-root", str(project_root)] if project_root else [])
+    extra += ["--kind", kind] if kind else []
     raw = _run_extractor(target, entrypoint, python_executable, extra)
     code = CodeEntrypoint(
         attr=raw["entrypoint_attr"], kind=raw["kind"], input_schema=raw.get("input_schema"), graph=raw.get("graph")

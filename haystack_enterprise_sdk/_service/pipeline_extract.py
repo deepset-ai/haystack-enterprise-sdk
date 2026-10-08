@@ -1728,8 +1728,11 @@ def extract_from_file(path: Path, entrypoint: Optional[str] = None) -> dict:
 # --------------------------------------------------------------------------- #
 # Code mode: describe the entrypoint of a code build, rewrite nothing
 # --------------------------------------------------------------------------- #
-#: Name the runtime gives a SuperComponent entrypoint when it wraps it into a one-component pipeline.
+#: Name the runtime gives a SuperComponent or function entrypoint when it wraps it into a one-component pipeline.
 SUPER_COMPONENT_NAME = "app"
+
+#: Entrypoint kinds of a code build. ``function`` is any plain callable, run as ``fn(**payload)``.
+CODE_KINDS = ("pipeline", "agent", "super_component", "function")
 
 _JSON_SCHEMA_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean", dict: "object", list: "array"}
 
@@ -1743,16 +1746,20 @@ def _super_component_types() -> tuple:
     return (_SuperComponent,)
 
 
-def extract_code_entrypoint(path: Path, entrypoint: Optional[str] = None, project_root: Optional[Path] = None) -> dict:
+def extract_code_entrypoint(
+    path: Path, entrypoint: Optional[str] = None, project_root: Optional[Path] = None, kind: Optional[str] = None
+) -> dict:
     """Import ``path`` and describe its entrypoint for a code build. No code is rewritten.
 
     Agents and SuperComponents are wrapped into the same one-component pipeline the runtime builds
     (``agent`` / ``app``), so the platform ``inputs``/``outputs`` come out of the same name-based
-    inference as a YAML build.
+    inference as a YAML build. A plain callable is a ``function``: the runtime wraps it as ``app`` with
+    one ``payload`` input and one ``result`` output and calls ``fn(**payload)``.
 
     :param path: The entrypoint's ``.py`` file.
-    :param entrypoint: Attribute name; auto-detected when omitted.
+    :param entrypoint: Attribute name; auto-detected (Haystack objects only) when omitted.
     :param project_root: Root of the code bundle, put on ``sys.path`` as the runtime does.
+    :param kind: Declared kind (one of :data:`CODE_KINDS`); overrides detection.
     :return: A bundle with ``kind``, ``entrypoint_attr``, ``input_schema``, ``graph`` and the I/O keys
         of :func:`extract_from_pipeline` (minus ``pipeline``).
     """
@@ -1760,8 +1767,20 @@ def extract_code_entrypoint(path: Path, entrypoint: Optional[str] = None, projec
 
     pipeline_types = _pipeline_types()
     agent_types = _agent_types()
+    declared_kind = kind
     module = _import_module(path, project_root)
-    name, obj = _resolve_entrypoint(module, entrypoint, pipeline_types + agent_types + _super_component_types())
+    name, obj, is_function = _code_entrypoint(
+        module, entrypoint, pipeline_types + agent_types + _super_component_types(), kind
+    )
+    if is_function:
+        return {
+            "kind": "function",
+            "entrypoint_attr": name,
+            "input_schema": _function_schema(obj),
+            "inferred_inputs": {"payload": [f"{SUPER_COMPONENT_NAME}.payload"]},
+            "inferred_outputs": {"result": f"{SUPER_COMPONENT_NAME}.result"},
+            "dependencies": _haystack_dependency(),
+        }
 
     if isinstance(obj, pipeline_types):
         kind, pipeline, graph_source, flat = "pipeline", obj, obj, None
@@ -1772,6 +1791,8 @@ def extract_code_entrypoint(path: Path, entrypoint: Optional[str] = None, projec
         pipeline.add_component(flat, obj)
         graph_source = getattr(obj, "pipeline", None) if kind == "super_component" else pipeline
 
+    if declared_kind is not None and declared_kind != kind:
+        raise PipelineTransformError(f"Entrypoint '{name}' is a {kind}, but kind: {declared_kind} is declared.")
     return {
         "kind": kind,
         "entrypoint_attr": name,
@@ -1785,6 +1806,76 @@ def extract_code_entrypoint(path: Path, entrypoint: Optional[str] = None, projec
         "dependencies": _haystack_dependency(),
         "suggested_pipeline_output_type": "chat" if kind == "agent" else None,
     }
+
+
+def _code_entrypoint(module: Any, entrypoint: Optional[str], haystack_types: tuple, kind: Optional[str]) -> tuple:
+    """Resolve a code build's entrypoint to ``(name, object, is_function)``.
+
+    A plain callable (a function, or an object with ``__call__``) that is not a Haystack object is a
+    function, except a zero-parameter one that returns a Haystack object: that is a factory, as in a
+    YAML build. A declared ``kind`` overrides the detection. Auto-detection (no entrypoint) only ever
+    finds Haystack objects.
+    """
+    if entrypoint is None:
+        if kind == "function":
+            raise PipelineTransformError("kind: function needs an entrypoint, e.g. 'entrypoint: app.py:run'.")
+        return (*_resolve_entrypoint(module, None, haystack_types), False)
+    if not hasattr(module, entrypoint):
+        raise PipelineTransformError(f"Entrypoint '{entrypoint}' not found in the pipeline file.")
+    obj = getattr(module, entrypoint)
+    plain_callable = callable(obj) and not inspect.isclass(obj) and not isinstance(obj, haystack_types)
+    if kind == "function":
+        if not plain_callable:
+            raise PipelineTransformError(
+                f"Entrypoint '{entrypoint}' is not a function, but kind: function is declared."
+            )
+        return entrypoint, obj, True
+    if plain_callable and kind is None:
+        if _signature_params(obj) or inspect.iscoroutinefunction(obj):
+            return entrypoint, obj, True
+        result = obj()  # zero-parameter: a factory if it returns a Haystack object
+        if not isinstance(result, haystack_types):
+            return entrypoint, obj, True
+        obj = result
+    return entrypoint, _coerce_to_pipeline(obj, entrypoint, haystack_types), False
+
+
+def _signature_params(fn: Any) -> list:
+    """The parameters of ``fn``; a callable without an inspectable signature counts as taking some."""
+    try:
+        return list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return [inspect.Parameter("args", inspect.Parameter.VAR_POSITIONAL)]
+
+
+def _function_schema(fn: Any) -> dict:
+    """JSON schema of a function's ``**payload``, from its keyword-passable parameters and type hints.
+
+    pydantic (a Haystack dependency) builds it; types it cannot describe fall back to the basic mapping.
+    A function taking only ``**kwargs`` accepts any object.
+    """
+    import typing
+
+    keyword_kinds = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    params = [p for p in _signature_params(fn) if p.kind in keyword_kinds]
+    if not params:
+        return {"type": "object"}
+    try:
+        hints = typing.get_type_hints(fn if inspect.isroutine(fn) else type(fn).__call__)
+    except Exception:  # noqa: BLE001 - unresolvable annotations only cost the types
+        hints = {}
+    try:
+        from pydantic import create_model
+
+        fields: dict[str, Any] = {
+            p.name: (hints.get(p.name, Any), ... if p.default is inspect.Parameter.empty else p.default) for p in params
+        }
+        schema: dict = create_model("Payload", **fields).model_json_schema()  # type: ignore[call-overload]
+        return schema
+    except Exception:  # noqa: BLE001 - no pydantic, or a type it cannot describe
+        return _object_schema(
+            {p.name: {"type": hints.get(p.name), "is_mandatory": p.default is inspect.Parameter.empty} for p in params}
+        )
 
 
 def _graph(pipeline: Any) -> Optional[dict]:
@@ -1855,11 +1946,12 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--entrypoint", default=None, help="Pipeline instance/factory name to use.")
     parser.add_argument("--mode", choices=("yaml", "code"), default="yaml", help="Build to YAML or to code.")
     parser.add_argument("--project-root", type=Path, default=None, help="Code build root (code mode).")
+    parser.add_argument("--kind", choices=CODE_KINDS, default=None, help="Declared entrypoint kind (code mode).")
     args = parser.parse_args(argv)
 
     try:
         if args.mode == "code":
-            bundle = extract_code_entrypoint(args.target, args.entrypoint, args.project_root)
+            bundle = extract_code_entrypoint(args.target, args.entrypoint, args.project_root, args.kind)
         else:
             bundle = extract_from_file(args.target, args.entrypoint)
     except PipelineTransformError as err:
