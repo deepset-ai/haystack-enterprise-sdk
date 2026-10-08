@@ -607,6 +607,53 @@ class TestEnvSecrets:
         client_cls.assert_not_called()
 
 
+class TestBuildOption:
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_auto_is_yaml(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--skip-activation"])
+        assert result.exit_code == 0
+        assert client_cls.return_value.deploy.call_args.kwargs["build"] == "yaml"
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_code_is_forwarded(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        args = ["deploy", "tests/test_data/deploy", "svc", "--skip-activation", "--build", "code"]
+        result = runner.invoke(cli_app, args + ["--entrypoint", "pipeline.py:pipeline"])
+        assert result.exit_code == 0
+        kwargs = client_cls.return_value.deploy.call_args.kwargs
+        assert kwargs["build"] == "code"
+        assert kwargs["entrypoint"] == "pipeline.py:pipeline"
+
+    def test_unknown_value_is_rejected_without_naming_code(self) -> None:
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--build", "docker"])
+        assert result.exit_code == 1
+        assert "'auto' or 'yaml'" in result.stdout
+
+    def test_help_does_not_mention_code_builds(self) -> None:
+        result = runner.invoke(cli_app, ["deploy", "--help"])
+        assert "--build" in result.stdout
+        assert "code" not in result.stdout.replace("Code component", "")
+
+    @patch("haystack_enterprise_sdk.cli.build_code_bundle")
+    def test_dry_run_writes_the_code_bundle(self, build_mock: Mock, tmp_path: Path) -> None:
+        build_mock.return_value = Mock(
+            config_yaml="inputs: {}\n",
+            sha256="abc",
+            files=["app.py"],
+            archive=b"tgz",
+            entrypoint="app.py:app",
+            kind="pipeline",
+        )
+        out = tmp_path / "bundle.tar.gz"
+        result = runner.invoke(
+            cli_app, ["deploy", FIXTURE, "svc", "--dry-run", "--build", "code", "--output", str(out)]
+        )
+        assert result.exit_code == 0
+        assert out.read_bytes() == b"tgz"
+        assert "Code bundle abc" in result.stdout
+
+
 class TestDryRun:
     @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_prints_yaml_and_skips_api(self, extract_mock: Mock) -> None:

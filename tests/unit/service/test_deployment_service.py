@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from haystack_enterprise_sdk._api.deployments import (
+    CodeBundleRequestError,
     Deployment,
     DeploymentMode,
     DeploymentRevision,
@@ -22,6 +23,7 @@ from haystack_enterprise_sdk._api.deployments import (
     PipelineValidationResult,
 )
 from haystack_enterprise_sdk._service import pipeline_transform
+from haystack_enterprise_sdk._service.code_bundle import CodeBundle
 from haystack_enterprise_sdk._service.deployment_service import (
     CreateOptions,
     DeploymentFailedError,
@@ -820,3 +822,67 @@ class TestCollectSourceMetadata:
         assert info["git"]["dirty"] is True
         assert len(info["git"]["sha"]) == 40
         assert "author@secret.example" not in json.dumps(info)
+
+
+_PACKED = CodeBundle(
+    archive=b"tgz",
+    sha256="abc",
+    files=["app.py"],
+    config_yaml="inputs:\n  query:\n  - app.query\n",
+    entrypoint="app.py:app",
+    kind="super_component",
+    input_schema={"type": "object"},
+)
+
+
+@pytest.mark.asyncio
+class TestCodeBuild:
+    @pytest.fixture(autouse=True)
+    def _packed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("haystack_enterprise_sdk._service.code_bundle.build_code_bundle", lambda *a, **k: _PACKED)
+
+    async def test_uploads_then_pushes_settings_with_code_bundle(self, service: MockedDeploymentService) -> None:
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.get_code_bundle.return_value = None  # typed 404
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+
+        await service.deploy(FIXTURE, "svc", comment="c", build="code")
+
+        service._deployments.upload_code_bundle.assert_awaited_once_with("ws", b"tgz", "abc")
+        service._deployments.validate_pipeline.assert_not_called()
+        service._deployments.push_revision.assert_awaited_once_with(
+            "ws",
+            deployment.deployment_id,
+            _PACKED.config_yaml,
+            "c",
+            source_metadata=ANY,
+            code_bundle={
+                "sha256": "abc",
+                "entrypoint": "app.py:app",
+                "kind": "super_component",
+                "input_schema": {"type": "object"},
+            },
+        )
+
+    async def test_known_bundle_is_not_uploaded_again(self, service: MockedDeploymentService) -> None:
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.get_code_bundle.return_value = {"sha256": "abc"}
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+
+        await service.deploy(FIXTURE, "svc", build="code")
+
+        service._deployments.upload_code_bundle.assert_not_called()
+        service._deployments.push_revision.assert_awaited_once()
+
+    async def test_failed_capability_check_creates_and_pushes_nothing(self, service: MockedDeploymentService) -> None:
+        service._deployments.find_by_name.return_value = None
+        service._deployments.get_code_bundle.side_effect = CodeBundleRequestError("use --build yaml")
+
+        with pytest.raises(CodeBundleRequestError):
+            await service.deploy(FIXTURE, "svc", create=True, build="code")
+
+        service._deployments.create_deployment.assert_not_called()
+        service._deployments.upload_code_bundle.assert_not_called()
+        service._deployments.push_revision.assert_not_called()

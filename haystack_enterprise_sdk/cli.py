@@ -42,6 +42,7 @@ from haystack_enterprise_sdk._api.config import (
     normalize_base_url,
 )
 from haystack_enterprise_sdk._api.deployments import (
+    CodeBundleRequestError,
     DeploymentMode,
     DeploymentServiceLevel,
     FailedToTagDeploymentError,
@@ -69,6 +70,7 @@ from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedP
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
 from haystack_enterprise_sdk._console import animations_enabled, status_spinner
 from haystack_enterprise_sdk._service import deployment_service
+from haystack_enterprise_sdk._service.code_bundle import build_code_bundle
 from haystack_enterprise_sdk._service.deployment_service import (
     CreateOptions,
     DeploymentFailedError,
@@ -111,6 +113,9 @@ from haystack_enterprise_sdk.workflows.sync_client.files import (
 from haystack_enterprise_sdk.workflows.sync_client.files import upload as sync_upload
 
 cli_app = typer.Typer(pretty_exceptions_show_locals=False)
+
+# Accepted `deploy --build` values. Only auto and yaml are documented while code builds roll out.
+_BUILDS = ("auto", "yaml", "code")
 
 # How long a sandbox run has to be waiting before the spinner explains that this is normal.
 _RUN_HINT_AFTER_S = 20
@@ -751,6 +756,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     api_key: Optional[str] = None,
     api_url: Optional[str] = None,
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
+    # Phase A: `code` works but stays undocumented until code builds are generally available, so the
+    # value is checked by hand instead of a Choice that would list it in --help.
+    build: str = typer.Option("auto", "--build", help="How to build the deployable: auto (default) or yaml."),
 ) -> None:
     """Deploy a pipeline as a new revision of a service, creating the service if it does not exist.
 
@@ -846,12 +854,18 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     Set service secrets from a committed file plus CI secrets exported in the environment:
     `haystack-enterprise deploy pipeline.py my-service --env-file .env.prod --env OPENAI_API_KEY`
     """
+    if build not in _BUILDS:
+        typer.echo(f"--build must be 'auto' or 'yaml', got '{build}'.")
+        raise typer.Exit(1)
+    # `auto` still means YAML; directory targets and zero-arg deploys will default to code later.
+    build = "yaml" if build == "auto" else build
+
     io_config_path = _resolve_io_config_path(target, io_config)
     io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
     env_vars = _collect_env_vars(env or [], env_file)
 
     if dry_run:
-        _deploy_dry_run(target, entrypoint, python, output, skip_io_validation, io_cfg)
+        _deploy_dry_run(target, entrypoint, python, output, skip_io_validation, io_cfg, build)
         if env_vars:
             typer.echo(f"Would set service secrets: {', '.join(sorted(env_vars))}.", err=True)
         return
@@ -931,7 +945,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     # for the two things the platform requires of a servable pipeline (a query input and one output) and
     # only when inference did not already supply them. A pipeline YAML has no live sockets to offer, so
     # its own mapping is used as-is.
-    if io_cfg.inputs is not None or io_cfg.outputs is not None or is_yaml_target(target):
+    # A code build defines its own API (/run), so the chat mapping is optional and never asked for unless
+    # it is about to be shared.
+    pinned = io_cfg.inputs is not None or io_cfg.outputs is not None
+    if pinned or is_yaml_target(target) or (build == "code" and not share):
         io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="warn")
     elif share:
         io_resolver = functools.partial(
@@ -971,6 +988,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     validate=not skip_validation,
                     secrets=env_vars,
                     on_status=_on_status,
+                    build=build,
                 )
         else:
             result = client.deploy(
@@ -987,6 +1005,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 python_executable=python,
                 validate=not skip_validation,
                 secrets=env_vars,
+                build=build,
             )
     except KeyboardInterrupt:
         typer.echo(
@@ -1000,6 +1019,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         PipelineTransformError,
         PipelineValidationError,
         FailedToSetServiceSecretError,
+        CodeBundleRequestError,
     ) as err:
         typer.echo(str(err))
         raise typer.Exit(1)  # noqa: B904
@@ -1328,13 +1348,38 @@ def _deploy_dry_run(
     output: Optional[Path],
     skip_io_validation: bool = False,
     io_cfg: IoConfig = IoConfig(),
+    build: str = "yaml",
 ) -> None:
     """Transform the pipeline and print/write the YAML without contacting the API.
 
     Uses the same extract → resolve → render path as the real deploy (:func:`build_config_yaml`).
     Never prompts (``mode="warn"``): a dry run renders YAML, it does not serve or query anything.
+    A code build prints its settings YAML and writes the code bundle itself to ``output``.
     """
     io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="warn")
+    if build == "code":
+        try:
+            packed = build_code_bundle(
+                target,
+                entrypoint=entrypoint,
+                inputs=io_cfg.inputs,
+                outputs=io_cfg.outputs,
+                settings=io_cfg.settings,
+                io_resolver=io_resolver,
+                python_executable=python,
+            )
+        except PipelineTransformError as err:
+            typer.echo(str(err))
+            raise typer.Exit(1)  # noqa: B904
+        typer.echo(packed.config_yaml)
+        typer.echo(
+            f"Code bundle {packed.sha256}: {len(packed.files)} files, {len(packed.archive)} bytes, "
+            f"entrypoint {packed.entrypoint} ({packed.kind})."
+        )
+        if output is not None:
+            output.write_bytes(packed.archive)
+            typer.echo(f"Wrote the code bundle to {output}.")
+        return
     try:
         config_yaml = build_config_yaml(
             target,

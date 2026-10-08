@@ -8,6 +8,7 @@ import pytest
 from httpx import ReadTimeout, Request, Response, codes
 
 from haystack_enterprise_sdk._api.deployments import (
+    CodeBundleRequestError,
     Deployment,
     DeploymentMode,
     DeploymentRevision,
@@ -549,3 +550,92 @@ class TestOutputTypeParsing:
         # The platform has values this SDK does not model (e.g. "unknown"); they must not crash a deploy.
         body = {**_deployment_body("svc"), "output_type": "unknown"}
         assert Deployment.from_response(body).output_type is None
+
+
+def _typed(status: int, code: str) -> Response:
+    return _resp(status, json={"detail": {"code": code, "message": f"{code} message"}})
+
+
+@pytest.mark.asyncio
+class TestCodeBundles:
+    async def test_get_returns_metadata(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.get.return_value = _resp(codes.OK, json={"sha256": "abc", "size_bytes": 3})
+        assert await deployments_api.get_code_bundle("ws", "abc") == {"sha256": "abc", "size_bytes": 3}
+        mocked_haystack_enterprise_api.get.assert_called_once_with(workspace_name="ws", endpoint="code_bundles/abc")
+
+    async def test_typed_404_means_upload(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.get.return_value = _typed(codes.NOT_FOUND, "CODE_BUNDLE_NOT_FOUND")
+        assert await deployments_api.get_code_bundle("ws", "abc") is None
+
+    async def test_typed_403_means_disabled(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.get.return_value = _typed(codes.FORBIDDEN, "CODE_BUNDLES_DISABLED")
+        with pytest.raises(CodeBundleRequestError, match="not enabled for this organization"):
+            await deployments_api.get_code_bundle("ws", "abc")
+
+    @pytest.mark.parametrize("body", [{"detail": "Not Found"}, {"detail": {"code": "OTHER"}}, None])
+    async def test_untyped_404_means_old_platform(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock, body: Any
+    ) -> None:
+        response = _resp(codes.NOT_FOUND, json=body) if body is not None else _resp(codes.NOT_FOUND, text="<html>")
+        mocked_haystack_enterprise_api.get.return_value = response
+        with pytest.raises(CodeBundleRequestError, match="doesn't support code builds yet; use --build yaml"):
+            await deployments_api.get_code_bundle("ws", "abc")
+
+    async def test_untyped_403_is_a_plain_failure(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.get.return_value = _resp(codes.FORBIDDEN, json={"detail": "nope"})
+        with pytest.raises(CodeBundleRequestError, match="Failed to look up code bundle"):
+            await deployments_api.get_code_bundle("ws", "abc")
+
+    async def test_upload_posts_multipart_file(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json={"sha256": "abc", "size_bytes": 3})
+        assert await deployments_api.upload_code_bundle("ws", b"tgz", "abc") == {"sha256": "abc", "size_bytes": 3}
+        mocked_haystack_enterprise_api.post.assert_called_once_with(
+            workspace_name="ws",
+            endpoint="code_bundles",
+            files={"file": ("abc.tar.gz", b"tgz", "application/gzip")},
+            timeout_s=300,
+        )
+
+    @pytest.mark.parametrize(
+        ("status", "code"),
+        [(codes.REQUEST_ENTITY_TOO_LARGE, "CODE_BUNDLE_TOO_LARGE"), (codes.BAD_REQUEST, "CODE_BUNDLE_INVALID")],
+    )
+    async def test_upload_typed_rejection(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock, status: int, code: str
+    ) -> None:
+        mocked_haystack_enterprise_api.post.return_value = _typed(status, code)
+        with pytest.raises(CodeBundleRequestError, match=f"{code}.*{code} message"):
+            await deployments_api.upload_code_bundle("ws", b"tgz", "abc")
+
+    async def test_upload_sha_mismatch(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.post.return_value = _resp(
+            codes.CREATED, json={"sha256": "other", "size_bytes": 3}
+        )
+        with pytest.raises(CodeBundleRequestError, match="stored other"):
+            await deployments_api.upload_code_bundle("ws", b"tgz", "abc")
+
+    async def test_push_revision_carries_code_bundle(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        deployment_id = uuid4()
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=_revision_body(str(deployment_id)))
+        field = {"sha256": "abc", "entrypoint": "app.py:app", "kind": "super_component"}
+        await deployments_api.push_revision("ws", deployment_id, "inputs: {}\n", "c", code_bundle=field)
+        assert mocked_haystack_enterprise_api.post.call_args.kwargs["json"] == {
+            "comment": "c",
+            "config_yaml": "inputs: {}\n",
+            "source_type": "EXTERNAL_PIPELINE",
+            "code_bundle": field,
+        }

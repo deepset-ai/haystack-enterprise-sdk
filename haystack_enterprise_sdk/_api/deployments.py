@@ -11,7 +11,7 @@ list endpoint and matching client-side.
 import asyncio
 import enum
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar
 from uuid import UUID
 
 import httpx
@@ -245,6 +245,10 @@ class FailedToPushRevisionError(Exception):
     """Raised when a deployment revision could not be pushed."""
 
 
+class CodeBundleRequestError(Exception):
+    """A code bundle lookup or upload failed. The message is meant for the user as-is."""
+
+
 class FailedToActivateRevisionError(Exception):
     """Raised when a deployment revision could not be activated."""
 
@@ -286,6 +290,7 @@ class DeploymentsAPI:
     # Revisions pushed by this SDK send self-contained inline YAML with no platform pipeline version
     # behind them, so their source is EXTERNAL_PIPELINE rather than the default PLATFORM_PIPELINE.
     _SOURCE_TYPE = DeploymentSourceType.EXTERNAL_PIPELINE.value
+    _CODE_BUNDLES_ENDPOINT = "code_bundles"
 
     def __init__(self, haystack_enterprise_api: HaystackEnterpriseAPI) -> None:
         """Create a DeploymentsAPI object.
@@ -420,25 +425,31 @@ class DeploymentsAPI:
         config_yaml: str,
         comment: str,
         source_metadata: Optional[Dict[str, Any]] = None,
+        code_bundle: Optional[Dict[str, Any]] = None,
     ) -> DeploymentRevision:
         """Push a new revision from raw ``config_yaml``. The revision starts as ``PENDING``.
 
         :param workspace_name: Name of the workspace.
         :param deployment_id: Deployment id.
-        :param config_yaml: The platform-ready pipeline YAML.
+        :param config_yaml: The platform-ready pipeline YAML; settings only for a code build.
         :param comment: Comment stored on the revision. The platform requires one.
         :param source_metadata: Where the push came from (see ``collect_source_metadata``). A platform that
             predates the field ignores it.
+        :param code_bundle: For a code build, ``{sha256, entrypoint, kind, input_schema?, graph?}`` of an
+            uploaded code bundle. Only check servers with :meth:`get_code_bundle` first: an old server
+            ignores the field and would store a revision without code.
         :raises FailedToPushRevisionError: If the revision could not be created.
         :return: The created revision.
         """
-        body: Dict[str, Any] = {"comment": comment, "config_yaml": config_yaml, "source_type": self._SOURCE_TYPE}
+        payload: Dict[str, Any] = {"comment": comment, "config_yaml": config_yaml, "source_type": self._SOURCE_TYPE}
         if source_metadata:
-            body["source_metadata"] = source_metadata
+            payload["source_metadata"] = source_metadata
+        if code_bundle is not None:
+            payload["code_bundle"] = code_bundle
         response = await self._haystack_enterprise_api.post(
             workspace_name=workspace_name,
             endpoint=f"{self._ENDPOINT}/{deployment_id}/revisions",
-            json=body,
+            json=payload,
         )
         raise_for_unexpected_status(
             response,
@@ -447,6 +458,60 @@ class DeploymentsAPI:
             f"Failed to push a revision to deployment '{deployment_id}'.",
         )
         return DeploymentRevision.from_response(response.json())
+
+    async def get_code_bundle(self, workspace_name: str, sha256: str) -> Optional[Dict[str, Any]]:
+        """Look up an uploaded code bundle. Doubles as the capability check before a code build.
+
+        :param workspace_name: Name of the workspace.
+        :param sha256: The bundle's sha256.
+        :raises CodeBundleRequestError: If code builds are disabled for the organization (typed 403), the
+            server does not know code bundles at all (a 404 without the typed code), or anything else fails.
+        :return: The bundle's metadata, or ``None`` if the server supports code bundles but has not got this one.
+        """
+        response = await self._haystack_enterprise_api.get(
+            workspace_name=workspace_name, endpoint=f"{self._CODE_BUNDLES_ENDPOINT}/{sha256}"
+        )
+        if response.status_code == codes.OK:
+            body: Dict[str, Any] = response.json()
+            return body
+        code, _ = _typed_error(response)
+        if response.status_code == codes.NOT_FOUND:
+            if code == "CODE_BUNDLE_NOT_FOUND":
+                return None
+            raise CodeBundleRequestError("This platform doesn't support code builds yet; use --build yaml.")
+        if response.status_code == codes.FORBIDDEN and code == "CODE_BUNDLES_DISABLED":
+            raise CodeBundleRequestError("Code builds are not enabled for this organization.")
+        raise_for_unexpected_status(
+            response, (codes.OK,), CodeBundleRequestError, f"Failed to look up code bundle '{sha256}'."
+        )
+        return None  # unreachable: raise_for_unexpected_status raised
+
+    async def upload_code_bundle(self, workspace_name: str, archive: bytes, sha256: str) -> Dict[str, Any]:
+        """Upload a code bundle (multipart field ``file``).
+
+        :param workspace_name: Name of the workspace.
+        :param archive: The tar.gz bytes.
+        :param sha256: The archive's sha256, checked against what the server computed.
+        :raises CodeBundleRequestError: If the server rejects the bundle or stored different bytes.
+        :return: The server's ``{"sha256", "size_bytes"}``.
+        """
+        response = await self._haystack_enterprise_api.post(
+            workspace_name=workspace_name,
+            endpoint=self._CODE_BUNDLES_ENDPOINT,
+            files={"file": (f"{sha256}.tar.gz", archive, "application/gzip")},
+            timeout_s=300,
+        )
+        if response.status_code != codes.CREATED:
+            code, message = _typed_error(response)
+            if code is not None:
+                raise CodeBundleRequestError(f"The platform rejected the code bundle ({code}): {message}")
+            raise_for_unexpected_status(
+                response, (codes.CREATED,), CodeBundleRequestError, "Failed to upload the code bundle."
+            )
+        body: Dict[str, Any] = response.json()
+        if body.get("sha256") != sha256:
+            raise CodeBundleRequestError(f"Uploaded code bundle {sha256} but the platform stored {body.get('sha256')}.")
+        return body
 
     async def activate_revision(
         self,
@@ -713,6 +778,17 @@ class PaginatedDeployments:
     data: List[Deployment]
     has_more: bool
     total: int
+
+
+def _typed_error(response: Response) -> Tuple[Optional[str], Optional[str]]:
+    """Return ``(code, message)`` of a typed error body ``{"detail": {"code", "message"}}``, else ``(None, None)``."""
+    try:
+        detail = response.json().get("detail")
+    except (ValueError, AttributeError):
+        return None, None
+    if not isinstance(detail, dict) or not isinstance(detail.get("code"), str):
+        return None, None
+    return detail["code"], detail.get("message")
 
 
 def _parse_validation_issues(body: Any) -> List[PipelineValidationIssue]:

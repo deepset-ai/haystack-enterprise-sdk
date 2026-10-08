@@ -93,6 +93,7 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         on_status: Optional[Callable[[DeploymentStatus], None]] = None,
+        build: str = "yaml",
     ) -> DeployResult:
         """Transform ``target`` and push it as a new revision of ``service_name`` synchronously."""
         return _run(
@@ -114,6 +115,7 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
                 timeout_s=timeout_s,
                 poll_interval_s=poll_interval_s,
                 on_status=on_status,
+                build=build,
             )
         )
 
