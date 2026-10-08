@@ -20,7 +20,7 @@ import tempfile
 from dataclasses import dataclass, field, fields
 from io import StringIO
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import structlog
 from ruamel.yaml import YAML
@@ -50,6 +50,7 @@ _ASYNC_SETTING_MIN_MAJOR = 3
 
 __all__ = [
     "CODE_COMPONENT_TYPE",
+    "CodeEntrypoint",
     "DEPLOY_ONLY_KEYS",
     "ExtractionBundle",
     "IoResolver",
@@ -63,6 +64,7 @@ __all__ = [
     "detect_project_python",
     "extract_from_file",
     "extract_from_pipeline",
+    "extract_code_via_subprocess",
     "extract_via_subprocess",
     "flatten_sockets",
     "haystack_pin",
@@ -524,6 +526,49 @@ def extract_via_subprocess(
     :raises PipelineTransformError: If extraction fails (bubbling up the extractor's error message).
     :return: The extraction bundle.
     """
+    return ExtractionBundle.from_dict(_run_extractor(target, entrypoint, python_executable))
+
+
+@dataclass(frozen=True)
+class CodeEntrypoint:
+    """What the extractor's code mode found at the entrypoint of a code build."""
+
+    attr: str
+    kind: str  # pipeline | agent | super_component
+    input_schema: Optional[dict] = None
+    graph: Optional[dict] = None
+
+
+def extract_code_via_subprocess(
+    target: Path,
+    entrypoint: Optional[str] = None,
+    python_executable: Optional[str] = None,
+    project_root: Optional[Path] = None,
+) -> Tuple[ExtractionBundle, CodeEntrypoint]:
+    """Describe a code build's entrypoint by running the extractor's code mode in the project's interpreter.
+
+    Nothing is rewritten: the bundle carries only the I/O inference (``pipeline`` stays empty, so
+    :func:`render_config_yaml` renders settings only).
+
+    :param target: The entrypoint's ``.py`` file.
+    :param entrypoint: Attribute name in ``target``; auto-detected when omitted.
+    :param python_executable: Interpreter to run the extractor with (see :func:`extract_via_subprocess`).
+    :param project_root: Root of the code bundle, put on ``sys.path`` like the runtime does.
+    :raises PipelineTransformError: If extraction fails.
+    :return: The extraction bundle and the entrypoint description.
+    """
+    extra = ["--mode", "code"] + (["--project-root", str(project_root)] if project_root else [])
+    raw = _run_extractor(target, entrypoint, python_executable, extra)
+    code = CodeEntrypoint(
+        attr=raw["entrypoint_attr"], kind=raw["kind"], input_schema=raw.get("input_schema"), graph=raw.get("graph")
+    )
+    return ExtractionBundle.from_dict(raw), code
+
+
+def _run_extractor(
+    target: Path, entrypoint: Optional[str], python_executable: Optional[str], extra_args: Sequence[str] = ()
+) -> dict:
+    """Run ``pipeline_extract.py`` in the pipeline's interpreter and return its JSON result."""
     target = Path(target).resolve()
     python = python_executable or detect_project_python(target)
     extractor = str(Path(__file__).with_name("pipeline_extract.py"))
@@ -532,7 +577,7 @@ def extract_via_subprocess(
     # subprocess cannot write to it (PermissionError).
     with tempfile.TemporaryDirectory() as tmp_dir:
         out_path = Path(tmp_dir) / "bundle.json"
-        cmd = [python, extractor, str(target), "--out", str(out_path)]
+        cmd = [python, extractor, str(target), "--out", str(out_path), *extra_args]
         if entrypoint:
             cmd += ["--entrypoint", entrypoint]
         logger.debug("Extracting pipeline via subprocess.", python=python, target=str(target))
@@ -541,7 +586,8 @@ def extract_via_subprocess(
             message = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
             raise PipelineTransformError(f"Failed to load the pipeline using interpreter '{python}':\n{message}")
         _forward_extractor_warnings(completed.stderr)
-        return ExtractionBundle.from_dict(json.loads(out_path.read_text(encoding="utf-8")))
+        result: dict = json.loads(out_path.read_text(encoding="utf-8"))
+        return result
 
 
 def _forward_extractor_warnings(stderr: str) -> None:

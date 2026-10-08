@@ -95,31 +95,47 @@ def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any
     """
     from haystack import Pipeline
 
-    # AsyncPipeline was removed in Haystack 3.0 (folded into Pipeline); tolerate its absence.
-    pipeline_types: tuple[type, ...]
+    pipeline_types = _pipeline_types()
+    # A bare Agent is a deployable entrypoint too; accept it here and wrap it into a Pipeline below.
+    agent_types = _agent_types()
+    module = _import_module(path)
+
+    resolved = _resolve_pipeline(module, entrypoint, pipeline_types + agent_types)
+    pipeline = _wrap_agent_if_needed(resolved, Pipeline, agent_types)
+    _reject_index_pipeline(pipeline)
+    return pipeline
+
+
+def _pipeline_types() -> tuple:
+    """Return the Haystack pipeline classes. AsyncPipeline was folded into Pipeline in Haystack 3.0."""
+    from haystack import Pipeline
+
     try:
         from haystack import AsyncPipeline
 
-        pipeline_types = (Pipeline, AsyncPipeline)
+        return (Pipeline, AsyncPipeline)
     except ImportError:
-        pipeline_types = (Pipeline,)
+        return (Pipeline,)
 
-    # A bare Agent is a deployable entrypoint too; accept it here and wrap it into a Pipeline below.
-    agent_types = _agent_types()
 
+def _import_module(path: Path, project_root: Optional[Path] = None) -> Any:
+    """Import the user's ``.py`` file as a module, with its directory (and ``project_root``) on ``sys.path``.
+
+    :raises PipelineTransformError: If the file is missing or importing it fails.
+    """
     path = path.resolve()
     if not path.is_file():
         raise PipelineTransformError(f"Pipeline file not found: {path}")
 
-    project_root = path.parent
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
+    for root in (project_root, path.parent):
+        if root is not None and str(Path(root).resolve()) not in sys.path:
+            sys.path.insert(0, str(Path(root).resolve()))
 
     # Importing the module runs its top-level code, which often constructs components (e.g. an
     # OpenAIGenerator) that read secrets via ``Secret.from_env_var`` and fail to build without them.
     # Load a project ``.env`` so those pipelines import cleanly, mirroring the CLI's own .env
     # loading. Already-set environment variables always win.
-    _load_project_dotenv(project_root)
+    _load_project_dotenv(path.parent)
 
     module_name = path.stem
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -137,11 +153,7 @@ def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any
         ) from err
     except Exception as err:  # noqa: BLE001 - surface the user's import error verbatim
         raise PipelineTransformError(f"Failed to import {path}: {err.__class__.__name__}: {err}.") from err
-
-    resolved = _resolve_pipeline(module, entrypoint, pipeline_types + agent_types)
-    pipeline = _wrap_agent_if_needed(resolved, Pipeline, agent_types)
-    _reject_index_pipeline(pipeline)
-    return pipeline
+    return module
 
 
 # Name given to the agent component when a bare Agent is compiled into a Pipeline.
@@ -178,16 +190,21 @@ def _wrap_agent_if_needed(obj: Any, pipeline_cls: Any, agent_types: tuple) -> An
 
 def _resolve_pipeline(module: Any, entrypoint: Optional[str], pipeline_types: tuple) -> Any:
     """Find the single pipeline instance/factory in ``module``."""
+    return _resolve_entrypoint(module, entrypoint, pipeline_types)[1]
+
+
+def _resolve_entrypoint(module: Any, entrypoint: Optional[str], pipeline_types: tuple) -> tuple[str, Any]:
+    """Find the single pipeline instance/factory in ``module`` and return ``(attribute name, object)``."""
     if entrypoint is not None:
         if not hasattr(module, entrypoint):
             raise PipelineTransformError(f"Entrypoint '{entrypoint}' not found in the pipeline file.")
-        return _coerce_to_pipeline(getattr(module, entrypoint), entrypoint, pipeline_types)
+        return entrypoint, _coerce_to_pipeline(getattr(module, entrypoint), entrypoint, pipeline_types)
 
     instances = {
         name: obj for name, obj in vars(module).items() if not name.startswith("_") and isinstance(obj, pipeline_types)
     }
     if len(instances) == 1:
-        return next(iter(instances.values()))
+        return next(iter(instances.items()))
     if len(instances) > 1:
         raise PipelineTransformError(
             f"Multiple pipeline instances found ({', '.join(sorted(instances))}). Disambiguate with --entrypoint."
@@ -195,7 +212,7 @@ def _resolve_pipeline(module: Any, entrypoint: Optional[str], pipeline_types: tu
 
     factories = _find_factories(module, pipeline_types)
     if len(factories) == 1:
-        return next(iter(factories.values()))
+        return next(iter(factories.items()))
     if len(factories) > 1:
         raise PipelineTransformError(
             f"Multiple pipeline factories found ({', '.join(sorted(factories))}). Disambiguate with --entrypoint."
@@ -1708,16 +1725,143 @@ def extract_from_file(path: Path, entrypoint: Optional[str] = None) -> dict:
     return extract_from_pipeline(pipeline, path.resolve().parent)
 
 
+# --------------------------------------------------------------------------- #
+# Code mode: describe the entrypoint of a code build, rewrite nothing
+# --------------------------------------------------------------------------- #
+#: Name the runtime gives a SuperComponent entrypoint when it wraps it into a one-component pipeline.
+SUPER_COMPONENT_NAME = "app"
+
+_JSON_SCHEMA_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean", dict: "object", list: "array"}
+
+
+def _super_component_types() -> tuple:
+    """Return the SuperComponent base class (``@super_component`` classes derive from it too), if any."""
+    try:
+        from haystack.core.super_component.super_component import _SuperComponent
+    except ImportError:
+        return ()
+    return (_SuperComponent,)
+
+
+def extract_code_entrypoint(path: Path, entrypoint: Optional[str] = None, project_root: Optional[Path] = None) -> dict:
+    """Import ``path`` and describe its entrypoint for a code build. No code is rewritten.
+
+    Agents and SuperComponents are wrapped into the same one-component pipeline the runtime builds
+    (``agent`` / ``app``), so the platform ``inputs``/``outputs`` come out of the same name-based
+    inference as a YAML build.
+
+    :param path: The entrypoint's ``.py`` file.
+    :param entrypoint: Attribute name; auto-detected when omitted.
+    :param project_root: Root of the code bundle, put on ``sys.path`` as the runtime does.
+    :return: A bundle with ``kind``, ``entrypoint_attr``, ``input_schema``, ``graph`` and the I/O keys
+        of :func:`extract_from_pipeline` (minus ``pipeline``).
+    """
+    from haystack import Pipeline
+
+    pipeline_types = _pipeline_types()
+    agent_types = _agent_types()
+    module = _import_module(path, project_root)
+    name, obj = _resolve_entrypoint(module, entrypoint, pipeline_types + agent_types + _super_component_types())
+
+    if isinstance(obj, pipeline_types):
+        kind, pipeline, graph_source, flat = "pipeline", obj, obj, None
+    else:
+        flat = AGENT_COMPONENT_NAME if agent_types and isinstance(obj, agent_types) else SUPER_COMPONENT_NAME
+        kind = "agent" if flat == AGENT_COMPONENT_NAME else "super_component"
+        pipeline = Pipeline()
+        pipeline.add_component(flat, obj)
+        graph_source = getattr(obj, "pipeline", None) if kind == "super_component" else pipeline
+
+    return {
+        "kind": kind,
+        "entrypoint_attr": name,
+        "input_schema": _input_schema(pipeline, flat),
+        "graph": _graph(graph_source),
+        "inferred_inputs": infer_inputs(pipeline),
+        "inferred_outputs": infer_outputs(pipeline),
+        "available_inputs": available_inputs(pipeline),
+        "available_outputs": available_outputs(pipeline),
+        "mandatory_inputs": mandatory_inputs(pipeline),
+        "dependencies": _haystack_dependency(),
+        "suggested_pipeline_output_type": "chat" if kind == "agent" else None,
+    }
+
+
+def _graph(pipeline: Any) -> Optional[dict]:
+    """Snapshot ``pipeline.to_dict()`` as JSON-safe data; ``None`` with a warning when it fails."""
+    try:
+        graph: dict = json.loads(json.dumps(pipeline.to_dict(), default=str))
+        return graph
+    except Exception as err:  # noqa: BLE001 - the graph is a read-only nicety
+        logger.warning("Could not snapshot the pipeline graph (%s); deploying without it.", err)
+        return None
+
+
+def _input_schema(pipeline: Any, flat_component: Optional[str]) -> Optional[dict]:
+    """Best-effort JSON schema of the ``/run`` payload: flat for a wrapped entrypoint, nested otherwise."""
+    try:
+        sockets_by_component = pipeline.inputs()
+        if flat_component is not None:
+            return _object_schema(sockets_by_component.get(flat_component, {}))
+        return {
+            "type": "object",
+            "properties": {comp: _object_schema(sockets) for comp, sockets in sockets_by_component.items()},
+        }
+    except Exception as err:  # noqa: BLE001
+        logger.warning("Could not build the input schema (%s); deploying without one.", err)
+        return None
+
+
+def _object_schema(sockets: dict) -> dict:
+    """JSON schema of one component's input sockets."""
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {name: _json_schema(info.get("type")) for name, info in sockets.items()},
+    }
+    required = [name for name, info in sockets.items() if info.get("is_mandatory")]
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def _json_schema(type_: Any) -> dict:
+    """Map a socket type onto JSON schema. Anything beyond the basic types becomes a description only.
+
+    ponytail: hand-rolled for the basic types; switch to pydantic's TypeAdapter if callers need full schemas.
+    """
+    import types
+    import typing
+
+    origin = typing.get_origin(type_) or type_
+    args = typing.get_args(type_)
+    if origin in (typing.Union, getattr(types, "UnionType", None)):
+        non_none = [arg for arg in args if arg is not type(None)]
+        if len(non_none) == 1:
+            return _json_schema(non_none[0])
+    if origin in _JSON_SCHEMA_TYPES:
+        schema: dict[str, Any] = {"type": _JSON_SCHEMA_TYPES[origin]}
+        if origin is list and args:
+            schema["items"] = _json_schema(args[0])
+        return schema
+    display = _type_display(type_) if type_ is not None and type_ is not Any else None
+    return {"description": display} if display else {}
+
+
 def main(argv: Optional[list] = None) -> int:
     """CLI entrypoint: write the extraction bundle for ``target`` to ``--out`` as JSON."""
     parser = argparse.ArgumentParser(description="Extract a deployable pipeline bundle from a .py file.")
     parser.add_argument("target", type=Path, help="Path to the pipeline .py file.")
     parser.add_argument("--out", type=Path, required=True, help="Path to write the JSON bundle to.")
     parser.add_argument("--entrypoint", default=None, help="Pipeline instance/factory name to use.")
+    parser.add_argument("--mode", choices=("yaml", "code"), default="yaml", help="Build to YAML or to code.")
+    parser.add_argument("--project-root", type=Path, default=None, help="Code build root (code mode).")
     args = parser.parse_args(argv)
 
     try:
-        bundle = extract_from_file(args.target, args.entrypoint)
+        if args.mode == "code":
+            bundle = extract_code_entrypoint(args.target, args.entrypoint, args.project_root)
+        else:
+            bundle = extract_from_file(args.target, args.entrypoint)
     except PipelineTransformError as err:
         print(str(err), file=sys.stderr)
         return 2
