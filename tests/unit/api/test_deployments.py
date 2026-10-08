@@ -553,7 +553,8 @@ class TestOutputTypeParsing:
 
 
 def _typed(status: int, code: str) -> Response:
-    return _resp(status, json={"detail": {"code": code, "message": f"{code} message"}})
+    # hub-api's error handler returns a dict ``detail`` as the whole body.
+    return _resp(status, json={"code": code, "message": f"{code} message"})
 
 
 @pytest.mark.asyncio
@@ -569,6 +570,14 @@ class TestCodeBundles:
         self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
         mocked_haystack_enterprise_api.get.return_value = _typed(codes.NOT_FOUND, "CODE_BUNDLE_NOT_FOUND")
+        assert await deployments_api.get_code_bundle("ws", "abc") is None
+
+    async def test_nested_typed_detail_is_also_accepted(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        mocked_haystack_enterprise_api.get.return_value = _resp(
+            codes.NOT_FOUND, json={"detail": {"code": "CODE_BUNDLE_NOT_FOUND", "message": "m"}}
+        )
         assert await deployments_api.get_code_bundle("ws", "abc") is None
 
     async def test_typed_403_means_disabled(

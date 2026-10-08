@@ -781,14 +781,21 @@ class PaginatedDeployments:
 
 
 def _typed_error(response: Response) -> Tuple[Optional[str], Optional[str]]:
-    """Return ``(code, message)`` of a typed error body ``{"detail": {"code", "message"}}``, else ``(None, None)``."""
+    """Return ``(code, message)`` of a typed error body, else ``(None, None)``.
+
+    hub-api renders a dict ``detail`` as the whole body (``{"code", "message"}``); the FastAPI
+    default nests it (``{"detail": {"code", "message"}}``). Both are accepted.
+    """
     try:
-        detail = response.json().get("detail")
-    except (ValueError, AttributeError):
+        body = response.json()
+    except ValueError:
         return None, None
-    if not isinstance(detail, dict) or not isinstance(detail.get("code"), str):
+    if not isinstance(body, dict):
         return None, None
-    return detail["code"], detail.get("message")
+    error = body["detail"] if isinstance(body.get("detail"), dict) else body
+    if not isinstance(error.get("code"), str):
+        return None, None
+    return error["code"], error.get("message")
 
 
 def _parse_validation_issues(body: Any) -> List[PipelineValidationIssue]:
