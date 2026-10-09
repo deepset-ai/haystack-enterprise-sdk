@@ -130,6 +130,15 @@ def test_authorization_code_login() -> None:
     assert credentials.revocation_endpoint == METADATA["revocation_endpoint"]
 
 
+def test_login_page_states_and_escapes_error_text() -> None:
+    assert "You're logged in" in oauth._login_page(True).decode()
+
+    failed = oauth._login_page(False, "<script>alert(1)</script>").decode()
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in failed
+    assert "<script>" not in failed
+    assert "<pre>" not in oauth._login_page(False).decode()
+
+
 def test_authorization_code_login_times_out() -> None:
     with (
         patch("haystack_enterprise_sdk._api.oauth.discover", return_value=METADATA),
