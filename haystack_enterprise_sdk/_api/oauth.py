@@ -10,11 +10,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import html
 import json
 import secrets
 import time
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from string import Template
 from typing import Any, AsyncGenerator, Callable, Dict, Optional
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -25,11 +27,74 @@ from haystack_enterprise_sdk._api.config import API_VERSION_PATH, CREDENTIALS_PA
 # Refresh this many seconds before the access token expires, so a request never goes out with a dying token.
 EXPIRY_SKEW_SECONDS = 60
 
-LOGIN_SUCCESS_PAGE = (
-    b"<!doctype html><title>Logged in</title>"
-    b"<p>You're logged in to Haystack Enterprise Platform. You can close this tab and return to your terminal.</p>"
+# The page the browser lands on after the redirect. Self-contained (it is served from 127.0.0.1 and must work
+# offline): inline CSS, system fonts, and the ``h`` mark from docs/_images/favicon.svg inlined.
+# Follows the platform UI tokens (light mode only): canvas #F5F5F6, text #222839, 4px radius, 14px system font,
+# status colours #13B391 / #D40B29. Brand blue #1F49D4 is reserved for actions and links, and the page has none.
+LOGIN_PAGE = Template(
+    """<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$title</title>
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f5f5f6; color: #222839;
+         font: 14px/22px system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { box-sizing: border-box; width: min(400px, 100% - 32px); padding: 32px; text-align: center;
+         background: #fff; border-radius: 4px; box-shadow: 0 6px 16px rgba(9, 16, 35, .08); }
+  svg { width: 32px; height: 32px; }
+  .status { display: grid; place-items: center; width: 32px; height: 32px; margin: 24px auto 12px;
+            border-radius: 50%; background: $status; color: #fff; font-size: 18px; }
+  h1 { margin: 0 0 4px; font-size: 20px; line-height: 28px; font-weight: 600; }
+  p { margin: 0; color: rgba(9, 16, 35, .58); }
+  code, pre { font: 13px SFMono-Regular, Consolas, monospace; }
+  code { padding: 2px 4px; border-radius: 4px; background: #f5f5f6; }
+  pre { margin: 24px 0 0; padding: 8px 12px; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere;
+        border-radius: 4px; background: #f5f5f6; color: #222839; }
+</style>
+<main>
+  <svg viewBox="0 0 77.55 77.55" role="img" aria-label="Haystack Enterprise Platform">
+    <rect width="77.55" height="77.55" rx="11.63" fill="#2558ff"/>
+    <path fill="#fff" fill-rule="evenodd" d="m31.12,34.79v-15.03h-4.42v15.03h.02v4.42h19.84v18.58h4.42v-23h-19.86Z"/>
+    <circle fill="#fff" cx="28.92" cy="55.46" r="2.33"/>
+    <rect fill="#fff" x="26.69" y="36.51" width="4.42" height="13.46"/>
+  </svg>
+  <div class="status" aria-hidden="true">$icon</div>
+  <h1>$heading</h1>
+  <p>$message</p>
+  $detail
+</main>
+"""
 )
-LOGIN_FAILURE_PAGE = b"<!doctype html><title>Login failed</title><p>Login failed. Check your terminal.</p>"
+
+
+def _login_page(ok: bool, detail: str = "") -> bytes:
+    """Render the page shown in the browser once the login redirect arrives.
+
+    :param ok: Whether the login succeeded.
+    :param detail: The authorization server's error text. It comes from the redirect URL, so it is escaped.
+    :return: The HTML document.
+    """
+    if ok:
+        page = {
+            "title": "Logged in",
+            "icon": "&#10003;",
+            "heading": "You're logged in",
+            "message": "Return to your terminal to continue.",
+            "status": "#13b391",
+            "detail": "",
+        }
+    else:
+        page = {
+            "title": "Login failed",
+            "icon": "&#10005;",
+            "heading": "Login failed",
+            "message": "Run <code>haystack-enterprise login</code> to try again.",
+            "status": "#d40b29",
+            "detail": f"<pre>{html.escape(detail)}</pre>" if detail else "",
+        }
+    return LOGIN_PAGE.substitute(page).encode()
+
 
 DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 
@@ -196,8 +261,11 @@ def authorization_code_login(
             received.update(params)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            # Second line of defence for the reflected error text: no scripts, no network.
+            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
             self.end_headers()
-            self.wfile.write(LOGIN_FAILURE_PAGE if "error" in params else LOGIN_SUCCESS_PAGE)
+            error = params.get("error_description") or params.get("error", "")
+            self.wfile.write(_login_page("error" not in params, error))
 
         def log_message(self, format: str, *args: Any) -> None:  # pylint: disable=redefined-builtin
             """Keep the default request log off the terminal."""
