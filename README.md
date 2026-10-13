@@ -11,6 +11,15 @@
 
 Python SDK and CLI for the Haystack Enterprise Platform.
 
+## Let your agent set it up
+
+Paste this into Claude Code, Codex, Cursor, or another coding agent. It installs the CLI, walks you
+through logging in, and connects the deepset MCP server:
+
+```text
+Set up Haystack Enterprise for me. Fetch https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/get-started.md and follow it.
+```
+
 ## Installation
 
 On macOS or Linux, one command installs the CLI. It installs [uv](https://docs.astral.sh/uv/) first if

@@ -16,6 +16,8 @@ API_URL                  # optional, defaults to https://api.cloud.deepset.ai
 DEFAULT_WORKSPACE_NAME
 ```
 
+To check credentials without prompting, run `haystack-enterprise whoami`; exit 1 means not logged in.
+
 Precedence, highest first: an explicit `--api-key` / `--workspace-name` argument, then a real
 environment variable, then `./.env`, then `~/.haystack-enterprise/.env`, then the legacy
 `~/.deepset-cloud/.env` from deepset-cloud-sdk 1.x.
