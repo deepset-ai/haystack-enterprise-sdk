@@ -72,6 +72,9 @@ def _decode_jwt_expiry(token: str) -> Optional[datetime]:
         return None
 
 
+_NEW_API_KEY_HINT = "Set a new key in API_KEY or run `haystack-enterprise login --api-key <KEY>`."
+
+
 def _unauthorized_message(api_key: str) -> str:
     """Build a friendly 401 message, naming an expired API key explicitly when the token says so.
 
@@ -82,10 +85,13 @@ def _unauthorized_message(api_key: str) -> str:
         return "Authentication failed. Your login session expired or was revoked. Run `haystack-enterprise login`."
     expiry = _decode_jwt_expiry(api_key)
     if expiry is None:
-        return "Authentication failed. Your API key may be missing, invalid, or expired."
+        return f"Authentication failed. Your API key may be missing, invalid, or expired. {_NEW_API_KEY_HINT}"
     if expiry <= datetime.now(timezone.utc):
-        return f"Authentication failed. Your API key expired on {expiry.isoformat(timespec='seconds')}. Generate a new one."
-    return "Authentication failed. Your API key may be invalid, revoked, or issued for a different environment."
+        return f"Authentication failed. Your API key expired on {expiry.isoformat(timespec='seconds')}. {_NEW_API_KEY_HINT}"
+    return (
+        "Authentication failed. Your API key may be invalid, revoked, or issued for a different environment. "
+        f"{_NEW_API_KEY_HINT}"
+    )
 
 
 def _bearer_token(headers: Dict[str, str], default: str) -> str:
@@ -120,9 +126,8 @@ def _raise_for_proxy_error(response: Response, api_key: str) -> None:
         if not _looks_like_html(response):
             return
         message = f"The Haystack Enterprise Platform returned an unexpected error (status code {response.status_code})."
-    logger.error(
-        "Haystack Enterprise Platform API returned a proxy/infrastructure error.", status_code=response.status_code
-    )
+    # debug, not error: the CLI prints ``message`` itself, so an error log would only duplicate it
+    logger.debug("Haystack Enterprise Platform API returned an error.", status_code=response.status_code)
     raise HaystackEnterpriseAPIError(response.status_code, message)
 
 

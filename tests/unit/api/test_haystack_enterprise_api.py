@@ -482,6 +482,7 @@ class TestUnauthorizedMessage:
             await api.get("default", "endpoint")
 
         assert "expired on 1970-01-01T00:00:01+00:00" in str(exc_info.value)
+        assert "haystack-enterprise login --api-key" in str(exc_info.value)
 
     async def test_not_yet_expired_jwt_says_invalid_rather_than_expired(self, mocked_client: Mock) -> None:
         config = CommonConfig(api_key=_fake_jwt(exp=9999999999), api_url="https://fake.dc.api/api/v1")
@@ -493,7 +494,8 @@ class TestUnauthorizedMessage:
 
         assert (
             str(exc_info.value)
-            == "Authentication failed. Your API key may be invalid, revoked, or issued for a different environment."
+            == "Authentication failed. Your API key may be invalid, revoked, or issued for a different environment. "
+            "Set a new key in API_KEY or run `haystack-enterprise login --api-key <KEY>`."
         )
         assert "expired on" not in str(exc_info.value)
 
@@ -505,4 +507,7 @@ class TestUnauthorizedMessage:
         with pytest.raises(HaystackEnterpriseAPIError) as exc_info:
             await haystack_enterprise_api.get("default", "endpoint")
 
-        assert str(exc_info.value) == "Authentication failed. Your API key may be missing, invalid, or expired."
+        assert str(exc_info.value) == (
+            "Authentication failed. Your API key may be missing, invalid, or expired. "
+            "Set a new key in API_KEY or run `haystack-enterprise login --api-key <KEY>`."
+        )
