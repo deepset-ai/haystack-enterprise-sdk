@@ -136,6 +136,47 @@ the revision, and for a managed service it also waits for the rollout to finish.
 haystack-enterprise deploy pipeline.py my-service
 ```
 
+### Services and revisions: what `deploy` does
+
+Two things exist on the platform. A **service** (a "deployment" in the platform UI) is the long-lived
+thing with a name and an endpoint. A **revision** is one version of your pipeline inside that service.
+A service holds many revisions and serves one of them, the active one.
+
+There is no separate `create` command. `deploy` does both jobs: it creates the service if the name is
+not taken yet, and it always pushes a new revision. Each run goes through these steps in order:
+
+1. **Validate.** The pipeline is transformed and checked against the platform. If it is invalid, the
+   command stops here and nothing is created.
+2. **Find or create the service.** The service is looked up by name in the workspace. If it exists, it
+   is reused. If not, it is created: serverless by default, provisioned with `--managed`, and tagged
+   with any `--tag`s.
+3. **Push a revision.** The transformed pipeline is stored as a new revision of the service, with your
+   `--comment` or an auto-generated one. It starts out as `PENDING`.
+4. **Activate.** The new revision becomes the one the service serves. A serverless service serves it
+   right away. For a managed service the CLI waits for the rollout. `--skip-activation` skips this
+   step.
+
+What exists on the platform after each stage:
+
+| Stage | Command | What exists on the platform afterwards |
+| ----- | ------- | -------------------------------------- |
+| Before deploying | `deploy --dry-run`, `validate`, `run` | Nothing. These commands neither create a service nor store a revision. |
+| First deploy | `deploy pipeline.py my-service` | The service `my-service`, with one revision. That revision is active, and the CLI prints the service's endpoint. |
+| First deploy, not activated | `deploy pipeline.py my-service --skip-activation` | The service, with one `PENDING` revision. Nothing is served yet. |
+| Every later deploy | `deploy pipeline.py my-service` | The same service and endpoint, with one more revision. The new revision is active. The previous one is now inactive but stays on the service. |
+| Changing the service itself | `tag-add`, `tag-remove` | The service's tags change. The mode (serverless or managed) and the sizing are set when the service is created. The CLI cannot change them later, so it rejects `--managed` and the sizing flags for an existing service. |
+
+Use `--create` and `--no-create` to check whether the service already exists. Neither flag changes
+what `deploy` does:
+
+- `--create` fails if the service already exists. It protects you from overwriting someone else's
+  service by mistake.
+- `--no-create` fails if the service does not exist. It catches a mistyped service name in CI, where it
+  would otherwise create a new service.
+
+If the service is created but pushing the revision fails (for example, because of a network error),
+the service stays on the platform with no revision. Re-run `deploy` to push one.
+
 Useful variants:
 
 ```shell
@@ -154,12 +195,10 @@ haystack-enterprise deploy pipeline.py my-service --dry-run --output out.yaml
 
 Common options:
 
-- The service is looked up by name first: if it exists the revision is pushed to it, otherwise the
-  service is created and the CLI tells you so. New services are **serverless**: they provision no
-  workload and run the active revision per request, so there is no rollout to wait for.
-- `--create` requires that the service does *not* exist yet; the command fails if the name is already
-  taken. `--no-create` is the opposite: it requires the service to exist and fails if it is missing
-  (useful in CI to catch a typo'd service name instead of provisioning a new service).
+- New services are **serverless**: they provision no workload and run the active revision per
+  request, so there is no rollout to wait for.
+- `--create` / `--no-create` require that the service does not or does already exist. See
+  [Services and revisions](#services-and-revisions-what-deploy-does).
 - `--managed` creates a managed (provisioned) service instead. Only managed services can be sized, so
   `--service-level`, `--min-replicas`, `--max-replicas`, `--cpu`, `--memory`, `--gpu` and
   `--idle-timeout` require `--managed`; passing them without `--managed`, or passing creation-only

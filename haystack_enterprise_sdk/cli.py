@@ -687,10 +687,15 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     api_url: Optional[str] = None,
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
 ) -> None:
-    """Deploy a Haystack pipeline defined in a local Python file to a service deployment.
+    """Deploy a pipeline as a new revision of a service, creating the service if it does not exist.
 
-    Transforms the pipeline (rewriting local custom components into the platform Code component),
-    then pushes it as a new revision of the given service.
+    There is no separate create command: a service is the named, long-lived endpoint, and each deploy
+    adds one revision (one version of your pipeline) to it. The steps, in order:
+    1. Transform the pipeline (rewriting local custom components into the platform Code component)
+       and validate it. If it is invalid, nothing is created.
+    2. Reuse the service if it exists, otherwise create it (serverless, or managed with --managed).
+    3. Push the pipeline as a new revision of the service.
+    4. Activate the revision so the service serves it (skipped with --skip-activation).
 
     The pipeline is loaded in your project's Python environment (auto-detected virtualenv, or the
     interpreter given by --python), so this CLI's own environment does not need your pipeline's
@@ -700,9 +705,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param service_name: Name of the target service deployment.
     :param skip_activation: Push the revision without activating it (skips the rollout and wait).
         By default the new revision is activated and the CLI waits for the rollout to finish.
-    :param create: By default the service is reused when it exists and created (serverless unless
-        --managed is passed) when it does not. Pass --create to require that it does not exist yet,
-        or --no-create to require that it already exists; either way the command fails fast.
+    :param create: A guard, not a separate create step. By default the service is reused when it
+        exists and created (serverless unless --managed is passed) when it does not. Pass --create to
+        fail if the service already exists, or --no-create to fail if it does not (catches a mistyped
+        service name in CI). Either way the check runs before anything is deployed.
     :param managed: Create the service as a managed (provisioned) deployment instead of a serverless
         one. Required to use any of the sizing options below, which serverless ignores. Only applies
         when the service is created.
