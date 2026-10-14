@@ -247,6 +247,26 @@ Send `{"model": "<workspace>/<deployment-id>", "messages": [...]}` with an `Auth
 key and you get back a server-sent-event stream of `chat.completion.chunk` objects. Any OpenAI client
 works: use everything up to and including `/deployments/v1` as its `base_url`.
 
+### Environment variables and secrets
+
+`--env` and `--env-file` set **service secrets** on the target service. They reach your pipeline as
+environment variables, so `Secret.from_env_var("OPENAI_API_KEY")` resolves to them, and they override a
+workspace or organization secret of the same name.
+
+```shell
+# a committed dotenv file, plus one value inline and one read from your shell environment
+haystack-enterprise deploy pipeline.py my-service --env-file .env.prod --env LOG_LEVEL=debug --env OPENAI_API_KEY
+```
+
+- `--env KEY=VALUE` sets a value. A bare `--env KEY` reads it from your environment and fails if it is
+  not set, which keeps the value off the command line.
+- `--env-file` reads a dotenv file. `--env` wins over it on the same name.
+- Existing service secrets are updated, new ones created, and the ones you don't pass left alone. Remove
+  a secret in the platform UI.
+- Secrets are written after validation passes and before the revision is pushed. They take effect on the
+  next request, without a redeploy.
+- `--dry-run` lists the names it would set and sends nothing.
+
 ### Optional: share a prototype link
 
 A **shareable prototype link** opens a chat UI for your pipeline. It is never created unless you ask:
@@ -386,6 +406,23 @@ appends a new line per repaint, so a multi-minute rollout becomes thousands of l
 
 Set `CI=false` (or unset it) to force the animations back on. Independently of `CI`, `run` never
 animates when its stdout is redirected, so a piped JSON payload stays parseable.
+
+To pass CI secrets to the service, expose them to the step's environment and name them with a bare
+`--env`. A GitHub Actions example:
+
+```yaml
+- name: Deploy
+  env:
+    API_KEY: ${{ secrets.HAYSTACK_ENTERPRISE_API_KEY }}
+    DEFAULT_WORKSPACE_NAME: prod
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  run: |
+    uv run haystack-enterprise deploy pipeline.py my-service \
+      --env-file .env.prod \
+      --env OPENAI_API_KEY
+```
+
+Keep non-secret, per-environment settings in a committed file such as `.env.prod`.
 
 ---
 

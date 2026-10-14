@@ -50,6 +50,10 @@ service is serving — confirm with `haystack-enterprise service-status SERVICE`
 
 Set `CI=true` to replace spinners and progress bars with plain line output.
 
+`deploy --env KEY=VALUE`, `--env KEY` (value read from the environment) and `--env-file FILE` set
+service secrets on the target service. Existing names are updated and others left alone, and the
+values apply on the next request without a redeploy.
+
 ### Two commands you cannot run unattended
 
 `list-files` and `list-upload-sessions` ask "Print more results?" after every non-empty page, without

@@ -3,6 +3,7 @@
 import functools
 import json
 import logging
+import os
 import secrets
 import sys
 import threading
@@ -21,6 +22,7 @@ import click
 import httpx
 import structlog
 import typer
+from dotenv import dotenv_values
 from tabulate import tabulate
 
 __version__ = version("haystack-enterprise-sdk")
@@ -58,6 +60,7 @@ from haystack_enterprise_sdk._api.oauth import (
     revoke,
 )
 from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, PipelineRunError
+from haystack_enterprise_sdk._api.secrets import FailedToSetServiceSecretError
 from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
 from haystack_enterprise_sdk._console import animations_enabled, status_spinner
@@ -725,6 +728,12 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     io_config: Optional[Path] = None,
     skip_io_validation: bool = False,
     skip_validation: bool = False,
+    env: Optional[List[str]] = typer.Option(
+        None, "--env", help="Service secret as KEY=VALUE, or KEY to take the value from your environment (repeatable)."
+    ),
+    env_file: Optional[Path] = typer.Option(
+        None, "--env-file", exists=True, dir_okay=False, help="Dotenv file whose variables become service secrets."
+    ),
     share: Optional[bool] = typer.Option(None, "--share/--no-share"),
     share_expiration_days: int = 30,
     share_login_required: Optional[bool] = typer.Option(None, "--share-login-required/--no-share-login-required"),
@@ -788,6 +797,12 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         output, so expect the deploy to fail validation unless you also pass --skip-validation.
     :param skip_validation: Skip validating the generated YAML against the platform before deploying.
         By default the YAML is validated and the deploy is aborted on blocking (ERROR) issues.
+    :param env: Environment variable to set on the service as a service secret, as KEY=VALUE or as a bare
+        KEY whose value is read from your environment -- the way CI systems such as GitHub Actions expose
+        their secrets, and it keeps the value off the command line. Repeatable; overrides --env-file.
+        Service secrets override workspace and organization secrets of the same name, and take effect on
+        the next request. Secrets already on the service that are not passed here are left untouched.
+    :param env_file: Dotenv file whose variables are set as service secrets, like --env.
     :param share: Create a shareable prototype link (opens a chat UI) after deploying. Not created
         unless asked for; a plain deploy prints the service's chat-completions endpoint instead.
         Because the chat UI routes through the pipeline's input/output mapping, --share is also what
@@ -816,12 +831,18 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
 
     Preview the transformed YAML without deploying:
     `haystack-enterprise deploy pipeline.py my-service --dry-run --output out.yaml`
+
+    Set service secrets from a committed file plus CI secrets exported in the environment:
+    `haystack-enterprise deploy pipeline.py my-service --env-file .env.prod --env OPENAI_API_KEY`
     """
     io_config_path = _resolve_io_config_path(target, io_config)
     io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
+    env_vars = _collect_env_vars(env or [], env_file)
 
     if dry_run:
         _deploy_dry_run(target, entrypoint, python, output, skip_io_validation, io_cfg)
+        if env_vars:
+            typer.echo(f"Would set service secrets: {', '.join(sorted(env_vars))}.", err=True)
         return
 
     # The sizing flags only mean something for a managed service being created, so a combination that
@@ -937,6 +958,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     io_resolver=spinner_resolver,
                     python_executable=python,
                     validate=not skip_validation,
+                    secrets=env_vars,
                     on_status=_on_status,
                 )
         else:
@@ -953,6 +975,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 io_resolver=io_resolver,
                 python_executable=python,
                 validate=not skip_validation,
+                secrets=env_vars,
             )
     except KeyboardInterrupt:
         typer.echo(
@@ -960,7 +983,13 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             f"Check with `haystack-enterprise service-status {service_name}`."
         )
         raise typer.Exit(0)  # noqa: B904
-    except (DeploymentFailedError, ServiceNotFoundError, PipelineTransformError, PipelineValidationError) as err:
+    except (
+        DeploymentFailedError,
+        ServiceNotFoundError,
+        PipelineTransformError,
+        PipelineValidationError,
+        FailedToSetServiceSecretError,
+    ) as err:
         typer.echo(str(err))
         raise typer.Exit(1)  # noqa: B904
 
@@ -1702,6 +1731,33 @@ def _offer_io_config_save(spec: IntegrationIoSpec, save_path: Path, inputs: dict
         typer.echo(f"Could not write {save_path}: {err}")
         return
     typer.echo(f"Saved {save_path}. Edit it freely, or delete it to map interactively again.")
+
+
+def _collect_env_vars(env: List[str], env_file: Optional[Path]) -> Dict[str, str]:
+    """Merge --env-file and --env into the service secrets to set; --env wins.
+
+    :param env: ``KEY=VALUE`` entries, or bare ``KEY`` entries read from the process environment.
+    :param env_file: Optional dotenv file.
+    :raises typer.BadParameter: If a bare ``KEY`` is not set in the environment.
+    :return: Secret name to value.
+    """
+    env_vars: Dict[str, str] = {}
+    if env_file is not None:
+        for key, value in dotenv_values(env_file).items():
+            if value is None:
+                typer.echo(f"Skipping '{key}' in {env_file}: it has no value.", err=True)
+            else:
+                env_vars[key] = value
+    for entry in env:
+        key, sep, value = entry.partition("=")
+        if not sep:
+            # Bare KEY: read it from our own environment, which is how CI secrets arrive. A missing one
+            # fails here rather than silently setting an empty secret.
+            if key not in os.environ:
+                raise typer.BadParameter(f"'{key}' is not set in the environment.", param_hint="--env")
+            value = os.environ[key]
+        env_vars[key] = value
+    return env_vars
 
 
 def _resolve_io_config_path(target: Path, io_config: Optional[Path]) -> Optional[Path]:

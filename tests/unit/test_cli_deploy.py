@@ -553,6 +553,60 @@ class TestDeployCommand:
         assert "Detached" in result.stdout
 
 
+class TestEnvSecrets:
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_env_file_and_env_merge_with_env_winning(
+        self, client_cls: Mock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        env_file = tmp_path / ".env.prod"
+        env_file.write_text("LOG_LEVEL=info\nMODEL=small\nEMPTY\n")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-from-ci")
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+
+        result = runner.invoke(
+            cli_app,
+            [
+                "deploy", FIXTURE, "svc", "--skip-activation",
+                "--env-file", str(env_file),
+                "--env", "MODEL=large",
+                "--env", "OPENAI_API_KEY",
+            ],
+        )  # fmt: skip
+
+        assert result.exit_code == 0, result.output
+        _, kwargs = client_cls.return_value.deploy.call_args
+        assert kwargs["secrets"] == {"LOG_LEVEL": "info", "MODEL": "large", "OPENAI_API_KEY": "sk-from-ci"}
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_bare_env_missing_from_environment_fails(self, client_cls: Mock, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("NOT_SET_ANYWHERE", raising=False)
+
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--env", "NOT_SET_ANYWHERE"])
+
+        assert result.exit_code == 2
+        client_cls.return_value.deploy.assert_not_called()
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_no_env_flags_sends_no_secrets(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+
+        runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--skip-activation"])
+
+        _, kwargs = client_cls.return_value.deploy.call_args
+        assert kwargs["secrets"] == {}
+
+    @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
+    def test_dry_run_lists_names_without_api(self, extract_mock: Mock) -> None:
+        extract_mock.return_value = _bundle()
+        with patch("haystack_enterprise_sdk.cli.DeploymentClient") as client_cls:
+            result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--dry-run", "--env", "A=1"])
+
+        assert result.exit_code == 0
+        assert "Would set service secrets: A." in result.output
+        assert "1" not in result.output.split("Would set service secrets")[1]
+        client_cls.assert_not_called()
+
+
 class TestDryRun:
     @patch("haystack_enterprise_sdk._service.pipeline_transform.extract_via_subprocess")
     def test_dry_run_prints_yaml_and_skips_api(self, extract_mock: Mock) -> None:
