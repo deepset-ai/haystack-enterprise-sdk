@@ -611,6 +611,40 @@ class TestCLIUtils:
         assert revoke_mock.call_args.args[0].refresh_token == "refresh"
         assert not _isolate_login.exists()
 
+    def test_whoami(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "key")
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.DEFAULT_WORKSPACE_NAME", "default")
+        response = httpx.Response(200, json=[{"name": "default"}], request=httpx.Request("GET", "https://x"))
+        with patch("haystack_enterprise_sdk.cli.httpx.get", return_value=response) as get_mock:
+            result = runner.invoke(cli_app, ["whoami"])
+        assert result.exit_code == 0
+        assert "with an API key" in result.stdout
+        assert "Default workspace: default" in result.stdout
+        assert get_mock.call_args.kwargs["headers"] == {"Authorization": "Bearer key"}
+
+    def test_whoami_warns_about_unknown_workspace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "key")
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.DEFAULT_WORKSPACE_NAME", "gone")
+        response = httpx.Response(200, json=[{"name": "default"}], request=httpx.Request("GET", "https://x"))
+        with patch("haystack_enterprise_sdk.cli.httpx.get", return_value=response):
+            result = runner.invoke(cli_app, ["whoami"])
+        assert result.exit_code == 0
+        assert "'gone' not found. Available: default" in result.stdout
+
+    def test_whoami_rejected_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "bogus")
+        response = httpx.Response(401, request=httpx.Request("GET", "https://x"))
+        with patch("haystack_enterprise_sdk.cli.httpx.get", return_value=response):
+            result = runner.invoke(cli_app, ["whoami"])
+        assert result.exit_code == 1
+        assert "Authentication failed" in result.output
+
+    def test_whoami_not_logged_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        with patch("haystack_enterprise_sdk.cli.CommonConfig", side_effect=ValueError("API key is required.")):
+            result = runner.invoke(cli_app, ["whoami"])
+        assert result.exit_code == 1
+        assert "Not logged in" in result.output
+
     def test_logout_if_not_logged_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", Path("/nonexistent/path/.env"))
         result = runner.invoke(cli_app, ["logout"])

@@ -32,6 +32,7 @@ from haystack_enterprise_sdk._api.config import (
     ENV_FILE_PATH,
     LEGACY_ENV_FILE_PATH,
     PLATFORM_URL,
+    CommonConfig,
     _write_private_file,
     normalize_base_url,
 )
@@ -41,7 +42,11 @@ from haystack_enterprise_sdk._api.deployments import (
     FailedToTagDeploymentError,
     PipelineValidationError,
 )
-from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPIError
+from haystack_enterprise_sdk._api.haystack_enterprise_api import (
+    HaystackEnterpriseAPIError,
+    _client_auth,
+    _unauthorized_message,
+)
 from haystack_enterprise_sdk._api.oauth import (
     CliOAuthConfig,
     OAuthCredentials,
@@ -482,6 +487,46 @@ def _pick_workspace(api_url: str, headers: Dict[str, str]) -> str:
     response.raise_for_status()
     names = sorted(workspace["name"] for workspace in response.json())
     return _choose("Default workspace", names, default="default") if names else "default"
+
+
+@cli_app.command()
+def whoami() -> None:
+    """Check that you're logged in, without prompting. Exits with 1 if the credentials don't work.
+
+    Example:
+    `haystack-enterprise whoami`
+    """
+    try:
+        config = CommonConfig()
+    except ValueError:
+        typer.echo("Not logged in. Run `haystack-enterprise login`.", err=True)
+        raise typer.Exit(code=1)  # noqa: B904
+    headers = {"Authorization": f"Bearer {config.api_key}"} if config.api_key else {}
+    try:
+        response = httpx.get(
+            f"{config.api_url}/{API_VERSION_PATH}/workspaces",
+            headers=headers,
+            auth=_client_auth(config),
+            timeout=30,
+        )
+    except httpx.HTTPError as err:
+        typer.echo(f"Could not reach {config.api_url}: {err}", err=True)
+        raise typer.Exit(code=1)  # noqa: B904
+    if response.status_code in (401, 403):
+        typer.echo(_unauthorized_message(config.api_key), err=True)
+        raise typer.Exit(code=1)
+    if response.is_error:
+        typer.echo(f"Request to {config.api_url} failed with status {response.status_code}.", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Logged in to {config.api_url} with {'an API key' if config.api_key else 'a login session'}.")
+    workspaces = sorted(workspace["name"] for workspace in response.json())
+    if not DEFAULT_WORKSPACE_NAME:
+        typer.echo("No default workspace set. Pass --workspace-name or set DEFAULT_WORKSPACE_NAME.")
+    elif DEFAULT_WORKSPACE_NAME in workspaces:
+        typer.echo(f"Default workspace: {DEFAULT_WORKSPACE_NAME}")
+    else:
+        typer.echo(f"Default workspace '{DEFAULT_WORKSPACE_NAME}' not found. Available: {', '.join(workspaces)}")
 
 
 @cli_app.command()

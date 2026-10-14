@@ -19,6 +19,7 @@ the command name — `haystack-enterprise --verbose upload ./my-files` works,
 | --- | --- |
 | [`login`](#login) | Store your API key, API URL and default workspace. |
 | [`logout`](#logout) | Delete the stored configuration. |
+| [`whoami`](#whoami) | Check that your credentials work, without prompting. |
 | [`upload`](#upload) | Upload a file or folder to a workspace. |
 | [`download`](#download) | Download files from a workspace. |
 | [`list-files`](#list-files) | List files in a workspace. |
@@ -63,6 +64,16 @@ Revokes the OAuth session and deletes the stored credentials and `.env` file.
 
 ```shell
 haystack-enterprise logout
+```
+
+### `whoami`
+
+Checks the stored credentials with one read-only request and prints the API URL, whether an API key or a
+login session is used, and the default workspace. It never prompts, so it's safe in scripts and for
+agents. Exits with 1 if you're not logged in or the platform rejects the credentials.
+
+```shell
+haystack-enterprise whoami
 ```
 
 ## Files
