@@ -179,6 +179,7 @@ haystack-enterprise deploy pipeline.py my-service
 | `--skip-activation` | Push the revision without rolling it out. |
 | `--skip-validation` | Skip the pre-deploy check. |
 | `--dry-run`, `--output` | Print or save the transformed YAML without deploying. Needs no credentials. |
+| `--env`, `--env-file` | Set service secrets: `KEY=VALUE`, a bare `KEY` read from your environment, or a dotenv file. |
 | `--share`, `--share-expiration-days`, `--share-login-required` | Create a shareable chat UI link. |
 
 See [Deploy a pipeline](../guides/deploy-a-pipeline.md) for the full flow.

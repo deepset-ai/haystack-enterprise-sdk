@@ -33,6 +33,7 @@ from haystack_enterprise_sdk._api.pipeline_run import (
     OnRetry,
     build_run_inputs,
 )
+from haystack_enterprise_sdk._api.secrets import ServiceSecretsAPI
 from haystack_enterprise_sdk._api.shared_prototypes import (
     SharedPrototype,
     SharedPrototypesAPI,
@@ -240,6 +241,7 @@ class DeploymentService:
         """
         self._api = api
         self._deployments = DeploymentsAPI(api)
+        self._secrets = ServiceSecretsAPI(api)
         self._workspace_name = workspace_name or DEFAULT_WORKSPACE_NAME
 
     @classmethod
@@ -264,6 +266,7 @@ class DeploymentService:
         io_resolver: Optional[pipeline_transform.IoResolver] = None,
         python_executable: Optional[str] = None,
         validate: bool = True,
+        secrets: Optional[Dict[str, str]] = None,
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         on_status: Optional[Callable[[DeploymentStatus], None]] = None,
@@ -288,6 +291,8 @@ class DeploymentService:
         :param python_executable: Interpreter used to load the pipeline (defaults to an auto-detected venv).
         :param validate: If True (default), validate the generated YAML against the platform and abort
             on blocking (ERROR) issues before creating/pushing anything. Set False to skip the check.
+        :param secrets: Environment variables to store as service secrets before the revision is pushed.
+            Existing secrets with the same name are updated; others are left untouched.
         :param timeout_s: Max seconds to poll for activation before detaching.
         :param poll_interval_s: Seconds between activation polls.
         :param on_status: Optional callback invoked with the deployment status on each poll.
@@ -321,6 +326,8 @@ class DeploymentService:
                 raise PipelineValidationError(result.errors)
 
         deployment = await self._resolve_or_create(service_name, create, create_options)
+        if secrets:
+            await self._upsert_secrets(deployment.deployment_id, secrets)
 
         revision = await self._deployments.push_revision(
             self._workspace_name,
@@ -352,6 +359,17 @@ class DeploymentService:
             raise DeploymentFailedError(deployment, self._ui_hint(service_name))
 
         return DeployResult(deployment=deployment, revision=revision, activated=True, timed_out=timed_out)
+
+    async def _upsert_secrets(self, deployment_id: UUID, secrets: Dict[str, str]) -> None:
+        """Create or update the service's secrets. Secrets not in ``secrets`` are left untouched."""
+        workspace_id = await self._secrets.get_workspace_id(self._workspace_name)
+        existing = await self._secrets.list_names(workspace_id, deployment_id)
+        for name, value in secrets.items():
+            if name in existing:
+                await self._secrets.update(workspace_id, deployment_id, existing[name], name, value)
+            else:
+                await self._secrets.create(workspace_id, deployment_id, name, value)
+        logger.info("Set service secrets.", names=sorted(secrets))
 
     async def validate(
         self,

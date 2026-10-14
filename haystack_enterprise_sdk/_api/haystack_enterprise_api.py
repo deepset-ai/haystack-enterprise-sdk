@@ -205,6 +205,7 @@ class HaystackEnterpriseAPI:
         # With OAuth, the client's auth flow sets the (refreshing) bearer token instead.
         if config.api_key:
             self.headers["Authorization"] = f"Bearer {config.api_key}"
+        self.api_url = config.api_url
         self.base_url = lambda workspace_name: self._get_base_url(config.api_url)(workspace_name)
         self.client = client
         self.max_attempts = SAFE_MODE_MAX_ATTEMPTS if config.safe_mode else DEFAULT_MAX_ATTEMPTS
@@ -330,6 +331,45 @@ class HaystackEnterpriseAPI:
             status=response.status_code,
         )
         _raise_for_proxy_error(response, _bearer_token(merged_headers, self.api_key))
+        return response
+
+    async def request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None,
+        timeout_s: int = 20,
+    ) -> Response:
+        """Make a request to ``path`` under the API root, for routes outside ``api/v1/workspaces/{name}``.
+
+        :param method: HTTP method.
+        :param path: Path relative to the API URL, e.g. ``api/v2/workspaces/<id>/...``.
+        :param params: Query parameters to pass.
+        :param json: JSON body to pass.
+        :param timeout_s: Timeout in seconds.
+        :return: Response object.
+        """
+
+        @retry(
+            retry=retry_if_exception_type(httpx.ConnectError),
+            stop=stop_after_attempt(self.max_attempts),
+            wait=wait_fixed(1),
+            reraise=True,
+        )
+        async def retry_wrapper() -> Response:
+            return await self.client.request(
+                method,
+                f"{self.api_url}/{path}",
+                params=params or {},
+                json=json,
+                headers=self.headers,
+                timeout=timeout_s,
+            )
+
+        response = await retry_wrapper()
+        logger.debug("Called Haystack Enterprise Platform API", method=method, path=path, status=response.status_code)
+        _raise_for_proxy_error(response, self.api_key)
         return response
 
     async def delete(

@@ -298,6 +298,34 @@ class TestValidation:
 
 
 @pytest.mark.asyncio
+class TestServiceSecrets:
+    async def test_upserts_secrets_before_push(self, service: MockedDeploymentService) -> None:
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+        workspace_id, existing_id = uuid4(), uuid4()
+        secrets = AsyncMock()
+        secrets.get_workspace_id.return_value = workspace_id
+        secrets.list_names.return_value = {"OLD": existing_id, "UNTOUCHED": uuid4()}
+        service._secrets = secrets  # type: ignore[assignment]
+
+        await service.deploy(FIXTURE, "svc", secrets={"OLD": "new", "NEW": "1"})
+
+        secrets.update.assert_awaited_once_with(workspace_id, deployment.deployment_id, existing_id, "OLD", "new")
+        secrets.create.assert_awaited_once_with(workspace_id, deployment.deployment_id, "NEW", "1")
+
+    async def test_failed_validation_sets_no_secrets(self, service: MockedDeploymentService) -> None:
+        service._deployments.validate_pipeline.return_value = PipelineValidationResult(issues=[_issue("ERROR")])
+        secrets = AsyncMock()
+        service._secrets = secrets  # type: ignore[assignment]
+
+        with pytest.raises(PipelineValidationError):
+            await service.deploy(FIXTURE, "svc", secrets={"A": "1"})
+
+        secrets.get_workspace_id.assert_not_called()
+
+
+@pytest.mark.asyncio
 class TestRun:
     def _mock_run_response(self, service: MockedDeploymentService, body: dict) -> AsyncMock:
         """Wire ``service._api.post`` to return an OK response carrying ``body``."""
