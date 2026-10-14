@@ -1,13 +1,9 @@
 """The CLI for the Haystack Enterprise SDK."""
 
-import asyncio
 import functools
 import json
 import logging
-import os
 import secrets
-import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -61,7 +57,6 @@ from haystack_enterprise_sdk._api.oauth import (
     fetch_cli_config,
     revoke,
 )
-from haystack_enterprise_sdk._api.oauth_proxy import oauth_proxy
 from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, PipelineRunError
 from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
@@ -532,52 +527,6 @@ def whoami() -> None:
         typer.echo(f"Default workspace: {DEFAULT_WORKSPACE_NAME}")
     else:
         typer.echo(f"Default workspace '{DEFAULT_WORKSPACE_NAME}' not found. Available: {', '.join(workspaces)}")
-
-
-@cli_app.command(context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-def mcp(ctx: typer.Context) -> None:
-    """Start the deepset MCP server over stdio, with the credentials and workspace from `haystack-enterprise login`.
-
-    Point your coding agent's MCP configuration at this command instead of copying an API key into it. Works with an
-    API key and with a browser login session. Extra arguments are passed on to `deepset-mcp`.
-
-    Example:
-    `haystack-enterprise mcp --list-tools`
-    """
-    # Read from the environment, which already holds the .env files: CommonConfig would log to stdout,
-    # and stdout belongs to the MCP protocol.
-    api_key = os.getenv("API_KEY")
-    api_url = normalize_base_url(os.getenv("API_URL", PLATFORM_URL))
-    credentials = None if api_key else OAuthCredentials.load(api_url)
-    if not api_key and credentials is None:
-        typer.echo("Not logged in. Run `haystack-enterprise login`.", err=True)
-        raise typer.Exit(code=1)
-    # GUI clients often start us without the shell's PATH; uv installs uvx next to this executable.
-    uvx = shutil.which("uvx") or shutil.which("uvx", path=str(Path(sys.argv[0]).parent))
-    if uvx is None:
-        typer.echo("uvx not found. Install uv: https://docs.astral.sh/uv/", err=True)
-        raise typer.Exit(code=1)
-    env = dict(os.environ)
-    if workspace := os.getenv("DEFAULT_WORKSPACE_NAME"):
-        env["DEEPSET_WORKSPACE"] = workspace
-    # ponytail: deepset-mcp doesn't pin mcp and breaks on mcp 2.x; drop --with once it does.
-    command = [uvx, "--with", "mcp<2", "deepset-mcp", *ctx.args]
-    if credentials is not None:
-        raise typer.Exit(asyncio.run(_run_with_oauth_proxy(credentials, command, env)))
-    env.update(DEEPSET_API_KEY=str(api_key), DEEPSET_API_URL=f"{api_url}/api")
-    raise typer.Exit(subprocess.run(command, env=env, check=False).returncode)
-
-
-async def _run_with_oauth_proxy(credentials: OAuthCredentials, command: List[str], env: Dict[str, str]) -> int:
-    """Run deepset-mcp against a local proxy that refreshes the login session; it only takes a static key.
-
-    :return: The exit code of deepset-mcp.
-    """
-    async with oauth_proxy(credentials) as (proxy_url, proxy_token):
-        process = await asyncio.create_subprocess_exec(
-            *command, env={**env, "DEEPSET_API_KEY": proxy_token, "DEEPSET_API_URL": f"{proxy_url}/api"}
-        )
-        return await process.wait()
 
 
 @cli_app.command()

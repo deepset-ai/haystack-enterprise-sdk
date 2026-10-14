@@ -20,7 +20,6 @@ the command name — `haystack-enterprise --verbose upload ./my-files` works,
 | [`login`](#login) | Store your API key, API URL and default workspace. |
 | [`logout`](#logout) | Delete the stored configuration. |
 | [`whoami`](#whoami) | Check that your credentials work, without prompting. |
-| [`mcp`](#mcp) | Start the deepset MCP server with your stored credentials. |
 | [`upload`](#upload) | Upload a file or folder to a workspace. |
 | [`download`](#download) | Download files from a workspace. |
 | [`list-files`](#list-files) | List files in a workspace. |
@@ -75,18 +74,6 @@ agents. Exits with 1 if you're not logged in or the platform rejects the credent
 
 ```shell
 haystack-enterprise whoami
-```
-
-### `mcp`
-
-Starts the [deepset MCP server](https://pypi.org/project/deepset-mcp/) over stdio with `uvx`, using the
-stored API URL and default workspace. Point your agent's MCP configuration at this command so no secret
-ends up in the client's config file. With an API key, the server gets the key. With a browser login, the
-server talks to the platform through a proxy on `127.0.0.1` that adds a fresh access token to every
-request, so the session keeps working past the token's lifetime. Extra arguments go to `deepset-mcp`.
-
-```shell
-haystack-enterprise mcp --list-tools
 ```
 
 ## Files
