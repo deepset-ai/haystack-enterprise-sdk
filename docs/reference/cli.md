@@ -26,7 +26,7 @@ the command name — `haystack-enterprise --verbose upload ./my-files` works,
 | [`get-upload-session`](#get-upload-session) | Show one upload session's status. |
 | [`validate`](#validate) | Check that a local pipeline is deployable. |
 | [`run`](#run) | Run a local pipeline in the platform sandbox. |
-| [`deploy`](#deploy) | Deploy a local pipeline as a service. |
+| [`deploy`](#deploy) | Push a local pipeline as a new revision of a service, creating the service if it does not exist. |
 | [`service-status`](#service-status) | Show a service deployment's status. |
 
 There is also a top-level `--version`, which prints the installed SDK version and exits, and
@@ -170,11 +170,16 @@ haystack-enterprise run pipeline.py --query "What is deepset?"
 haystack-enterprise deploy pipeline.py my-service
 ```
 
+There is no separate `create` command. `deploy` creates the service the first time you use a name, and
+every run, including the first, pushes and activates a new revision of that service. See
+[Services and revisions](../guides/deploy-a-pipeline.md#services-and-revisions-what-deploy-does) for what
+exists on the platform after each step.
+
 | Flag | Effect |
 | --- | --- |
-| `--managed` | Create a provisioned service rather than serverless. Required for any sizing flag. |
+| `--managed` | Create a provisioned service rather than serverless. Required for any sizing flag. Only valid when the service is created. |
 | `--service-level`, `--cpu`, `--memory`, `--gpu`, `--min-replicas`, `--max-replicas`, `--idle-timeout` | Sizing. Managed services only. |
-| `--create` / `--no-create` | Require that the service does not / does already exist. |
+| `--create` / `--no-create` | Fail if the service already exists / does not exist yet. Without either flag, `deploy` reuses the service or creates it. |
 | `--comment`, `-m` | Revision comment. Auto-generated from git when omitted. |
 | `--skip-activation` | Push the revision without rolling it out. |
 | `--skip-validation` | Skip the pre-deploy check. |
