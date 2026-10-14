@@ -645,6 +645,49 @@ class TestCLIUtils:
         assert result.exit_code == 1
         assert "Not logged in" in result.output
 
+    def test_mcp_starts_deepset_mcp_with_cli_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("API_KEY", "key")
+        monkeypatch.setenv("API_URL", "https://eu.example.com/api/v1")
+        monkeypatch.setenv("DEFAULT_WORKSPACE_NAME", "ws")
+        with (
+            patch("haystack_enterprise_sdk.cli.shutil.which", return_value="/bin/uvx"),
+            patch("haystack_enterprise_sdk.cli.subprocess.run", return_value=Mock(returncode=0)) as run_mock,
+        ):
+            result = runner.invoke(cli_app, ["mcp", "--list-tools"])
+        assert result.exit_code == 0
+        assert result.stdout == ""
+        assert run_mock.call_args.args[0][-2:] == ["deepset-mcp", "--list-tools"]
+        env = run_mock.call_args.kwargs["env"]
+        assert env["DEEPSET_API_KEY"] == "key"
+        assert env["DEEPSET_API_URL"] == "https://eu.example.com/api"
+        assert env["DEEPSET_WORKSPACE"] == "ws"
+
+    def test_mcp_with_login_session_runs_behind_proxy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("API_KEY", raising=False)
+        credentials = Mock()
+        with (
+            patch("haystack_enterprise_sdk.cli.OAuthCredentials.load", return_value=credentials),
+            patch("haystack_enterprise_sdk.cli.shutil.which", return_value="/bin/uvx"),
+            patch("haystack_enterprise_sdk.cli._run_with_oauth_proxy", new=AsyncMock(return_value=0)) as proxy_mock,
+            patch("haystack_enterprise_sdk.cli.subprocess.run") as run_mock,
+        ):
+            result = runner.invoke(cli_app, ["mcp"])
+        assert result.exit_code == 0
+        assert proxy_mock.call_args.args[0] is credentials
+        assert proxy_mock.call_args.args[1][-1] == "deepset-mcp"
+        run_mock.assert_not_called()
+
+    def test_mcp_not_logged_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("API_KEY", raising=False)
+        with (
+            patch("haystack_enterprise_sdk.cli.OAuthCredentials.load", return_value=None),
+            patch("haystack_enterprise_sdk.cli.subprocess.run") as run_mock,
+        ):
+            result = runner.invoke(cli_app, ["mcp"])
+        assert result.exit_code == 1
+        assert "Not logged in" in result.output
+        run_mock.assert_not_called()
+
     def test_logout_if_not_logged_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", Path("/nonexistent/path/.env"))
         result = runner.invoke(cli_app, ["logout"])
