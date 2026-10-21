@@ -1,10 +1,10 @@
 name: Trigger Documentation Generation
 
+# Docs are written once the code PR is merged, so the docs PR reflects what shipped.
 on:
   pull_request:
     types:
-      - opened
-      - synchronize
+      - closed
 
 # This repo is public; GitHub forbids public callers from using a reusable
 # workflow that lives in a private repo (dc-docs). Private repos such as
@@ -12,7 +12,7 @@ on:
 # steps here in sync with deepset-ai/dc-docs/.github/workflows/generate-docs.yml.
 jobs:
   trigger-docs:
-    if: github.actor != 'dependabot[bot]' && github.event.pull_request.draft == false
+    if: github.event.pull_request.merged == true && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Check out dc-docs
