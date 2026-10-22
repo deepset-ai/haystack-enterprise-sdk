@@ -1622,3 +1622,13 @@ class TestSpinnerPausedResolver:
         assert result == ({"query": ["a.q"]}, {"answers": "b.a"})
         # The underlying resolver stays introspectable.
         assert getattr(wrapped, "__wrapped__") is inner
+
+
+def test_packaged_cli_reports_itself_as_the_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    from haystack_enterprise_sdk import cli
+    from haystack_enterprise_sdk._service import deployment_service
+
+    monkeypatch.setattr(deployment_service, "CLIENT_NAME", "Haystack Enterprise SDK")
+    monkeypatch.setattr(cli, "cli_app", lambda: None)
+    cli.run_packaged()
+    assert deployment_service.CLIENT_NAME == "Haystack Enterprise CLI"

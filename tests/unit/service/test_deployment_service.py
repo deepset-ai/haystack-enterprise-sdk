@@ -1,9 +1,10 @@
 """Tests for the deployment service orchestration."""
 
+import json
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Optional, Tuple, cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 from uuid import UUID, uuid4
 
 import pytest
@@ -28,6 +29,8 @@ from haystack_enterprise_sdk._service.deployment_service import (
     ServiceNotFoundError,
     _commit_url,
     _git,
+    _repo_id,
+    collect_source_metadata,
     default_revision_comment,
 )
 
@@ -104,7 +107,7 @@ class TestResolveAndPush:
         assert result.activated is False
         assert result.timed_out is False
         service._deployments.push_revision.assert_awaited_once_with(
-            "ws", deployment.deployment_id, "components: {}\n", "Bump embedder"
+            "ws", deployment.deployment_id, "components: {}\n", "Bump embedder", source_metadata=ANY
         )
         service._deployments.activate_revision.assert_not_called()
 
@@ -597,82 +600,84 @@ class TestCreateSharedPrototype:
         assert 6.9 < delta_days < 7.1
 
 
-class TestCommitUrl:
+class TestRepoId:
     @pytest.mark.parametrize(
         ("remote", "expected"),
         [
-            ("git@github.com:org/repo.git", "https://github.com/org/repo/commit/" + "a" * 40),
-            ("https://github.com/org/repo.git", "https://github.com/org/repo/commit/" + "a" * 40),
-            ("https://user@github.com/org/repo", "https://github.com/org/repo/commit/" + "a" * 40),
-            ("ssh://git@gitlab.com/group/sub/repo.git", "https://gitlab.com/group/sub/repo/-/commit/" + "a" * 40),
-            ("https://bitbucket.org/org/repo", "https://bitbucket.org/org/repo/commits/" + "a" * 40),
-            ("git@git.internal.example.com:org/repo.git", None),
+            ("https://github.com/org/repo.git", "github.com/org/repo"),
+            ("git@github.com:org/repo.git", "github.com/org/repo"),
+            ("https://GitHub.com/Org/Repo.git/", "github.com/Org/Repo"),
+            ("https://user@bitbucket.org/org/repo.git", "bitbucket.org/org/repo"),
+            ("ssh://git@gitlab.com/group/sub/repo.git", "gitlab.com/group/sub/repo"),
+            ("ssh://git@git.corp.example:2222/team/repo.git", "git.corp.example/team/repo"),
+            ("https://git.corp.example:8443/team/sub/repo", "git.corp.example/team/sub/repo"),
+            ("git@git.internal.example.com:org/repo.git", "git.internal.example.com/org/repo"),
+            ("git@host:/abs/repo.git", "host/abs/repo"),
+            # scp syntax has no port: a numeric first path segment is part of the path.
+            ("git@github.com:12345/repo.git", "github.com/12345/repo"),
+            # Credentials never survive, however the URL is shaped.
+            ("https://oauth2:glpat-XXXX@gitlab.com/org/repo.git", "gitlab.com/org/repo"),
+            ("https://x-access-token:ghs_XXXX@github.com/org/repo", "github.com/org/repo"),
+            ("https://gitlab-ci-token:glpat-ZZZZ@gitlab.com:8443/org/repo.git", "gitlab.com/org/repo"),
+            ("https://user:p@ss@gitlab.com/org/repo.git", "gitlab.com/org/repo"),
+            ("https://user:p%40ss@gitlab.com/org/repo.git", "gitlab.com/org/repo"),
+            # Anything that could leak a credential or a local path is omitted rather than guessed at.
+            ("https://tok@github.com", None),
+            ("https://github.com", None),
+            ("https://user:pa/ss@host/org/repo", None),
+            ("https://gitlab.com/org/repo.git?private_token=glpat-QQQQ", None),
+            ("file:///srv/git/repo.git", None),
             ("/srv/git/repo.git", None),
+            ("../relative/repo.git", None),
+            ("C:\\repos\\proj", None),
+            ("ssh://git@[::1]:2222/org/repo", None),
+            ("", None),
+            (None, None),
         ],
     )
-    def test_commit_url(self, remote: str, expected: Optional[str]) -> None:
-        assert _commit_url(remote, "a" * 40) == expected
+    def test_repo_id(self, remote: Optional[str], expected: Optional[str]) -> None:
+        assert _repo_id(remote) == expected
+
+
+class TestCommitUrl:
+    @pytest.mark.parametrize(
+        ("repo", "expected"),
+        [
+            ("github.com/org/repo", "https://github.com/org/repo/commit/" + "a" * 40),
+            ("github.com/12345/repo", "https://github.com/12345/repo/commit/" + "a" * 40),
+            ("gitlab.com/group/sub/repo", "https://gitlab.com/group/sub/repo/-/commit/" + "a" * 40),
+            ("bitbucket.org/org/repo", "https://bitbucket.org/org/repo/commits/" + "a" * 40),
+            ("git.internal.example.com/org/repo", None),
+        ],
+    )
+    def test_commit_url(self, repo: str, expected: Optional[str]) -> None:
+        assert _commit_url(repo, "a" * 40) == expected
 
 
 class TestDefaultRevisionComment:
-    @staticmethod
-    def _patch_git(monkeypatch: pytest.MonkeyPatch, outputs: Dict[Tuple[str, ...], str]) -> None:
-        """Replace _git with a stand-in answering from ``outputs``, keyed by the git arguments."""
+    SHA = "a1b2c3d4" + "0" * 32
+    BASE = "Deployed pipeline.py via haystack-enterprise CLI"
 
-        def _fake_git(_target_dir: Path, *args: str) -> Optional[str]:
-            return outputs.get(args)
-
-        monkeypatch.setattr("haystack_enterprise_sdk._service.deployment_service._git", _fake_git)
-
-    def test_includes_branch_and_commit_link(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._patch_git(
-            monkeypatch,
-            {
-                ("rev-parse", "HEAD"): "a1b2c3d4" + "0" * 32,
-                ("rev-parse", "--abbrev-ref", "HEAD"): "main",
-                ("remote", "get-url", "origin"): "git@github.com:org/repo.git",
-            },
-        )
-        comment = default_revision_comment(FIXTURE)
-        assert comment == (
-            "Deployed pipeline.py via haystack-enterprise CLI (main@a1b2c3d) "
-            f"https://github.com/org/repo/commit/a1b2c3d4{'0' * 32}"
+    def test_includes_branch_and_commit_link(self) -> None:
+        git = {"repo": "github.com/org/repo", "branch": "main", "sha": self.SHA}
+        assert (
+            default_revision_comment(FIXTURE, git)
+            == f"{self.BASE} (main@a1b2c3d) https://github.com/org/repo/commit/{self.SHA}"
         )
 
-    def test_unknown_remote_host_omits_link(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._patch_git(
-            monkeypatch,
-            {
-                ("rev-parse", "HEAD"): "a1b2c3d4" + "0" * 32,
-                ("rev-parse", "--abbrev-ref", "HEAD"): "main",
-                ("remote", "get-url", "origin"): "git@git.internal.example.com:org/repo.git",
-            },
-        )
-        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI (main@a1b2c3d)"
+    def test_unknown_remote_host_omits_link(self) -> None:
+        git = {"repo": "git.internal.example.com/org/repo", "branch": "main", "sha": self.SHA}
+        assert default_revision_comment(FIXTURE, git) == f"{self.BASE} (main@a1b2c3d)"
 
-    def test_no_origin_remote_omits_link(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._patch_git(
-            monkeypatch,
-            {
-                ("rev-parse", "HEAD"): "a1b2c3d4" + "0" * 32,
-                ("rev-parse", "--abbrev-ref", "HEAD"): "main",
-            },
-        )
-        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI (main@a1b2c3d)"
+    def test_no_remote_omits_link(self) -> None:
+        assert default_revision_comment(FIXTURE, {"branch": "main", "sha": self.SHA}) == f"{self.BASE} (main@a1b2c3d)"
 
-    def test_detached_head_shows_sha_only(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._patch_git(
-            monkeypatch,
-            {
-                ("rev-parse", "HEAD"): "a1b2c3d4" + "0" * 32,
-                ("rev-parse", "--abbrev-ref", "HEAD"): "HEAD",
-            },
-        )
-        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI (a1b2c3d)"
+    def test_detached_head_shows_sha_only(self) -> None:
+        assert default_revision_comment(FIXTURE, {"sha": self.SHA}) == f"{self.BASE} (a1b2c3d)"
 
-    def test_without_git_falls_back_to_plain_comment(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._patch_git(monkeypatch, {})
-        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI"
+    def test_without_a_commit_falls_back_to_plain_comment(self) -> None:
+        assert default_revision_comment(FIXTURE, {}) == self.BASE
+        assert default_revision_comment(FIXTURE, {"branch": "main"}) == self.BASE
 
 
 class TestGitHelper:
@@ -696,3 +701,141 @@ class TestGitHelper:
 
     def test_returns_stripped_stdout(self) -> None:
         assert _git(Path(__file__).parent, "rev-parse", "--abbrev-ref", "HEAD")
+
+
+class TestCollectSourceMetadata:
+    SHA = "a1b2c3d4" + "0" * 32
+    INSIDE = ("rev-parse", "--is-inside-work-tree", "--show-prefix")
+    STATUS = ("status", "--porcelain", "--branch")
+    BRANCH = ("symbolic-ref", "--short", "-q", "HEAD")
+    REPO_OUTPUTS = {
+        INSIDE: "true\npipelines/",
+        ("remote", "get-url", "origin"): "git@github.com:org/repo.git",
+        BRANCH: "main",
+        ("rev-parse", "HEAD"): SHA,
+        STATUS: "## main",
+    }
+
+    @pytest.fixture(autouse=True)
+    def _not_ci(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CI", raising=False)
+
+    @staticmethod
+    def _patch_git(monkeypatch: pytest.MonkeyPatch, outputs: Dict[Tuple[str, ...], str]) -> None:
+        """Replace _git with a stand-in answering from ``outputs``, keyed by the git arguments."""
+        monkeypatch.setattr(
+            "haystack_enterprise_sdk._service.deployment_service._git", lambda _target_dir, *args: outputs.get(args)
+        )
+
+    def _without(self, *keys: Tuple[str, ...]) -> Dict[Tuple[str, ...], str]:
+        return {k: v for k, v in self.REPO_OUTPUTS.items() if k not in keys}
+
+    def test_normal_checkout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(monkeypatch, self.REPO_OUTPUTS)
+        assert collect_source_metadata(FIXTURE) == {
+            "ci": False,
+            "custom": {"client": "Haystack Enterprise SDK"},
+            "git": {"repo": "github.com/org/repo", "branch": "main", "sha": self.SHA, "dirty": False},
+            "file": "pipelines/pipeline.py",
+        }
+
+    def test_dirty_tree(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(monkeypatch, {**self.REPO_OUTPUTS, self.STATUS: "## main\n M x.py"})
+        assert collect_source_metadata(FIXTURE)["git"]["dirty"] is True
+
+    def test_failed_status_does_not_claim_clean(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(monkeypatch, self._without(self.STATUS))
+        assert "dirty" not in collect_source_metadata(FIXTURE)["git"]
+
+    def test_file_at_repo_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(monkeypatch, {**self.REPO_OUTPUTS, self.INSIDE: "true"})
+        assert collect_source_metadata(FIXTURE)["file"] == "pipeline.py"
+
+    @pytest.mark.parametrize(
+        "missing",
+        [BRANCH, ("rev-parse", "HEAD"), ("remote", "get-url", "origin")],
+        ids=["detached-head", "no-commits", "no-remote"],
+    )
+    def test_omits_what_it_cannot_determine(self, monkeypatch: pytest.MonkeyPatch, missing: Tuple[str, ...]) -> None:
+        self._patch_git(monkeypatch, self._without(missing))
+        info = collect_source_metadata(FIXTURE)
+        assert len({"repo", "branch", "sha"} & set(info["git"])) == 2
+        assert info["file"] == "pipelines/pipeline.py"
+
+    def test_not_a_repo_or_no_git(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(monkeypatch, {})
+        assert collect_source_metadata(FIXTURE) == {"ci": False, "custom": {"client": "Haystack Enterprise SDK"}}
+
+    def test_self_hosted_host_with_custom_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        remote = "ssh://git@git.corp.example:2222/team/repo.git"
+        self._patch_git(monkeypatch, {**self.REPO_OUTPUTS, ("remote", "get-url", "origin"): remote})
+        assert collect_source_metadata(FIXTURE)["git"]["repo"] == "git.corp.example/team/repo"
+
+    @pytest.mark.parametrize(("value", "expected"), [("true", True), ("1", True), ("false", False), ("", False)])
+    def test_ci_flag(self, monkeypatch: pytest.MonkeyPatch, value: str, expected: bool) -> None:
+        monkeypatch.setenv("CI", value)
+        self._patch_git(monkeypatch, {})
+        assert collect_source_metadata(FIXTURE)["ci"] is expected
+
+    def test_values_are_cut_to_the_platform_limits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(
+            monkeypatch,
+            {
+                **self.REPO_OUTPUTS,
+                self.BRANCH: "b" * 1000,
+                ("remote", "get-url", "origin"): "git@github.com:" + "o" * 1000,
+                ("rev-parse", "HEAD"): "c" * 100,
+                self.INSIDE: "true\n" + "d" * 2000 + "/",
+            },
+        )
+        info = collect_source_metadata(FIXTURE)
+        assert len(info["git"]["branch"]) == 255
+        assert len(info["git"]["repo"]) == 300
+        assert len(info["git"]["sha"]) == 64
+        assert len(info["file"]) == 1024
+
+    def test_sends_only_known_keys_and_no_credentials(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        remote = "https://gitlab-ci-token:glpat-SECRET@gitlab.com/org/repo.git"
+        self._patch_git(monkeypatch, {**self.REPO_OUTPUTS, ("remote", "get-url", "origin"): remote})
+        info = collect_source_metadata(tmp_path / "pipeline.py")
+        assert set(info) <= {"ci", "custom", "git", "file"}
+        assert set(info["git"]) <= {"repo", "branch", "sha", "dirty"}
+        sent = json.dumps(info)
+        assert info["git"]["repo"] == "gitlab.com/org/repo"
+        for forbidden in ("glpat-SECRET", "gitlab-ci-token", remote, str(tmp_path)):
+            assert forbidden not in sent
+
+    def test_real_repository(self, tmp_path: Path) -> None:
+        def git(*args: str) -> None:
+            subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)  # noqa: S603, S607
+
+        git("init", "-b", "main")
+        sub = tmp_path / "svc"
+        sub.mkdir()
+        target = sub / "pipeline.py"
+        target.write_text("x = 1\n")
+
+        # No commits yet: branch and file are known, sha is not.
+        info = collect_source_metadata(target)
+        assert info["file"] == "svc/pipeline.py"
+        assert info["git"]["branch"] == "main"
+        assert "sha" not in info["git"]
+
+        git("add", ".")
+        git(
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=author@secret.example",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "init",
+        )
+        assert collect_source_metadata(target)["git"]["dirty"] is False
+        target.write_text("x = 2\n")
+        info = collect_source_metadata(target)
+        assert info["git"]["dirty"] is True
+        assert len(info["git"]["sha"]) == 40
+        assert "author@secret.example" not in json.dumps(info)

@@ -27,13 +27,18 @@ _CI_OFF = ("", "0", "false")
 T = TypeVar("T")
 
 
+def in_ci() -> bool:
+    """Whether the ``CI`` environment variable says this process runs in an automated pipeline."""
+    return os.environ.get("CI", "").strip().lower() not in _CI_OFF
+
+
 def animations_enabled() -> bool:
     """Whether this process may draw a spinner or progress bar over its own output.
 
     False in CI, which GitHub Actions, GitLab CI and Jenkins all announce by setting ``CI``. Kept as
     one predicate so every constructor in this module agrees on the answer.
     """
-    return os.environ.get("CI", "").strip().lower() in _CI_OFF
+    return not in_ci()
 
 
 def status_spinner() -> Any:

@@ -235,6 +235,30 @@ progress any time with:
 haystack-enterprise service-status my-service
 ```
 
+### What a push records about its source
+
+Every revision you push, from the CLI or the Python SDK, is stored with where it came from, so you can
+trace a running service back to its code. There is no flag and nothing to set up, and a push never fails
+because this information is missing.
+
+**Collected:**
+
+- the repository as `host/path` (for example `github.com/org/repo`), taken from the `origin` remote
+- the branch, the commit SHA, and whether the working tree has uncommitted changes
+- the pipeline file's path relative to the repository root
+- whether the push ran in an automated pipeline or by hand. A push counts as automated when `CI` is set to
+  anything other than empty, `0` or `false`. GitHub Actions, GitLab CI and CircleCI set it; if your pipeline
+  doesn't, set `CI=true`.
+- which client sent it: `Haystack Enterprise CLI` or `Haystack Enterprise SDK`
+
+Anything that can't be determined is left out: a detached HEAD has no branch, a new repository has no
+commit, a checkout without an `origin` remote has no repository, and outside a git repository (or when git
+is missing) only the CI flag and client name are sent.
+
+**Never collected:** your hostname, your operating-system user name, the commit author's name or email,
+absolute paths, or the raw remote URL. Credentials embedded in a remote, such as the job token a CI
+system adds to a GitLab URL, are dropped, as are ports.
+
 ### Calling the deployed service
 
 Once the service is serving, `deploy` prints its OpenAI-compatible chat-completions endpoint:
