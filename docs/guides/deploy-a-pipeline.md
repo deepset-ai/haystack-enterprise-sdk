@@ -228,8 +228,8 @@ A pipeline with conventionally named sockets (`query`, `answers`, `replies`, `do
 inference and asks nothing. Pin the mapping in `<pipeline>.io.yaml` (or `--io-config`) to skip the
 questions entirely; `--share` reviews the whole mapping instead (see below).
 
-If you interrupt the command (Ctrl-C) during rollout, the rollout continues on the platform. Check
-progress any time with:
+If you interrupt the command (Ctrl-C) during rollout, the rollout continues on the platform and the
+command exits 0, since you detached on purpose. Check progress any time with:
 
 ```shell
 haystack-enterprise service-status my-service
@@ -406,6 +406,19 @@ appends a new line per repaint, so a multi-minute rollout becomes thousands of l
 
 Set `CI=false` (or unset it) to force the animations back on. Independently of `CI`, `run` never
 animates when its stdout is redirected, so a piped JSON payload stays parseable.
+
+### What the job result means
+
+The exit code of `deploy` answers "is the new revision serving?", so a CI job that passes can be trusted:
+
+- **Exit 0**: the revision is serving (a serverless service activated it, or a managed rollout reached
+  `DEPLOYED` or `IDLE`), or you chose not to activate it with `--skip-activation`, which pushes the revision
+  and says so. Interrupting with Ctrl-C also exits 0.
+- **Exit 1**: the rollout failed, **or it did not finish within the wait limit** (10 minutes). In the second
+  case the rollout continues on the platform and the service may still come up; check with
+  `haystack-enterprise service-status my-service`, then re-run the job or fix the service.
+
+To push a revision without waiting for a rollout, use `--skip-activation` and activate it later.
 
 To pass CI secrets to the service, expose them to the step's environment and name them with a bare
 `--env`. A GitHub Actions example:

@@ -1010,7 +1010,8 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         )
     elif result.timed_out:
         typer.echo(
-            f"Activation of '{service_name}' is still in progress. Detached; the rollout continues. "
+            f"The rollout of '{service_name}' did not finish within the wait limit, so the new revision is "
+            f"not confirmed to be serving. The rollout continues on the platform. "
             f"Check with `haystack-enterprise service-status {service_name}`."
         )
     elif result.deployment.deployment_mode is DeploymentMode.SERVERLESS:
@@ -1029,6 +1030,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             login_required=share_login_required,
         )
         _echo_endpoint(client, service_name, result, shared=bool(share))
+
+    # A job result answers "is the new revision serving?", so an unfinished rollout must not look like success.
+    if result.timed_out:
+        raise typer.Exit(1)
 
 
 @cli_app.command()
