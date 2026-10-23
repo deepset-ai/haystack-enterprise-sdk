@@ -18,9 +18,9 @@ from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Se
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
-import click
 import httpx
 import structlog
+import truststore
 import typer
 from dotenv import dotenv_values
 from tabulate import tabulate
@@ -65,6 +65,7 @@ from haystack_enterprise_sdk._api.secrets import FailedToSetServiceSecretError
 from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
 from haystack_enterprise_sdk._console import animations_enabled, status_spinner
+from haystack_enterprise_sdk._service import deployment_service
 from haystack_enterprise_sdk._service.deployment_service import (
     CreateOptions,
     DeploymentFailedError,
@@ -463,14 +464,19 @@ def _show_device_code(user_code: str, verification_uri: str, verification_uri_co
 
 
 def _choose(label: str, options: List[str], default: Optional[str] = None) -> str:
-    """Let the user pick one of ``options`` by number. A single option is picked without asking."""
+    """Let the user pick one of ``options`` by number or name. A single option is picked without asking."""
     if len(options) == 1:
         return options[0]
     for number, option in enumerate(options, start=1):
         typer.echo(f"  {number}. {option}")
-    default_number = options.index(default) + 1 if default in options else 1
-    choice: int = typer.prompt(label, default=default_number, type=click.IntRange(1, len(options)))
-    return options[choice - 1]
+    while True:
+        choice: str = typer.prompt(f"{label} (number or name)", default=default if default in options else options[0])
+        # An exact name wins, so an option literally named "2" stays reachable.
+        if choice in options:
+            return choice
+        if choice.isdigit() and 1 <= int(choice) <= len(options):
+            return options[int(choice) - 1]
+        typer.echo(f"'{choice}' is not one of the options above.", err=True)
 
 
 def _pick_organization(api_url: str, headers: Dict[str, str]) -> str:
@@ -485,10 +491,11 @@ def _pick_organization(api_url: str, headers: Dict[str, str]) -> str:
 
 
 def _pick_workspace(api_url: str, headers: Dict[str, str]) -> str:
-    """:return: The default workspace, asking if there are several."""
-    response = httpx.get(f"{api_url}/{API_VERSION_PATH}/workspaces", headers=headers, timeout=30)
+    """:return: The default workspace, asking if the user has access to several."""
+    # /workspaces lists every workspace of the organization to its members; /users/me only the user's own.
+    response = httpx.get(f"{api_url}/{API_VERSION_PATH}/users/me", headers=headers, timeout=30)
     response.raise_for_status()
-    names = sorted(workspace["name"] for workspace in response.json())
+    names = sorted(workspace["name"] for workspace in response.json()["organization"]["workspaces"])
     return _choose("Default workspace", names, default="default") if names else "default"
 
 
@@ -766,9 +773,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param managed: Create the service as a managed (provisioned) deployment instead of a serverless
         one. Required to use any of the sizing options below, which serverless ignores. Only applies
         when the service is created.
-    :param comment: Comment stored on the new revision (the platform requires one). Defaults to an
-        auto-generated message naming the pipeline file and, when the file sits in a git repository, the
-        current branch, commit and a link to the commit page.
+    :param comment: Comment stored on the new revision (the platform requires one). Defaults to the
+        HEAD commit's short sha and subject (suffixed "(dirty)" for uncommitted changes) when the file sits in a git
+        repository, otherwise to a message naming the pipeline file.
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
     :param service_level: Service sizing tier when creating the service (with --managed).
     :param min_replicas: Minimum query replicas (with --managed).
@@ -1010,7 +1017,8 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         )
     elif result.timed_out:
         typer.echo(
-            f"Activation of '{service_name}' is still in progress. Detached; the rollout continues. "
+            f"The rollout of '{service_name}' did not finish within the wait limit, so the new revision is "
+            f"not confirmed to be serving. The rollout continues on the platform. "
             f"Check with `haystack-enterprise service-status {service_name}`."
         )
     elif result.deployment.deployment_mode is DeploymentMode.SERVERLESS:
@@ -1029,6 +1037,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             login_required=share_login_required,
         )
         _echo_endpoint(client, service_name, result, shared=bool(share))
+
+    # A job result answers "is the new revision serving?", so an unfinished rollout must not look like success.
+    if result.timed_out:
+        raise typer.Exit(1)
 
 
 @cli_app.command()
@@ -2116,8 +2128,13 @@ def run_packaged() -> None:
     """Run the packaged CLI.
 
     This is the console-script entrypoint (``haystack-enterprise``) declared in ``pyproject.toml``;
-    it is not a subcommand. It runs the Typer app and turns API errors into a clean exit.
+    it is not a subcommand. It runs the Typer app and turns API errors into a clean exit. Pushes made
+    from here are recorded as coming from the CLI rather than the SDK.
     """
+    deployment_service.CLIENT_NAME = "Haystack Enterprise CLI"
+    # Verify TLS against the OS trust store instead of certifi, so CAs installed by corporate
+    # TLS-inspecting proxies (common on Windows) are trusted. CLI only: the library leaves `ssl` alone.
+    truststore.inject_into_ssl()
     try:
         cli_app()
     except HaystackEnterpriseAPIError as err:

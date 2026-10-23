@@ -204,10 +204,10 @@ Common options:
   `--idle-timeout` require `--managed`; passing them without `--managed`, or passing creation-only
   flags for a service that already exists, is an error rather than a silently ignored flag.
 - `--comment` / `-m` is the comment stored on the revision, so you can tell revisions apart in the
-  platform UI. Every revision needs one; when you omit the flag the CLI generates a comment naming the
-  pipeline file and, if it sits in a git repository, the current branch, commit and a link to the commit
-  on GitHub/GitLab/Bitbucket — e.g.
-  `Deployed pipeline.py via haystack-enterprise CLI (main@a1b2c3d) https://github.com/org/repo/commit/…`.
+  platform UI. Every revision needs one. When you omit the flag, the CLI uses the short sha and
+  subject of the HEAD commit (e.g. `a1b2c3d Add retry to retriever`) if the pipeline file sits in a
+  git repository, with ` (dirty)` appended when tracked files have uncommitted changes, and otherwise
+  `Deployed pipeline.py via haystack-enterprise CLI`.
 - `--skip-activation` pushes the revision as `PENDING` without rolling it out.
 - `--skip-validation` skips the pre-deploy YAML validation (validation runs by default and aborts on
   blocking issues).
@@ -228,12 +228,36 @@ A pipeline with conventionally named sockets (`query`, `answers`, `replies`, `do
 inference and asks nothing. Pin the mapping in `<pipeline>.io.yaml` (or `--io-config`) to skip the
 questions entirely; `--share` reviews the whole mapping instead (see below).
 
-If you interrupt the command (Ctrl-C) during rollout, the rollout continues on the platform. Check
-progress any time with:
+If you interrupt the command (Ctrl-C) during rollout, the rollout continues on the platform and the
+command exits 0, since you detached on purpose. Check progress any time with:
 
 ```shell
 haystack-enterprise service-status my-service
 ```
+
+### What a push records about its source
+
+Every revision you push, from the CLI or the Python SDK, is stored with where it came from, so you can
+trace a running service back to its code. There is no flag and nothing to set up, and a push never fails
+because this information is missing.
+
+**Collected:**
+
+- the repository as `host/path` (for example `github.com/org/repo`), taken from the `origin` remote
+- the branch, the commit SHA, and whether the working tree has uncommitted changes
+- the pipeline file's path relative to the repository root
+- whether the push ran in an automated pipeline or by hand. A push counts as automated when `CI` is set to
+  anything other than empty, `0` or `false`. GitHub Actions, GitLab CI and CircleCI set it; if your pipeline
+  doesn't, set `CI=true`.
+- which client sent it: `Haystack Enterprise CLI` or `Haystack Enterprise SDK`
+
+Anything that can't be determined is left out: a detached HEAD has no branch, a new repository has no
+commit, a checkout without an `origin` remote has no repository, and outside a git repository (or when git
+is missing) only the CI flag and client name are sent.
+
+**Never collected:** your hostname, your operating-system user name, the commit author's name or email,
+absolute paths, or the raw remote URL. Credentials embedded in a remote, such as the job token a CI
+system adds to a GitLab URL, are dropped, as are ports.
 
 ### Calling the deployed service
 
@@ -407,6 +431,19 @@ appends a new line per repaint, so a multi-minute rollout becomes thousands of l
 Set `CI=false` (or unset it) to force the animations back on. Independently of `CI`, `run` never
 animates when its stdout is redirected, so a piped JSON payload stays parseable.
 
+### What the job result means
+
+The exit code of `deploy` answers "is the new revision serving?", so a CI job that passes can be trusted:
+
+- **Exit 0**: the revision is serving (a serverless service activated it, or a managed rollout reached
+  `DEPLOYED` or `IDLE`), or you chose not to activate it with `--skip-activation`, which pushes the revision
+  and says so. Interrupting with Ctrl-C also exits 0.
+- **Exit 1**: the rollout failed, **or it did not finish within the wait limit** (10 minutes). In the second
+  case the rollout continues on the platform and the service may still come up; check with
+  `haystack-enterprise service-status my-service`, then re-run the job or fix the service.
+
+To push a revision without waiting for a rollout, use `--skip-activation` and activate it later.
+
 To pass CI secrets to the service, expose them to the step's environment and name them with a bare
 `--env`. A GitHub Actions example:
 
@@ -423,6 +460,19 @@ To pass CI secrets to the service, expose them to the step's environment and nam
 ```
 
 Keep non-secret, per-environment settings in a committed file such as `.env.prod`.
+
+On a `pull_request` run, `actions/checkout` checks out a synthetic merge commit, so the default revision
+comment reads `Merge 1234abc into 9876fed`. Pass the PR title instead, through `env` rather than inline
+`${{ }}`, because the title is user input:
+
+```yaml
+- name: Deploy
+  env:
+    PR_TITLE: ${{ github.event.pull_request.title }}
+  run: uv run haystack-enterprise deploy pipeline.py my-service -m "$PR_TITLE"
+```
+
+A `push` run on a squash-merged branch needs nothing: HEAD's subject is already the PR title.
 
 ---
 

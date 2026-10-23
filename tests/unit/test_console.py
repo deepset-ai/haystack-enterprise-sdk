@@ -3,7 +3,7 @@ from typing import Any
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
-from haystack_enterprise_sdk._console import _PlainStatus, animations_enabled, status_spinner
+from haystack_enterprise_sdk._console import _CI_MARKERS, _PlainStatus, animations_enabled, in_ci, status_spinner
 
 
 class TestAnimationsEnabled:
@@ -25,6 +25,26 @@ class TestAnimationsEnabled:
         monkeypatch.setenv("CI", "true")
         with status_spinner() as spinner:
             assert isinstance(spinner, _PlainStatus)
+
+
+class TestInCi:
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch: MonkeyPatch) -> None:
+        for name in ("CI", *_CI_MARKERS):
+            monkeypatch.delenv(name, raising=False)
+
+    def test_false_without_any_marker(self) -> None:
+        assert in_ci() is False
+
+    @pytest.mark.parametrize("name", _CI_MARKERS)
+    def test_vendor_marker_without_ci(self, monkeypatch: MonkeyPatch, name: str) -> None:
+        monkeypatch.setenv(name, "x")
+        assert in_ci() is True
+
+    def test_ci_false_overrides_vendor_marker(self, monkeypatch: MonkeyPatch) -> None:
+        monkeypatch.setenv("JENKINS_URL", "https://jenkins.example")
+        monkeypatch.setenv("CI", "false")
+        assert in_ci() is False
 
 
 class TestPlainStatus:

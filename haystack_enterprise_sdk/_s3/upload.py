@@ -3,11 +3,13 @@
 import asyncio
 import os
 import re
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Coroutine, Dict, List, Optional, Sequence, Type, Union
+from typing import Any, Coroutine, Dict, List, Optional, Sequence, Tuple, Type, Union
 
 import aiofiles
 import aiohttp
@@ -16,6 +18,7 @@ from pyrate_limiter import Duration, Limiter, Rate
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from haystack_enterprise_sdk._api.config import ASYNC_CLIENT_TIMEOUT
+from haystack_enterprise_sdk._api.files import as_upload_error
 from haystack_enterprise_sdk._api.upload_sessions import (
     AWSPrefixedRequestConfig,
     UploadSession,
@@ -24,6 +27,37 @@ from haystack_enterprise_sdk._console import gather_with_progress
 from haystack_enterprise_sdk.models import HaystackEnterpriseFileBase
 
 logger = structlog.get_logger(__name__)
+
+ProxySettings = Tuple[Optional[str], Optional[Dict[str, str]]]
+
+
+def resolve_proxy(url: str) -> ProxySettings:
+    """Resolve the proxy for ``url`` the way httpx does, for aiohttp.
+
+    aiohttp's ``trust_env`` silently drops ``https://`` proxy URLs and ``ALL_PROXY``, which httpx accepts, so
+    S3 uploads went direct while API calls used the proxy. Resolving it here and passing ``proxy=`` explicitly
+    avoids that. Credentials are moved into a ``Proxy-Authorization`` header.
+
+    :param url: The request URL.
+    :return: The proxy URL without credentials and the proxy headers, or ``(None, None)`` for a direct connection.
+    """
+    target = urllib.parse.urlsplit(url)
+    if not target.hostname or urllib.request.proxy_bypass(target.hostname):
+        return None, None
+
+    proxies = urllib.request.getproxies()
+    proxy = proxies.get(target.scheme) or proxies.get("all")
+    if not proxy:
+        return None, None
+
+    proxy_url = urllib.parse.urlsplit(proxy if "://" in proxy else f"http://{proxy}")
+    netloc = proxy_url.netloc.rpartition("@")[2]
+    stripped = urllib.parse.urlunsplit((proxy_url.scheme, netloc, proxy_url.path, "", ""))
+    if proxy_url.username is None:
+        return stripped, None
+
+    auth = aiohttp.BasicAuth(urllib.parse.unquote(proxy_url.username), urllib.parse.unquote(proxy_url.password or ""))
+    return stripped, {"Proxy-Authorization": auth.encode()}
 
 
 class RetryableHttpError(Exception):
@@ -105,6 +139,16 @@ class S3:
             self._try_acquire_kwargs = {"blocking": False}
 
         self.max_attempts = max_attempts
+        self._proxies: Dict[str, ProxySettings] = {}
+
+    def _proxy_for(self, url: str) -> ProxySettings:
+        """Resolve and cache the proxy per host; on Windows ``getproxies`` reads the registry."""
+        host = urllib.parse.urlsplit(url).hostname or ""
+        if host not in self._proxies:
+            self._proxies[host] = resolve_proxy(url)
+            proxy = self._proxies[host][0]
+            logger.info("Resolved S3 upload route.", host=host, proxy=proxy or "direct")
+        return self._proxies[host]
 
     async def __aenter__(self) -> "S3":
         """Enter the context manager."""
@@ -169,10 +213,13 @@ class S3:
         try:
             self._rate_limit_acquire()
 
+            proxy, proxy_headers = self._proxy_for(aws_config.url)
             async with client_session.post(
                 aws_config.url,
                 data=file_data,
                 allow_redirects=False,
+                proxy=proxy,
+                proxy_headers=proxy_headers,
             ) as response:
                 response.raise_for_status()
 
@@ -184,10 +231,13 @@ class S3:
                     file_data = self._build_file_data(content, aws_safe_name, aws_config)
                     self._rate_limit_acquire()
 
+                    proxy, proxy_headers = self._proxy_for(redirect_url)
                     async with client_session.post(
                         redirect_url,
-                        json=file_data,
+                        data=file_data,
                         allow_redirects=False,
+                        proxy=proxy,
+                        proxy_headers=proxy_headers,
                     ) as response:
                         response.raise_for_status()
                         return response
@@ -255,7 +305,7 @@ class S3:
                         session_id=upload_session.session_id,
                         reason=reason,
                     )
-                    return S3UploadResult(file_name=file_name, success=False, exception=exception)
+                    return S3UploadResult(file_name=file_name, success=False, exception=as_upload_error(exception))
 
     async def upload_from_memory(
         self,
@@ -287,7 +337,7 @@ class S3:
                     session_id=upload_session.session_id,
                     reason=str(exception),
                 )
-                return S3UploadResult(file_name=file_name, success=False, exception=exception)
+                return S3UploadResult(file_name=file_name, success=False, exception=as_upload_error(exception))
 
     async def _process_results(
         self,
