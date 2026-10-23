@@ -1356,6 +1356,11 @@ def _stdout_is_tty() -> bool:
     return sys.stdout.isatty()
 
 
+def _stderr_is_tty() -> bool:
+    """Whether stderr is an interactive terminal (indirection kept simple to patch in tests)."""
+    return sys.stderr.isatty()
+
+
 @contextmanager
 def _elapsed_ticker(spinner: Any, text: Callable[[int], str]) -> Iterator[Callable[[], None]]:
     """Repaint ``spinner.text`` once a second with the seconds elapsed so far.
@@ -2112,17 +2117,65 @@ def main(
     _configure_cli_logging(verbose)
 
 
+VERSION_CHECK_PATH = ENV_FILE_PATH.parent / "version_check.json"
+_VERSION_CHECK_INTERVAL_S = 24 * 60 * 60
+_PYPI_URL = "https://pypi.org/pypi/haystack-enterprise-sdk/json"
+
+
+def _latest_version() -> Optional[str]:
+    """The latest release on PyPI, cached for a day; ``None`` if it cannot be determined.
+
+    :return: The latest version string, or ``None``.
+    """
+    try:
+        cached = json.loads(VERSION_CHECK_PATH.read_text(encoding="utf-8"))
+        if time.time() - cached["checked_at"] < _VERSION_CHECK_INTERVAL_S:
+            return str(cached["latest"])
+    except Exception:  # pylint: disable=broad-exception-caught
+        pass
+    try:
+        latest = str(httpx.get(_PYPI_URL, timeout=1).raise_for_status().json()["info"]["version"])
+        _write_private_file(VERSION_CHECK_PATH, json.dumps({"checked_at": time.time(), "latest": latest}))
+        return latest
+    except Exception:  # pylint: disable=broad-exception-caught
+        return None
+
+
+def _maybe_print_update_hint() -> None:
+    """Print a hint on stderr when a newer release is on PyPI.
+
+    Skipped in CI, off a TTY, and when ``HAYSTACK_ENTERPRISE_NO_UPDATE_CHECK`` is set. Never raises.
+    """
+    if not animations_enabled() or not _stderr_is_tty() or os.environ.get("HAYSTACK_ENTERPRISE_NO_UPDATE_CHECK"):
+        return
+    latest = _latest_version()
+    try:
+        if latest is None or tuple(map(int, latest.split("."))) <= tuple(map(int, __version__.split("."))):
+            return
+    except ValueError:  # a pre-release or dev version on either side: don't guess
+        return
+    typer.echo(
+        f"A new version of haystack-enterprise-sdk is available: {__version__} -> {latest}. "
+        "Upgrade with: pip install -U haystack-enterprise-sdk (or uv tool upgrade haystack-enterprise-sdk)",
+        err=True,
+    )
+
+
 def run_packaged() -> None:
     """Run the packaged CLI.
 
     This is the console-script entrypoint (``haystack-enterprise``) declared in ``pyproject.toml``;
-    it is not a subcommand. It runs the Typer app and turns API errors into a clean exit.
+    it is not a subcommand. It runs the Typer app and turns API errors into a clean exit, then hints at
+    an available upgrade.
     """
     try:
         cli_app()
     except HaystackEnterpriseAPIError as err:
         typer.echo(str(err))
         sys.exit(1)
+    finally:
+        if not isinstance(sys.exc_info()[1], KeyboardInterrupt):
+            _maybe_print_update_hint()
 
 
 if __name__ == "__main__":

@@ -50,6 +50,10 @@ service is serving — confirm with `haystack-enterprise service-status SERVICE`
 
 Set `CI=true` to replace spinners and progress bars with plain line output.
 
+On an interactive terminal the CLI checks PyPI at most once a day, cached in
+`~/.haystack-enterprise/version_check.json`, and prints an upgrade hint on stderr when a newer
+release exists. It is skipped in CI and off a TTY. `HAYSTACK_ENTERPRISE_NO_UPDATE_CHECK=1` turns it off.
+
 `deploy --env KEY=VALUE`, `--env KEY` (value read from the environment) and `--env-file FILE` set
 service secrets on the target service. Existing names are updated and others left alone, and the
 values apply on the next request without a redeploy.
