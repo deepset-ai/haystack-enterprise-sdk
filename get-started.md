@@ -68,8 +68,8 @@ type it at the prompt with a leading `!`:
 haystack-enterprise login
 ```
 
-It opens the platform in a browser, where they log in and pick a workspace. On a remote machine without a
-browser, use `haystack-enterprise login --device` instead; it prints a code to confirm on any device.
+It prints a link and a code that they confirm in a browser on any device, then they pick a workspace. To log in
+through a browser on this machine instead, use `haystack-enterprise login --no-device`.
 Pause until the user confirms, then run `haystack-enterprise whoami` again.
 
 Do not run `haystack-enterprise login` yourself without flags. It waits several minutes for a human in a

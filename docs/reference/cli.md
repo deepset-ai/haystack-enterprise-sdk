@@ -37,12 +37,13 @@ There is also a top-level `--version`, which prints the installed SDK version an
 
 ### `login`
 
-Opens the platform in your browser, where you log in (with your company's SSO if it uses one) and allow
-the CLI access. The CLI then gets an OAuth session that refreshes itself, stored in
+Prints a link and a code. Open the link in a browser on any device, log in (with your company's SSO if it
+uses one), confirm the code, and allow the CLI access. Nothing has to reach back to your machine, so this
+works over SSH, VPNs, and in containers. The CLI then gets an OAuth session that refreshes itself, stored in
 `~/.haystack-enterprise/credentials.json` (readable only by you). If you belong to several organizations,
 it asks which one to use, then which default workspace.
 
-On platforms that don't offer OAuth login yet, the browser shows an **Authorize** page instead. It creates
+On platforms that don't offer OAuth login yet, the CLI opens the browser on this machine, which shows an **Authorize** page instead. It creates
 an API key named after your machine, which the CLI writes to `~/.haystack-enterprise/.env`. You can revoke
 it under **Settings → API Keys**.
 
@@ -52,7 +53,7 @@ haystack-enterprise login
 
 | Option | Description |
 | --- | --- |
-| `--device` | Log in without a local browser, for example over SSH: the CLI prints a link and a code you confirm in a browser on any device. |
+| `--no-device` | Log in through a browser on this machine instead of with a code. It opens the browser and waits for a redirect to `127.0.0.1`. |
 | `--no-browser` | Prompt for the API key and workspace instead. |
 | `--api-key`, `--workspace-name` | Write these values directly, with no browser and no prompts. Useful in CI. |
 | `--api-url` | Base API URL. Defaults to `https://api.cloud.deepset.ai`. |

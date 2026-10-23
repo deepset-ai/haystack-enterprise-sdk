@@ -9,9 +9,9 @@ API key), an API URL, and a default workspace. The easiest way to set all three 
 haystack-enterprise login
 ```
 
-It opens your browser to log in, then stores a session that refreshes itself in
+It prints a link and a code you confirm in a browser on any device, then stores a session that refreshes itself in
 `~/.haystack-enterprise/credentials.json`, and the API URL and default workspace in
-`~/.haystack-enterprise/.env`. Over SSH, use `login --device`. See the [CLI reference](../reference/cli.md#login)
+`~/.haystack-enterprise/.env`. See the [CLI reference](../reference/cli.md#login)
 for the other options.
 
 An API key always takes precedence over the login session. Use one in CI: get it from

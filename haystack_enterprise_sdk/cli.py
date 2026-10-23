@@ -51,6 +51,7 @@ from haystack_enterprise_sdk._api.haystack_enterprise_api import (
 )
 from haystack_enterprise_sdk._api.oauth import (
     CliOAuthConfig,
+    DeviceLoginUnsupported,
     OAuthCredentials,
     OAuthError,
     authorization_code_login,
@@ -263,14 +264,15 @@ def login(
     api_url: Optional[str] = None,
     ui_url: Optional[str] = None,
     browser: bool = True,
-    device: bool = False,
+    device: bool = True,
 ) -> None:
     """Log in to Haystack Enterprise Platform.
 
     Run `haystack-enterprise login` before performing any tasks in Haystack Enterprise Platform using the SDK or CLI,
     unless you already created the .ENV file.
 
-    By default, this command opens the platform in your browser, where you log in and authorize the CLI. Where the
+    By default, this command prints a link and a code that you confirm in a browser on any device, so it works over
+    SSH, VPNs, and in containers. Use `--no-device` to log in through a browser on this machine instead. Where the
     platform supports it, the CLI gets an OAuth session that refreshes itself, stored in
     ~/.haystack-enterprise/credentials.json. Otherwise the platform creates an API key and hands it back to the CLI.
     Either way, ~/.haystack-enterprise/.env stores the `API_URL` and `DEFAULT_WORKSPACE_NAME` used for all operations.
@@ -289,7 +291,8 @@ def login(
     :param api_url: Base API URL. Defaults to the deepset platform URL.
     :param ui_url: Platform UI URL to open in the browser. Derived from the API URL by default.
     :param browser: Log in through the browser. Use `--no-browser` to paste an API key instead.
-    :param device: Log in with a code you enter in a browser on any device, for example over SSH.
+    :param device: Log in with a link and code you confirm in a browser on any device. Use `--no-device` to log in
+        through a browser on this machine instead.
     """
     typer.echo("Log in to Haystack Enterprise Platform")
 
@@ -305,19 +308,12 @@ def login(
         _write_env(api_key, normalize_base_url(api_url or PLATFORM_URL), workspace_name)
         return
 
-    if browser or device:
+    if browser:
         api_url = normalize_base_url(api_url or PLATFORM_URL)
         oauth_config = fetch_cli_config(api_url)
         if oauth_config is not None:
             _oauth_login(api_url, oauth_config, workspace_name, device)
             return
-        if device:
-            typer.echo(
-                "This platform doesn't support device login yet. Run `haystack-enterprise login --no-browser` "
-                "to paste an API key instead.",
-                err=True,
-            )
-            raise typer.Exit(code=1)
         browser_api_key, browser_workspace_name = _browser_login(ui_url or _ui_url_for(api_url))
         _write_env(browser_api_key, api_url, browser_workspace_name)
         return
@@ -435,10 +431,14 @@ def _oauth_login(api_url: str, config: CliOAuthConfig, workspace_name: Optional[
     :param workspace_name: The default workspace, or None to pick one.
     :param device: Use the device flow instead of a local browser.
     """
+    credentials: Optional[OAuthCredentials] = None
     try:
         if device:
-            credentials = device_login(api_url, config, _show_device_code)
-        else:
+            try:
+                credentials = device_login(api_url, config, _show_device_code)
+            except DeviceLoginUnsupported:
+                pass  # e.g. a self-hosted identity provider without the device grant
+        if credentials is None:
             credentials = authorization_code_login(api_url, config, _open_login_url, LOGIN_TIMEOUT_SECONDS)
     except OAuthError as error:
         typer.echo(f"Login failed: {error}", err=True)

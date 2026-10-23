@@ -4,8 +4,8 @@ This file covers two jobs: driving the SDK and its CLI on someone's behalf, and 
 
 ## Authentication
 
-Never run a bare `haystack-enterprise login` (or `login --device`). Both wait up to several minutes for a
-human to approve in a browser. `login --api-key KEY --workspace-name WS` writes the file without prompting.
+Never run a bare `haystack-enterprise login` (or `login --no-device`). Both wait for a human to approve
+in a browser. `login --api-key KEY --workspace-name WS` writes the file without prompting.
 An `API_KEY`, when set, always wins over a login session in `~/.haystack-enterprise/credentials.json`.
 
 Or set these instead — the same keys `login` would write to `~/.haystack-enterprise/.env`:

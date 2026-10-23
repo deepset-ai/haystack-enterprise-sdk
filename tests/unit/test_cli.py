@@ -17,7 +17,7 @@ from typer.testing import CliRunner
 
 __version__ = version("haystack-enterprise-sdk")
 from haystack_enterprise_sdk._api.files import File
-from haystack_enterprise_sdk._api.oauth import CliOAuthConfig, OAuthCredentials
+from haystack_enterprise_sdk._api.oauth import CliOAuthConfig, DeviceLoginUnsupported, OAuthCredentials
 from haystack_enterprise_sdk._api.upload_sessions import (
     UploadSessionDetail,
     UploadSessionIngestionStatus,
@@ -547,7 +547,23 @@ class TestCLIUtils:
     def test_ui_url_for(self, api_url: str, ui_url: str) -> None:
         assert _ui_url_for(api_url) == ui_url
 
-    def test_login_with_oauth(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_login: Path) -> None:
+    @pytest.mark.parametrize(
+        "args, device_supported, used",
+        [
+            ([], True, "device_login"),
+            ([], False, "authorization_code_login"),
+            (["--no-device"], True, "authorization_code_login"),
+        ],
+    )
+    def test_login_with_oauth(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        _isolate_login: Path,
+        args: List[str],
+        device_supported: bool,
+        used: str,
+    ) -> None:
         global_env_path = tmp_path / ".haystack-enterprise" / ".env"
         monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", global_env_path)
         config = CliOAuthConfig(issuer="https://auth.example.com/", client_id="cli", scopes=["openid"])
@@ -574,13 +590,18 @@ class TestCLIUtils:
             assert headers["Authorization"] == "Bearer access"
             return httpx.Response(200, json=responses[url], request=httpx.Request("GET", url))
 
+        device = Mock(return_value=credentials) if device_supported else Mock(side_effect=DeviceLoginUnsupported())
+        logins = {"device_login": device, "authorization_code_login": Mock(return_value=credentials)}
         with (
-            patch("haystack_enterprise_sdk.cli.authorization_code_login", return_value=credentials),
+            patch("haystack_enterprise_sdk.cli.device_login", logins["device_login"]),
+            patch("haystack_enterprise_sdk.cli.authorization_code_login", logins["authorization_code_login"]),
             patch("haystack_enterprise_sdk.cli.httpx.get", side_effect=fake_get),
         ):
-            result = runner.invoke(cli_app, ["login"], input="2\n")
+            result = runner.invoke(cli_app, ["login", *args], input="2\n")
 
         assert result.exit_code == 0, result.stdout
+        assert logins[used].called
+        assert logins["device_login"].called == ("--no-device" not in args)
         assert "API_URL=https://api.cloud.deepset.ai\nDEFAULT_WORKSPACE_NAME=default" == global_env_path.read_text()
         stored = OAuthCredentials.load()
         assert stored is not None and stored.organization_id == "org-b"
@@ -620,7 +641,7 @@ class TestCLIUtils:
             patch("haystack_enterprise_sdk.cli.authorization_code_login", return_value=credentials),
             patch("haystack_enterprise_sdk.cli.httpx.get", side_effect=fake_get),
         ):
-            result = runner.invoke(cli_app, ["login"], input="nope\nBeta\n3\nprod\n")
+            result = runner.invoke(cli_app, ["login", "--no-device"], input="nope\nBeta\n3\nprod\n")
 
         assert result.exit_code == 0, result.output
         assert "'nope' is not one of the options above." in result.output
@@ -628,11 +649,6 @@ class TestCLIUtils:
         assert global_env_path.read_text().endswith("DEFAULT_WORKSPACE_NAME=prod")
         stored = OAuthCredentials.load()
         assert stored is not None and stored.organization_id == "org-b"
-
-    def test_login_device_needs_platform_support(self) -> None:
-        result = runner.invoke(cli_app, ["login", "--device"])
-        assert result.exit_code == 1
-        assert "doesn't support device login" in result.output
 
     def test_logout_revokes_oauth_session(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_login: Path
