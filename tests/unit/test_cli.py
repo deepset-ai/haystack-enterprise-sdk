@@ -839,21 +839,19 @@ class TestUpdateHint:
         assert capsys.readouterr().err.count("1.0.2 -> 1.10.0") == 2
         assert route.call_count == 1
 
-    @pytest.mark.parametrize(
-        "prefix,command",
-        [
-            ("/home/u/.local/share/uv/tools/haystack-enterprise-sdk", "uv tool upgrade haystack-enterprise-sdk"),
-            ("/home/u/project/.venv", "pip install -U haystack-enterprise-sdk"),
-        ],
-    )
     @respx.mock
-    def test_upgrade_command_matches_install(
-        self, prefix: str, command: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-    ) -> None:
-        monkeypatch.setattr("sys.prefix", prefix)
+    def test_hint_points_to_upgrade_command(self, capsys: pytest.CaptureFixture) -> None:
         respx.get(_PYPI_URL).mock(return_value=httpx.Response(200, json={"info": {"version": "1.1.0"}}))
         _maybe_print_update_hint()
-        assert capsys.readouterr().err.strip().endswith(f"Upgrade with: {command}")
+        assert capsys.readouterr().err.strip().endswith("Run: haystack-enterprise upgrade")
+
+    @respx.mock
+    def test_no_hint_after_upgrade(self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+        monkeypatch.setattr("sys.argv", ["haystack-enterprise", "upgrade"])
+        route = respx.get(_PYPI_URL)
+        _maybe_print_update_hint()
+        assert capsys.readouterr().err == ""
+        assert not route.called
 
     @pytest.mark.parametrize("latest", ["1.0.2", "0.9.9", "2.0.0rc1"])
     @respx.mock
@@ -875,6 +873,41 @@ class TestUpdateHint:
         route = respx.get(_PYPI_URL)
         _maybe_print_update_hint()
         assert not route.called
+
+
+class TestUpgradeCommand:
+    UV_PREFIX = "/home/u/.local/share/uv/tools/haystack-enterprise-sdk"
+
+    @pytest.fixture
+    def run(self, monkeypatch: pytest.MonkeyPatch) -> Mock:
+        run = Mock(return_value=Mock(returncode=0))
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.subprocess.run", run)
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.shutil.which", lambda _name: "/usr/bin/uv")
+        return run
+
+    @pytest.mark.parametrize("returncode", [0, 2])
+    def test_uv_tool_install_runs_uv_upgrade(self, run: Mock, monkeypatch: pytest.MonkeyPatch, returncode: int) -> None:
+        monkeypatch.setattr("sys.prefix", self.UV_PREFIX)
+        run.return_value.returncode = returncode
+        result = runner.invoke(cli_app, ["upgrade"])
+        run.assert_called_once_with(["uv", "tool", "upgrade", "haystack-enterprise-sdk"], check=False)
+        assert result.exit_code == returncode
+
+    def test_other_install_prints_pip_command(self, run: Mock, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("sys.prefix", "/home/u/project/.venv")
+        result = runner.invoke(cli_app, ["upgrade"])
+        assert result.exit_code == 0
+        assert "pip install -U haystack-enterprise-sdk" in result.output
+        run.assert_not_called()
+
+    def test_uv_tool_install_without_uv_on_path_prints_pip_command(
+        self, run: Mock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("sys.prefix", self.UV_PREFIX)
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.shutil.which", lambda _name: None)
+        result = runner.invoke(cli_app, ["upgrade"])
+        assert "pip install -U haystack-enterprise-sdk" in result.output
+        run.assert_not_called()
 
 
 def test_run_packaged_uses_os_trust_store() -> None:
