@@ -21,6 +21,18 @@ standalone tool with [uv](https://docs.astral.sh/uv/):
 uv tool install haystack-enterprise-sdk
 ```
 
+No uv yet? The install script sets up uv and the CLI in one go. On macOS, Linux, or Git Bash on Windows:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/install.sh | bash
+```
+
+In Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/install.ps1 | iex"
+```
+
 That puts the `haystack-enterprise` command on your PATH. Check it:
 
 ```bash

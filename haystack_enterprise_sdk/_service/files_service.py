@@ -19,6 +19,7 @@ from haystack_enterprise_sdk._api.files import (
     File,
     FileNotFoundInHaystackEnterpriseException,
     FilesAPI,
+    as_upload_error,
 )
 from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
 from haystack_enterprise_sdk._api.upload_sessions import (
@@ -67,10 +68,18 @@ def _all_failed(file_names: List[str], error: Exception) -> S3UploadSummary:
     Mirrors the direct-upload path, which reports per-file failures instead of raising.
     """
     logger.error("Failed creating upload session.", error=error)
-    failed = [S3UploadResult(file_name=name, success=False, exception=error) for name in file_names]
+    failed = [S3UploadResult(file_name=name, success=False, exception=as_upload_error(error)) for name in file_names]
     return S3UploadSummary(
         total_files=len(failed), successful_upload_count=0, failed_upload_count=len(failed), failed=failed
     )
+
+
+def _reached_s3(raw_file_count: int, upload_summary: S3UploadSummary) -> int:
+    """Count the raw files that made it to S3; only those can ever show up in the ingestion status.
+
+    Waiting for files that failed to upload would never finish.
+    """
+    return raw_file_count - sum(1 for f in upload_summary.failed if not f.file_name.endswith(META_SUFFIX))
 
 
 class FilesService:
@@ -189,7 +198,7 @@ class FilesService:
             return S3UploadResult(file_name=file_path.name, success=True)
         except Exception as error:
             logger.error("Failed uploading file.", file_path=file_path, error=error)
-            return S3UploadResult(file_name=file_path.name, success=False, exception=error)
+            return S3UploadResult(file_name=file_path.name, success=False, exception=as_upload_error(error))
 
     async def _wrapped_direct_upload_in_memory(
         self,
@@ -211,7 +220,7 @@ class FilesService:
             return S3UploadResult(file_name=file_name, success=True)
         except Exception as error:
             logger.error("Failed uploading file.", file_name=file_name, error=error)
-            return S3UploadResult(file_name=file_name, success=False, exception=error)
+            return S3UploadResult(file_name=file_name, success=False, exception=as_upload_error(error))
 
     async def upload_file_paths(
         self,
@@ -304,7 +313,7 @@ class FilesService:
             await self._wait_for_finished(
                 workspace_name=workspace_name,
                 session_id=upload_session.session_id,
-                total_files=total_files,
+                total_files=_reached_s3(total_files, upload_summary),
                 timeout_s=timeout_s,
                 show_progress=show_progress,
             )
@@ -665,7 +674,7 @@ class FilesService:
             await self._wait_for_finished(
                 workspace_name=workspace_name,
                 session_id=upload_session.session_id,
-                total_files=len(files),
+                total_files=_reached_s3(len(files), upload_summary),
                 timeout_s=timeout_s,
                 show_progress=show_progress,
             )
