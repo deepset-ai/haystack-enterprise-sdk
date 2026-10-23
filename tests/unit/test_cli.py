@@ -747,6 +747,22 @@ class TestUpdateHint:
         assert capsys.readouterr().err.count("1.0.2 -> 1.10.0") == 2
         assert route.call_count == 1
 
+    @pytest.mark.parametrize(
+        "prefix,command",
+        [
+            ("/home/u/.local/share/uv/tools/haystack-enterprise-sdk", "uv tool upgrade haystack-enterprise-sdk"),
+            ("/home/u/project/.venv", "pip install -U haystack-enterprise-sdk"),
+        ],
+    )
+    @respx.mock
+    def test_upgrade_command_matches_install(
+        self, prefix: str, command: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setattr("sys.prefix", prefix)
+        respx.get(_PYPI_URL).mock(return_value=httpx.Response(200, json={"info": {"version": "1.1.0"}}))
+        _maybe_print_update_hint()
+        assert capsys.readouterr().err.strip().endswith(f"Upgrade with: {command}")
+
     @pytest.mark.parametrize("latest", ["1.0.2", "0.9.9", "2.0.0rc1"])
     @respx.mock
     def test_no_hint_when_not_newer(self, latest: str, capsys: pytest.CaptureFixture) -> None:

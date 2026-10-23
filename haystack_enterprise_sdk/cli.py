@@ -2154,9 +2154,14 @@ def _maybe_print_update_hint() -> None:
             return
     except ValueError:  # a pre-release or dev version on either side: don't guess
         return
+    # `uv tool install` (the README's and install.sh's way) puts the environment at .../uv/tools/<name>.
+    prefix = Path(sys.prefix)
+    if prefix.parent.name == "tools" and prefix.parent.parent.name == "uv":
+        upgrade = "uv tool upgrade haystack-enterprise-sdk"
+    else:
+        upgrade = "pip install -U haystack-enterprise-sdk"
     typer.echo(
-        f"A new version of haystack-enterprise-sdk is available: {__version__} -> {latest}. "
-        "Upgrade with: pip install -U haystack-enterprise-sdk (or uv tool upgrade haystack-enterprise-sdk)",
+        f"A new version of haystack-enterprise-sdk is available: {__version__} -> {latest}. Upgrade with: {upgrade}",
         err=True,
     )
 
