@@ -6,6 +6,8 @@ import json
 import logging
 import os
 import secrets
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -2158,9 +2160,15 @@ def _latest_version() -> Optional[str]:
 def _maybe_print_update_hint() -> None:
     """Print a hint on stderr when a newer release is on PyPI.
 
-    Skipped in CI, off a TTY, and when ``HAYSTACK_ENTERPRISE_NO_UPDATE_CHECK`` is set. Never raises.
+    Skipped in CI, off a TTY, when ``HAYSTACK_ENTERPRISE_NO_UPDATE_CHECK`` is set, and after ``upgrade``
+    (this process still carries the old version). Never raises.
     """
-    if not animations_enabled() or not _stderr_is_tty() or os.environ.get("HAYSTACK_ENTERPRISE_NO_UPDATE_CHECK"):
+    if (
+        not animations_enabled()
+        or not _stderr_is_tty()
+        or os.environ.get("HAYSTACK_ENTERPRISE_NO_UPDATE_CHECK")
+        or "upgrade" in sys.argv[1:]
+    ):
         return
     latest = _latest_version()
     try:
@@ -2168,16 +2176,30 @@ def _maybe_print_update_hint() -> None:
             return
     except ValueError:  # a pre-release or dev version on either side: don't guess
         return
-    # `uv tool install` (the README's and install.sh's way) puts the environment at .../uv/tools/<name>.
-    prefix = Path(sys.prefix)
-    if prefix.parent.name == "tools" and prefix.parent.parent.name == "uv":
-        upgrade = "uv tool upgrade haystack-enterprise-sdk"
-    else:
-        upgrade = "pip install -U haystack-enterprise-sdk"
     typer.echo(
-        f"A new version of haystack-enterprise-sdk is available: {__version__} -> {latest}. Upgrade with: {upgrade}",
+        f"A new version of haystack-enterprise-sdk is available: {__version__} -> {latest}. "
+        "Run: haystack-enterprise upgrade",
         err=True,
     )
+
+
+@cli_app.command()
+def upgrade() -> None:
+    """Upgrade the CLI to the latest release, the same way it was installed.
+
+    A `uv tool install` (the installer's and README's way) is upgraded in place, keeping its extras.
+    Any other install is left alone and the command to upgrade it is printed instead.
+
+    Example:
+    `haystack-enterprise upgrade`
+    """
+    # `uv tool install` puts the environment at .../uv/tools/<name>.
+    prefix = Path(sys.prefix)
+    if prefix.parent.name == "tools" and prefix.parent.parent.name == "uv" and shutil.which("uv"):
+        # uv reports the result itself: "Updated ... v1.0.2 -> v1.1.0" or "Nothing to upgrade".
+        completed = subprocess.run(["uv", "tool", "upgrade", "haystack-enterprise-sdk"], check=False)  # noqa: S603, S607
+        raise typer.Exit(code=completed.returncode)
+    typer.echo("To upgrade, run: pip install -U haystack-enterprise-sdk")
 
 
 def run_packaged() -> None:
