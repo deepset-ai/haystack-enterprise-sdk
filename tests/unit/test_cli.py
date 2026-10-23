@@ -567,7 +567,7 @@ class TestCLIUtils:
                     {"organization_id": "org-b", "name": "Beta"},
                 ]
             },
-            "https://api.cloud.deepset.ai/api/v1/workspaces": [{"name": "default"}],
+            "https://api.cloud.deepset.ai/api/v1/users/me": {"organization": {"workspaces": [{"name": "default"}]}},
         }
 
         def fake_get(url: str, headers: Dict[str, str], timeout: int) -> httpx.Response:
@@ -585,6 +585,49 @@ class TestCLIUtils:
         stored = OAuthCredentials.load()
         assert stored is not None and stored.organization_id == "org-b"
         assert _isolate_login.stat().st_mode & 0o777 == 0o600
+
+    def test_login_with_oauth_picks_by_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_login: Path
+    ) -> None:
+        global_env_path = tmp_path / ".haystack-enterprise" / ".env"
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.ENV_FILE_PATH", global_env_path)
+        config = CliOAuthConfig(issuer="https://auth.example.com/", client_id="cli", scopes=["openid"])
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.fetch_cli_config", lambda api_url: config)
+        credentials = OAuthCredentials(
+            api_url="https://api.cloud.deepset.ai",
+            client_id="cli",
+            token_endpoint="https://auth.example.com/token",
+            access_token="access",
+            refresh_token="refresh",
+            expires_at=time.time() + 600,
+        )
+        responses = {
+            "https://api.cloud.deepset.ai/api/v1/sso/organizations": {
+                "organizations": [
+                    {"organization_id": "org-a", "name": "Acme"},
+                    {"organization_id": "org-b", "name": "Beta"},
+                ]
+            },
+            "https://api.cloud.deepset.ai/api/v1/users/me": {
+                "organization": {"workspaces": [{"name": "default"}, {"name": "prod"}]}
+            },
+        }
+
+        def fake_get(url: str, headers: Dict[str, str], timeout: int) -> httpx.Response:
+            return httpx.Response(200, json=responses[url], request=httpx.Request("GET", url))
+
+        with (
+            patch("haystack_enterprise_sdk.cli.authorization_code_login", return_value=credentials),
+            patch("haystack_enterprise_sdk.cli.httpx.get", side_effect=fake_get),
+        ):
+            result = runner.invoke(cli_app, ["login"], input="nope\nBeta\n3\nprod\n")
+
+        assert result.exit_code == 0, result.output
+        assert "'nope' is not one of the options above." in result.output
+        assert "'3' is not one of the options above." in result.output
+        assert global_env_path.read_text().endswith("DEFAULT_WORKSPACE_NAME=prod")
+        stored = OAuthCredentials.load()
+        assert stored is not None and stored.organization_id == "org-b"
 
     def test_login_device_needs_platform_support(self) -> None:
         result = runner.invoke(cli_app, ["login", "--device"])
