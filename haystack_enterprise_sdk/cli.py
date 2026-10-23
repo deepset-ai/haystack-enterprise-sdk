@@ -767,8 +767,8 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         one. Required to use any of the sizing options below, which serverless ignores. Only applies
         when the service is created.
     :param comment: Comment stored on the new revision (the platform requires one). Defaults to the
-        HEAD commit's short sha and subject when the file sits in a git repository, otherwise to a message naming the
-        pipeline file.
+        HEAD commit's short sha and subject (suffixed "(dirty)" for uncommitted changes) when the file sits in a git
+        repository, otherwise to a message naming the pipeline file.
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
     :param service_level: Service sizing tier when creating the service (with --managed).
     :param min_replicas: Minimum query replicas (with --managed).

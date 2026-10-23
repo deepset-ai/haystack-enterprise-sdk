@@ -206,7 +206,8 @@ Common options:
 - `--comment` / `-m` is the comment stored on the revision, so you can tell revisions apart in the
   platform UI. Every revision needs one. When you omit the flag, the CLI uses the short sha and
   subject of the HEAD commit (e.g. `a1b2c3d Add retry to retriever`) if the pipeline file sits in a
-  git repository, and otherwise `Deployed pipeline.py via haystack-enterprise CLI`.
+  git repository, with ` (dirty)` appended when tracked files have uncommitted changes, and otherwise
+  `Deployed pipeline.py via haystack-enterprise CLI`.
 - `--skip-activation` pushes the revision as `PENDING` without rolling it out.
 - `--skip-validation` skips the pre-deploy YAML validation (validation runs by default and aborts on
   blocking issues).
@@ -435,6 +436,19 @@ To pass CI secrets to the service, expose them to the step's environment and nam
 ```
 
 Keep non-secret, per-environment settings in a committed file such as `.env.prod`.
+
+On a `pull_request` run, `actions/checkout` checks out a synthetic merge commit, so the default revision
+comment reads `Merge 1234abc into 9876fed`. Pass the PR title instead, through `env` rather than inline
+`${{ }}`, because the title is user input:
+
+```yaml
+- name: Deploy
+  env:
+    PR_TITLE: ${{ github.event.pull_request.title }}
+  run: uv run haystack-enterprise deploy pipeline.py my-service -m "$PR_TITLE"
+```
+
+A `push` run on a squash-merged branch needs nothing: HEAD's subject is already the PR title.
 
 ---
 

@@ -78,14 +78,20 @@ def _git(target_dir: Path, *args: str) -> Optional[str]:
 def default_revision_comment(target: Path) -> str:
     """Build the comment used when the caller does not supply one.
 
-    The HEAD commit's short sha and subject when the pipeline file sits in a git repository, otherwise
-    a message naming the file. The git lookup is best-effort and never fails the deploy.
+    The HEAD commit's short sha and subject when the pipeline file sits in a git repository, suffixed
+    ``(dirty)`` when tracked files have uncommitted changes, since the deploy reads the working tree and
+    not HEAD. Otherwise a message naming the file. The git lookups are best-effort and never fail the deploy.
 
     :param target: Path to the pipeline file being deployed.
     :return: A single-line comment.
     """
     target_dir = target.parent if target.parent != Path("") else Path(".")
-    return _git(target_dir, "log", "-1", "--format=%h %s") or f"Deployed {target.name} via haystack-enterprise CLI"
+    comment = _git(target_dir, "log", "-1", "--format=%h %s")
+    if comment is None:
+        return f"Deployed {target.name} via haystack-enterprise CLI"
+    if _git(target_dir, "status", "--porcelain", "--untracked-files=no"):
+        comment += " (dirty)"
+    return comment
 
 
 @dataclass
