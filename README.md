@@ -22,11 +22,17 @@ Set up Haystack Enterprise for me. Fetch https://raw.githubusercontent.com/deeps
 
 ## Installation
 
-On macOS or Linux, one command installs the CLI. It installs [uv](https://docs.astral.sh/uv/) first if
-you don't have it, and running it again upgrades the CLI:
+One command installs the CLI. It installs [uv](https://docs.astral.sh/uv/) first if you don't have it,
+and running it again upgrades the CLI. On macOS, Linux, or Git Bash on Windows:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/install.sh | bash
+```
+
+In Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/install.ps1 | iex"
 ```
 
 Or install it yourself:
