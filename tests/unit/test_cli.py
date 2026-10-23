@@ -26,7 +26,7 @@ from haystack_enterprise_sdk._api.upload_sessions import (
     UploadSessionWriteModeEnum,
     WriteMode,
 )
-from haystack_enterprise_sdk.cli import _browser_login, _configure_cli_logging, _ui_url_for, cli_app
+from haystack_enterprise_sdk.cli import _browser_login, _configure_cli_logging, _ui_url_for, cli_app, run_packaged
 from haystack_enterprise_sdk.models import UserInfo
 from haystack_enterprise_sdk.workflows.sync_client.files import download as sync_download
 
@@ -720,3 +720,12 @@ class TestCLILogging:
         combined = captured.out + captured.err
         assert "info-line" in combined
         assert "debug-line" in combined
+
+
+def test_run_packaged_uses_os_trust_store() -> None:
+    with (
+        patch("haystack_enterprise_sdk.cli.truststore.inject_into_ssl") as inject,
+        patch("haystack_enterprise_sdk.cli.cli_app"),
+    ):
+        run_packaged()
+    inject.assert_called_once_with()

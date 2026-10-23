@@ -50,6 +50,10 @@ service is serving — confirm with `haystack-enterprise service-status SERVICE`
 
 Set `CI=true` to replace spinners and progress bars with plain line output.
 
+The CLI verifies TLS against the OS trust store (via `truststore`), so a corporate proxy's root CA
+installed in Windows or macOS is trusted. The SDK used as a library does not; call
+`truststore.inject_into_ssl()` yourself if you hit `CERTIFICATE_VERIFY_FAILED` behind such a proxy.
+
 `deploy --env KEY=VALUE`, `--env KEY` (value read from the environment) and `--env-file FILE` set
 service secrets on the target service. Existing names are updated and others left alone, and the
 values apply on the next request without a redeploy.
