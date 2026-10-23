@@ -94,6 +94,46 @@ class TestFilePathsUpload:
             workspace_name="test_workspace", session_id=upload_session_response.session_id
         )
 
+    async def test_upload_file_paths_does_not_wait_for_files_that_failed_s3_upload(
+        self,
+        file_service: FilesService,
+        mocked_upload_sessions_api: Mock,
+        upload_session_response: UploadSession,
+        mocked_s3: Mock,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        # enforce batch upload
+        monkeypatch.setattr("haystack_enterprise_sdk._service.files_service.DIRECT_UPLOAD_THRESHOLD", -1)
+        failed = [
+            S3UploadResult(file_name="two.txt", success=False),
+            S3UploadResult(file_name="two.txt.meta.json", success=False),
+            S3UploadResult(file_name="three.txt", success=False),
+        ]
+        upload_summary = S3UploadSummary(total_files=5, successful_upload_count=2, failed_upload_count=3, failed=failed)
+        mocked_s3.upload_files_from_paths.return_value = upload_summary
+        mocked_upload_sessions_api.create.return_value = upload_session_response
+        # only one.txt reached S3, so it is the only file that can ever be ingested
+        mocked_upload_sessions_api.status.return_value = UploadSessionStatus(
+            session_id=upload_session_response.session_id,
+            expires_at=upload_session_response.expires_at,
+            documentation_url=upload_session_response.documentation_url,
+            ingestion_status=UploadSessionIngestionStatus(failed_files=0, finished_files=1),
+        )
+        result = await file_service.upload_file_paths(
+            workspace_name="test_workspace",
+            file_paths=[
+                Path("./tmp/one.txt"),
+                Path("./tmp/one.txt.meta.json"),
+                Path("./tmp/two.txt"),
+                Path("./tmp/two.txt.meta.json"),
+                Path("./tmp/three.txt"),
+            ],
+            blocking=True,
+            timeout_s=5,
+        )
+        assert result == upload_summary
+        mocked_upload_sessions_api.status.assert_called_once()
+
     async def test_upload_file_paths_with_timeout(
         self,
         file_service: FilesService,

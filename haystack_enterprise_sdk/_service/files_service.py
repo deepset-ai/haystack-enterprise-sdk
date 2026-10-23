@@ -73,6 +73,14 @@ def _all_failed(file_names: List[str], error: Exception) -> S3UploadSummary:
     )
 
 
+def _reached_s3(raw_file_count: int, upload_summary: S3UploadSummary) -> int:
+    """Count the raw files that made it to S3; only those can ever show up in the ingestion status.
+
+    Waiting for files that failed to upload would never finish.
+    """
+    return raw_file_count - sum(1 for f in upload_summary.failed if not f.file_name.endswith(META_SUFFIX))
+
+
 class FilesService:
     """Service for all file-related operations."""
 
@@ -304,7 +312,7 @@ class FilesService:
             await self._wait_for_finished(
                 workspace_name=workspace_name,
                 session_id=upload_session.session_id,
-                total_files=total_files,
+                total_files=_reached_s3(total_files, upload_summary),
                 timeout_s=timeout_s,
                 show_progress=show_progress,
             )
@@ -665,7 +673,7 @@ class FilesService:
             await self._wait_for_finished(
                 workspace_name=workspace_name,
                 session_id=upload_session.session_id,
-                total_files=len(files),
+                total_files=_reached_s3(len(files), upload_summary),
                 timeout_s=timeout_s,
                 show_progress=show_progress,
             )
