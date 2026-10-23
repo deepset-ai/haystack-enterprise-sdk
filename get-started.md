@@ -39,7 +39,11 @@ installs the CLI as a uv tool:
 curl -fsSL https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/install.sh | bash
 ```
 
-On Windows, install uv first, then run `uv tool install haystack-enterprise-sdk`.
+That works in Git Bash on Windows too. From Windows PowerShell, run instead:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/install.ps1 | iex"
+```
 
 To upgrade an existing installation, run `uv tool upgrade haystack-enterprise-sdk`.
 

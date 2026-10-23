@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Install the haystack-enterprise CLI:
 #   curl -fsSL https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/install.sh | bash
+# On Windows, run it from Git Bash, MSYS2 or Cygwin. From PowerShell, use install.ps1 instead.
 #
 # Optional environment variables:
 #   HE_VERSION  install a specific version, e.g. HE_VERSION=0.2.0
@@ -10,10 +11,12 @@ set -euo pipefail
 PACKAGE="haystack-enterprise-sdk${HE_EXTRAS:-}${HE_VERSION:+==$HE_VERSION}"
 DOCS_URL="https://docs.cloud.deepset.ai/reference/sdk-overview"
 
+is_windows=""
 case "$(uname -s)" in
   Linux | Darwin) ;;
+  MINGW* | MSYS* | CYGWIN*) is_windows=1 ;;
   *)
-    echo "❌ This installer supports macOS and Linux. On Windows, run: uv tool install haystack-enterprise-sdk" >&2
+    echo "❌ Unsupported OS. On Windows, run in PowerShell: irm https://raw.githubusercontent.com/deepset-ai/haystack-enterprise-sdk/main/install.ps1 | iex" >&2
     exit 1
     ;;
 esac
@@ -32,7 +35,11 @@ EOF
 echo "🔍 Checking for uv..."
 if ! command -v uv >/dev/null 2>&1; then
   echo "💾 uv not found. Installing it from https://astral.sh/uv ..."
-  curl -LsSf https://astral.sh/uv/install.sh | sh
+  if [ -n "$is_windows" ]; then
+    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+  else
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+  fi
   export PATH="$HOME/.local/bin:$PATH"
 fi
 echo "✅ Using $(uv --version)"
@@ -44,6 +51,10 @@ echo "🔗 Making sure the uv tool directory is on your PATH..."
 uv tool update-shell >/dev/null 2>&1 || true
 
 bin_dir="$(uv tool dir --bin)"
+if [ -n "$is_windows" ]; then
+  # uv prints a native C:\... path; bash needs /c/...
+  bin_dir="$(cygpath -u "$bin_dir")"
+fi
 version="$("$bin_dir/haystack-enterprise" --version)"
 
 cat <<EOF
