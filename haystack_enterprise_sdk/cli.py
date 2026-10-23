@@ -21,6 +21,7 @@ from uuid import UUID
 import click
 import httpx
 import structlog
+import truststore
 import typer
 from dotenv import dotenv_values
 from tabulate import tabulate
@@ -2123,6 +2124,9 @@ def run_packaged() -> None:
     This is the console-script entrypoint (``haystack-enterprise``) declared in ``pyproject.toml``;
     it is not a subcommand. It runs the Typer app and turns API errors into a clean exit.
     """
+    # Verify TLS against the OS trust store instead of certifi, so CAs installed by corporate
+    # TLS-inspecting proxies (common on Windows) are trusted. CLI only: the library leaves `ssl` alone.
+    truststore.inject_into_ssl()
     try:
         cli_app()
     except HaystackEnterpriseAPIError as err:
