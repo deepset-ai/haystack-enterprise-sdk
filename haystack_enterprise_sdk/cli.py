@@ -18,7 +18,6 @@ from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Se
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
-import click
 import httpx
 import structlog
 import truststore
@@ -464,14 +463,19 @@ def _show_device_code(user_code: str, verification_uri: str, verification_uri_co
 
 
 def _choose(label: str, options: List[str], default: Optional[str] = None) -> str:
-    """Let the user pick one of ``options`` by number. A single option is picked without asking."""
+    """Let the user pick one of ``options`` by number or name. A single option is picked without asking."""
     if len(options) == 1:
         return options[0]
     for number, option in enumerate(options, start=1):
         typer.echo(f"  {number}. {option}")
-    default_number = options.index(default) + 1 if default in options else 1
-    choice: int = typer.prompt(label, default=default_number, type=click.IntRange(1, len(options)))
-    return options[choice - 1]
+    while True:
+        choice: str = typer.prompt(f"{label} (number or name)", default=default if default in options else options[0])
+        # An exact name wins, so an option literally named "2" stays reachable.
+        if choice in options:
+            return choice
+        if choice.isdigit() and 1 <= int(choice) <= len(options):
+            return options[int(choice) - 1]
+        typer.echo(f"'{choice}' is not one of the options above.", err=True)
 
 
 def _pick_organization(api_url: str, headers: Dict[str, str]) -> str:
@@ -486,10 +490,11 @@ def _pick_organization(api_url: str, headers: Dict[str, str]) -> str:
 
 
 def _pick_workspace(api_url: str, headers: Dict[str, str]) -> str:
-    """:return: The default workspace, asking if there are several."""
-    response = httpx.get(f"{api_url}/{API_VERSION_PATH}/workspaces", headers=headers, timeout=30)
+    """:return: The default workspace, asking if the user has access to several."""
+    # /workspaces lists every workspace of the organization to its members; /users/me only the user's own.
+    response = httpx.get(f"{api_url}/{API_VERSION_PATH}/users/me", headers=headers, timeout=30)
     response.raise_for_status()
-    names = sorted(workspace["name"] for workspace in response.json())
+    names = sorted(workspace["name"] for workspace in response.json()["organization"]["workspaces"])
     return _choose("Default workspace", names, default="default") if names else "default"
 
 
