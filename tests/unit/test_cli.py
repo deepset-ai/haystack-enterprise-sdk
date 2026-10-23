@@ -614,19 +614,51 @@ class TestCLIUtils:
     def test_whoami(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("API_KEY", "key")
         monkeypatch.setattr("haystack_enterprise_sdk.cli.DEFAULT_WORKSPACE_NAME", "default")
-        response = httpx.Response(200, json=[{"name": "default"}], request=httpx.Request("GET", "https://x"))
-        with patch("haystack_enterprise_sdk.cli.httpx.get", return_value=response) as get_mock:
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.headers["Authorization"] == "Bearer key"
+            return httpx.Response(200, json=[{"name": "default"}])
+
+        async_client = httpx.AsyncClient
+        with patch(
+            "haystack_enterprise_sdk.cli.httpx.AsyncClient",
+            lambda **kwargs: async_client(transport=httpx.MockTransport(handler), **kwargs),
+        ):
             result = runner.invoke(cli_app, ["whoami"])
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert "with an API key" in result.stdout
         assert "Default workspace: default" in result.stdout
-        assert get_mock.call_args.kwargs["headers"] == {"Authorization": "Bearer key"}
+
+    def test_whoami_with_login_session(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("API_KEY", raising=False)
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.API_KEY", "")
+        OAuthCredentials(
+            api_url="https://api.cloud.deepset.ai",
+            client_id="cli",
+            token_endpoint="https://auth.example.com/token",
+            access_token="access",
+            refresh_token="refresh",
+            expires_at=time.time() + 3600,
+        ).save()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.headers["Authorization"] == "Bearer access"
+            return httpx.Response(200, json=[{"name": "default"}])
+
+        async_client = httpx.AsyncClient
+        with patch(
+            "haystack_enterprise_sdk.cli.httpx.AsyncClient",
+            lambda **kwargs: async_client(transport=httpx.MockTransport(handler), **kwargs),
+        ):
+            result = runner.invoke(cli_app, ["whoami"])
+        assert result.exit_code == 0, result.output
+        assert "with a login session" in result.stdout
 
     def test_whoami_warns_about_unknown_workspace(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("API_KEY", "key")
         monkeypatch.setattr("haystack_enterprise_sdk.cli.DEFAULT_WORKSPACE_NAME", "gone")
         response = httpx.Response(200, json=[{"name": "default"}], request=httpx.Request("GET", "https://x"))
-        with patch("haystack_enterprise_sdk.cli.httpx.get", return_value=response):
+        with patch("haystack_enterprise_sdk.cli._list_workspaces", AsyncMock(return_value=response)):
             result = runner.invoke(cli_app, ["whoami"])
         assert result.exit_code == 0
         assert "'gone' not found. Available: default" in result.stdout
@@ -634,7 +666,7 @@ class TestCLIUtils:
     def test_whoami_rejected_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("API_KEY", "bogus")
         response = httpx.Response(401, request=httpx.Request("GET", "https://x"))
-        with patch("haystack_enterprise_sdk.cli.httpx.get", return_value=response):
+        with patch("haystack_enterprise_sdk.cli._list_workspaces", AsyncMock(return_value=response)):
             result = runner.invoke(cli_app, ["whoami"])
         assert result.exit_code == 1
         assert "Authentication failed" in result.output

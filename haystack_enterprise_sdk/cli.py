@@ -1,5 +1,6 @@
 """The CLI for the Haystack Enterprise SDK."""
 
+import asyncio
 import functools
 import json
 import logging
@@ -492,6 +493,13 @@ def _pick_workspace(api_url: str, headers: Dict[str, str]) -> str:
     return _choose("Default workspace", names, default="default") if names else "default"
 
 
+async def _list_workspaces(config: CommonConfig) -> httpx.Response:
+    """:return: The workspaces response. Async because OAuthAuth only attaches and refreshes tokens on async clients."""
+    headers = {"Authorization": f"Bearer {config.api_key}"} if config.api_key else {}
+    async with httpx.AsyncClient(auth=_client_auth(config), timeout=30) as client:
+        return await client.get(f"{config.api_url}/{API_VERSION_PATH}/workspaces", headers=headers)
+
+
 @cli_app.command()
 def whoami() -> None:
     """Check that you're logged in, without prompting. Exits with 1 if the credentials don't work.
@@ -504,14 +512,8 @@ def whoami() -> None:
     except ValueError:
         typer.echo("Not logged in. Run `haystack-enterprise login`.", err=True)
         raise typer.Exit(code=1)  # noqa: B904
-    headers = {"Authorization": f"Bearer {config.api_key}"} if config.api_key else {}
     try:
-        response = httpx.get(
-            f"{config.api_url}/{API_VERSION_PATH}/workspaces",
-            headers=headers,
-            auth=_client_auth(config),
-            timeout=30,
-        )
+        response = asyncio.run(_list_workspaces(config))
     except httpx.HTTPError as err:
         typer.echo(f"Could not reach {config.api_url}: {err}", err=True)
         raise typer.Exit(code=1)  # noqa: B904
