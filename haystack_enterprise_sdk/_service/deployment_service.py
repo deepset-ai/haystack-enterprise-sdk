@@ -50,7 +50,7 @@ _FAILURE_STATUSES = frozenset({DeploymentStatus.DEPLOYMENT_FAILED})
 DEFAULT_POLL_INTERVAL_S = 3.0
 DEFAULT_ACTIVATION_TIMEOUT_S = 600.0
 
-# Seconds allowed for the best-effort git lookups behind the default revision comment.
+# Seconds allowed for each best-effort git lookup behind the default revision comment and source metadata.
 _GIT_TIMEOUT_S = 3.0
 
 # Display name sent with every push. The packaged CLI entrypoint (``run_packaged``) overrides it.
@@ -59,14 +59,6 @@ CLIENT_NAME = "Haystack Enterprise SDK"
 
 # Longest value the platform accepts per source-metadata field; anything longer is a 422, so cut first.
 _SOURCE_LIMITS = {"repo": 300, "branch": 255, "sha": 64, "file": 1024}
-
-# Commit-page path template per known hosting provider. A self-hosted GitHub/GitLab is not
-# recognizable from the remote URL alone, so anything unlisted gets no link rather than a wrong one.
-_COMMIT_URL_TEMPLATES = {
-    "github.com": "https://{host}/{path}/commit/{sha}",
-    "gitlab.com": "https://{host}/{path}/-/commit/{sha}",
-    "bitbucket.org": "https://{host}/{path}/commits/{sha}",
-}
 
 
 def _git(target_dir: Path, *args: str) -> Optional[str]:
@@ -119,41 +111,23 @@ def _repo_id(remote: Optional[str]) -> Optional[str]:
     return f"{(match.group(1) or match.group(2)).lower()}/{path}" if path else None
 
 
-def _commit_url(repo: str, sha: str) -> Optional[str]:
-    """Build a web URL for ``sha`` from a ``host/path`` repository id.
-
-    :param repo: Repository id as returned by :func:`_repo_id`.
-    :param sha: Full commit sha.
-    :return: A browsable commit URL, or None for an unrecognized host.
-    """
-    host, _, path = repo.partition("/")
-    template = _COMMIT_URL_TEMPLATES.get(host)
-    return template.format(host=host, path=path, sha=sha) if template else None
-
-
-def default_revision_comment(target: Path, git: Dict[str, Any]) -> str:
+def default_revision_comment(target: Path) -> str:
     """Build the comment used when the caller does not supply one.
 
-    Adds the git branch, commit and a link to the commit page when the push's source metadata knows
-    them. The comment degrades to branch@sha, and then to the bare CLI message, rather than failing.
+    The HEAD commit's short sha and subject when the pipeline file sits in a git repository, suffixed
+    ``(dirty)`` when tracked files have uncommitted changes, since the deploy reads the working tree and
+    not HEAD. Otherwise a message naming the file. The git lookups are best-effort and never fail the deploy.
 
     :param target: Path to the pipeline file being deployed.
-    :param git: The ``git`` block of :func:`collect_source_metadata` (empty when not in a repository).
     :return: A single-line comment.
     """
-    base = f"Deployed {target.name} via haystack-enterprise CLI"
-    sha = git.get("sha")
-    if not sha:
-        return base
-
-    branch = git.get("branch")  # absent on a detached HEAD: show the sha alone
-    comment = f"{base} ({f'{branch}@{sha[:7]}' if branch else sha[:7]})"
-
-    repo = git.get("repo")
-    url = _commit_url(repo, sha) if repo else None
-    # Appended as a bare URL, not markdown: the platform stores the comment as a plain string, and
-    # unrendered markdown would show up as literal brackets.
-    return f"{comment} {url}" if url else comment
+    target_dir = target.parent if target.parent != Path("") else Path(".")
+    comment = _git(target_dir, "log", "-1", "--format=%h %s")
+    if comment is None:
+        return f"Deployed {target.name} via haystack-enterprise CLI"
+    if _git(target_dir, "status", "--porcelain", "--untracked-files=no"):
+        comment += " (dirty)"
+    return comment
 
 
 def collect_source_metadata(target: Path) -> Dict[str, Any]:
@@ -391,7 +365,7 @@ class DeploymentService:
             self._workspace_name,
             deployment.deployment_id,
             config_yaml,
-            comment or default_revision_comment(target, source_metadata.get("git", {})),
+            comment or default_revision_comment(target),
             source_metadata=source_metadata,
         )
         logger.info("Pushed deployment revision.", service=service_name, revision_id=str(revision.revision_id))

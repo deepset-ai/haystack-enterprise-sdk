@@ -44,11 +44,16 @@ haystack-enterprise deploy pipeline.py SERVICE
 Redirect with `--output`, never with `>`. The CLI's logger writes to stdout, so a shell redirect
 interleaves warning lines into the YAML or JSON and the result no longer parses.
 
-Exit codes worth knowing: 1 for validation, transform, and API errors; 130 when `run` is interrupted;
-and 0 when a `deploy` rollout is detached or times out. A zero exit from `deploy` does not mean the
-service is serving — confirm with `haystack-enterprise service-status SERVICE`.
+Exit codes worth knowing: 1 for validation, transform, and API errors, and for a `deploy` rollout that
+fails or does not finish within the wait limit; 130 when `run` is interrupted; and 0 when you detach from
+a `deploy` on purpose (Ctrl-C or `--skip-activation`). A rollout that timed out may still come up —
+confirm with `haystack-enterprise service-status SERVICE`.
 
 Set `CI=true` to replace spinners and progress bars with plain line output.
+
+The CLI verifies TLS against the OS trust store (via `truststore`), so a corporate proxy's root CA
+installed in Windows or macOS is trusted. The SDK used as a library does not; call
+`truststore.inject_into_ssl()` yourself if you hit `CERTIFICATE_VERIFY_FAILED` behind such a proxy.
 
 `deploy --env KEY=VALUE`, `--env KEY` (value read from the environment) and `--env-file FILE` set
 service secrets on the target service. Existing names are updated and others left alone, and the

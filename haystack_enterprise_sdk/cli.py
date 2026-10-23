@@ -21,6 +21,7 @@ from uuid import UUID
 import click
 import httpx
 import structlog
+import truststore
 import typer
 from dotenv import dotenv_values
 from tabulate import tabulate
@@ -767,9 +768,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param managed: Create the service as a managed (provisioned) deployment instead of a serverless
         one. Required to use any of the sizing options below, which serverless ignores. Only applies
         when the service is created.
-    :param comment: Comment stored on the new revision (the platform requires one). Defaults to an
-        auto-generated message naming the pipeline file and, when the file sits in a git repository, the
-        current branch, commit and a link to the commit page.
+    :param comment: Comment stored on the new revision (the platform requires one). Defaults to the
+        HEAD commit's short sha and subject (suffixed "(dirty)" for uncommitted changes) when the file sits in a git
+        repository, otherwise to a message naming the pipeline file.
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
     :param service_level: Service sizing tier when creating the service (with --managed).
     :param min_replicas: Minimum query replicas (with --managed).
@@ -1011,7 +1012,8 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         )
     elif result.timed_out:
         typer.echo(
-            f"Activation of '{service_name}' is still in progress. Detached; the rollout continues. "
+            f"The rollout of '{service_name}' did not finish within the wait limit, so the new revision is "
+            f"not confirmed to be serving. The rollout continues on the platform. "
             f"Check with `haystack-enterprise service-status {service_name}`."
         )
     elif result.deployment.deployment_mode is DeploymentMode.SERVERLESS:
@@ -1030,6 +1032,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             login_required=share_login_required,
         )
         _echo_endpoint(client, service_name, result, shared=bool(share))
+
+    # A job result answers "is the new revision serving?", so an unfinished rollout must not look like success.
+    if result.timed_out:
+        raise typer.Exit(1)
 
 
 @cli_app.command()
@@ -2121,6 +2127,9 @@ def run_packaged() -> None:
     from here are recorded as coming from the CLI rather than the SDK.
     """
     deployment_service.CLIENT_NAME = "Haystack Enterprise CLI"
+    # Verify TLS against the OS trust store instead of certifi, so CAs installed by corporate
+    # TLS-inspecting proxies (common on Windows) are trusted. CLI only: the library leaves `ssl` alone.
+    truststore.inject_into_ssl()
     try:
         cli_app()
     except HaystackEnterpriseAPIError as err:

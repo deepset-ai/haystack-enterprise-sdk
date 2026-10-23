@@ -1,5 +1,8 @@
+import os
 import time
+import urllib.request
 from pathlib import Path
+from typing import Dict
 from unittest.mock import MagicMock, Mock, patch
 
 import aiohttp
@@ -7,8 +10,15 @@ import pytest
 from pyrate_limiter import Duration, Rate
 from tqdm.asyncio import tqdm
 
+from haystack_enterprise_sdk._api.files import FailedToUploadFileException
 from haystack_enterprise_sdk._api.upload_sessions import UploadSession
-from haystack_enterprise_sdk._s3.upload import S3, RetryableHttpError, make_safe_file_name
+from haystack_enterprise_sdk._s3.upload import (
+    S3,
+    ProxySettings,
+    RetryableHttpError,
+    make_safe_file_name,
+    resolve_proxy,
+)
 from haystack_enterprise_sdk.models import HaystackEnterpriseFile
 
 
@@ -30,6 +40,36 @@ class TestUploadsS3:
         def test_make_safe_file_name(self, input_file_name: str, expected_file_name: str) -> None:
             safe_name = make_safe_file_name(input_file_name)
             assert safe_name == expected_file_name
+
+        @pytest.mark.parametrize(
+            "env,expected",
+            [
+                ({}, (None, None)),
+                ({"HTTPS_PROXY": "http://proxy:8080"}, ("http://proxy:8080", None)),
+                # aiohttp's trust_env drops https:// proxies and ALL_PROXY; httpx (API calls) uses them
+                ({"HTTPS_PROXY": "https://proxy:8443"}, ("https://proxy:8443", None)),
+                ({"ALL_PROXY": "http://proxy:3128"}, ("http://proxy:3128", None)),
+                ({"HTTPS_PROXY": "proxy:8080"}, ("http://proxy:8080", None)),
+                (
+                    {"HTTPS_PROXY": "http://user:p%40ss@proxy:8080"},
+                    ("http://proxy:8080", {"Proxy-Authorization": aiohttp.BasicAuth("user", "p@ss").encode()}),
+                ),
+                ({"HTTPS_PROXY": "http://proxy:8080", "NO_PROXY": "amazonaws.com"}, (None, None)),
+            ],
+        )
+        def test_resolve_proxy(
+            self, monkeypatch: pytest.MonkeyPatch, env: Dict[str, str], expected: ProxySettings
+        ) -> None:
+            for key in list(os.environ):
+                if key.lower().endswith("_proxy"):
+                    monkeypatch.delenv(key)
+            for key, value in env.items():
+                monkeypatch.setenv(key, value)
+            # keep the host's system proxy config (macOS/Windows) out of the test
+            monkeypatch.setattr(urllib.request, "getproxies", urllib.request.getproxies_environment)
+            monkeypatch.setattr(urllib.request, "proxy_bypass", urllib.request.proxy_bypass_environment)  # type: ignore[attr-defined]
+
+            assert resolve_proxy("https://bucket.s3.amazonaws.com/upload") == expected
 
     @patch.object(aiohttp.ClientSession, "post")
     @pytest.mark.asyncio
@@ -106,7 +146,9 @@ class TestUploadsS3:
                 expected_time_taken = number_of_files_to_upload / rate.limit
                 assert time_taken == pytest.approx(expected_time_taken, 1)
 
-        async def test_upload_files_from_path_http_error(self, upload_session_response: UploadSession) -> None:
+        async def test_upload_files_from_path_http_error(
+            self, post: Mock, upload_session_response: UploadSession
+        ) -> None:
             exception = aiohttp.ClientResponseError(request_info=Mock(), history=Mock(), status=503)
             with patch.object(aiohttp.ClientSession, "post", side_effect=exception):
                 async with S3() as s3:
@@ -132,10 +174,13 @@ class TestUploadsS3:
                         "35887.txt",
                         "35887.txt.meta.json",
                     ]
-                    assert all(isinstance(f.exception, RetryableHttpError) for f in results.failed)
+                    assert all(isinstance(f.exception, FailedToUploadFileException) for f in results.failed)
+                    assert all(
+                        isinstance(getattr(f.exception, "__cause__", None), RetryableHttpError) for f in results.failed
+                    )
 
         async def test_upload_files_from_path_with_client_disconnect_error(
-            self, upload_session_response: UploadSession
+            self, post: Mock, upload_session_response: UploadSession
         ) -> None:
             exception = aiohttp.ServerDisconnectedError()
             with patch.object(aiohttp.ClientSession, "post", side_effect=exception):
@@ -151,9 +196,12 @@ class TestUploadsS3:
                     assert results.failed_upload_count == 2
                     assert len(results.failed) == 2
                     assert [f.file_name for f in results.failed] == ["16675.txt", "16675.txt.meta.json"]
-                    assert all(isinstance(f.exception, RetryableHttpError) for f in results.failed)
+                    assert all(isinstance(f.exception, FailedToUploadFileException) for f in results.failed)
+                    assert all(
+                        isinstance(getattr(f.exception, "__cause__", None), RetryableHttpError) for f in results.failed
+                    )
 
-        async def test_upload_in_memory_http_error(self, upload_session_response: UploadSession) -> None:
+        async def test_upload_in_memory_http_error(self, post: Mock, upload_session_response: UploadSession) -> None:
             exception = aiohttp.ClientResponseError(request_info=Mock(), history=Mock(), status=503)
             with patch.object(aiohttp.ClientSession, "post", side_effect=exception):
                 async with S3() as s3:
@@ -174,9 +222,14 @@ class TestUploadsS3:
                         "two.txt",
                         "three.txt",
                     ]
-                    assert all(isinstance(f.exception, RetryableHttpError) for f in results.failed)
+                    assert all(isinstance(f.exception, FailedToUploadFileException) for f in results.failed)
+                    assert all(
+                        isinstance(getattr(f.exception, "__cause__", None), RetryableHttpError) for f in results.failed
+                    )
 
-        async def test_upload_in_memory_with_metadata_http_error(self, upload_session_response: UploadSession) -> None:
+        async def test_upload_in_memory_with_metadata_http_error(
+            self, post: Mock, upload_session_response: UploadSession
+        ) -> None:
             exception = aiohttp.ClientResponseError(request_info=Mock(), history=Mock(), status=503)
             with patch.object(aiohttp.ClientSession, "post", side_effect=exception):
                 async with S3() as s3:
@@ -199,12 +252,15 @@ class TestUploadsS3:
                         "three.txt",
                         "three.txt.meta.json",
                     ]
-                    assert all(isinstance(f.exception, RetryableHttpError) for f in results.failed)
+                    assert all(isinstance(f.exception, FailedToUploadFileException) for f in results.failed)
+                    assert all(
+                        isinstance(getattr(f.exception, "__cause__", None), RetryableHttpError) for f in results.failed
+                    )
 
         @pytest.mark.parametrize("status", [503, 502, 500, 504, 408, 400])
         @patch("aiohttp.ClientSession")
         async def test_upload_file_retries_for_exception(
-            self, mock_session: Mock, upload_session_response: UploadSession, status: int
+            self, mock_session: Mock, post: Mock, upload_session_response: UploadSession, status: int
         ) -> None:
             exception = aiohttp.ClientResponseError(
                 request_info=Mock(), history=Mock(), status=status, message="reason"
@@ -219,7 +275,7 @@ class TestUploadsS3:
         @pytest.mark.parametrize("status", [422, 501])
         @patch("aiohttp.ClientSession")
         async def test_upload_file_does_not_retry_for_exception(
-            self, mock_session: Mock, upload_session_response: UploadSession, status: int
+            self, mock_session: Mock, post: Mock, upload_session_response: UploadSession, status: int
         ) -> None:
             exception = aiohttp.ClientResponseError(
                 request_info=Mock(), history=Mock(), status=status, message="reason"
@@ -234,7 +290,7 @@ class TestUploadsS3:
         @pytest.mark.parametrize("status", [422, 501])
         @patch("aiohttp.ClientSession")
         async def test_upload_file_does_not_retry_for_exception_failing_json(
-            self, mock_session: Mock, upload_session_response: UploadSession, status: int
+            self, mock_session: Mock, post: Mock, upload_session_response: UploadSession, status: int
         ) -> None:
             exception = aiohttp.ClientResponseError(
                 request_info=Mock(), history=Mock(), status=status, message="reason"
@@ -250,6 +306,7 @@ class TestUploadsS3:
         async def test_upload_file_retries_for_client_connection_exception(
             self,
             mock_session: Mock,
+            post: Mock,
             upload_session_response: UploadSession,
         ) -> None:
             exception = aiohttp.ClientConnectionError()
@@ -257,3 +314,15 @@ class TestUploadsS3:
                 async with S3() as s3:
                     with pytest.raises(RetryableHttpError):
                         await s3._upload_file_with_retries("one.txt", upload_session_response, "123", mock_session)
+
+        async def test_upload_file_passes_resolved_proxy(
+            self, post: Mock, upload_session_response: UploadSession
+        ) -> None:
+            client_session = MagicMock()
+            proxy_settings = ("http://proxy:8080", {"Proxy-Authorization": "Basic abc"})
+            with patch("haystack_enterprise_sdk._s3.upload.resolve_proxy", return_value=proxy_settings):
+                async with S3() as s3:
+                    await s3._upload_file("one.txt", upload_session_response, "123", client_session)
+
+            kwargs = client_session.post.call_args.kwargs
+            assert (kwargs["proxy"], kwargs["proxy_headers"]) == proxy_settings

@@ -27,7 +27,6 @@ from haystack_enterprise_sdk._service.deployment_service import (
     DeploymentFailedError,
     DeploymentService,
     ServiceNotFoundError,
-    _commit_url,
     _git,
     _repo_id,
     collect_source_metadata,
@@ -111,7 +110,10 @@ class TestResolveAndPush:
         )
         service._deployments.activate_revision.assert_not_called()
 
-    async def test_push_without_comment_generates_one(self, service: MockedDeploymentService) -> None:
+    async def test_push_without_comment_generates_one(
+        self, service: MockedDeploymentService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("haystack_enterprise_sdk._service.deployment_service._git", lambda _dir, *_args: None)
         deployment = _deployment()
         service._deployments.find_by_name.return_value = deployment
         service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
@@ -119,7 +121,7 @@ class TestResolveAndPush:
         await service.deploy(FIXTURE, "svc")
 
         comment = service._deployments.push_revision.await_args.args[3]
-        assert comment.startswith("Deployed pipeline.py via haystack-enterprise CLI")
+        assert comment == "Deployed pipeline.py via haystack-enterprise CLI"
 
     async def test_missing_service_without_create_raises(self, service: MockedDeploymentService) -> None:
         service._deployments.find_by_name.return_value = None
@@ -639,45 +641,24 @@ class TestRepoId:
         assert _repo_id(remote) == expected
 
 
-class TestCommitUrl:
-    @pytest.mark.parametrize(
-        ("repo", "expected"),
-        [
-            ("github.com/org/repo", "https://github.com/org/repo/commit/" + "a" * 40),
-            ("github.com/12345/repo", "https://github.com/12345/repo/commit/" + "a" * 40),
-            ("gitlab.com/group/sub/repo", "https://gitlab.com/group/sub/repo/-/commit/" + "a" * 40),
-            ("bitbucket.org/org/repo", "https://bitbucket.org/org/repo/commits/" + "a" * 40),
-            ("git.internal.example.com/org/repo", None),
-        ],
-    )
-    def test_commit_url(self, repo: str, expected: Optional[str]) -> None:
-        assert _commit_url(repo, "a" * 40) == expected
-
-
 class TestDefaultRevisionComment:
-    SHA = "a1b2c3d4" + "0" * 32
-    BASE = "Deployed pipeline.py via haystack-enterprise CLI"
-
-    def test_includes_branch_and_commit_link(self) -> None:
-        git = {"repo": "github.com/org/repo", "branch": "main", "sha": self.SHA}
-        assert (
-            default_revision_comment(FIXTURE, git)
-            == f"{self.BASE} (main@a1b2c3d) https://github.com/org/repo/commit/{self.SHA}"
+    def test_uses_the_head_commit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "haystack_enterprise_sdk._service.deployment_service._git",
+            lambda _dir, *args: "a1b2c3d Add retry to retriever" if args[0] == "log" else None,
         )
+        assert default_revision_comment(FIXTURE) == "a1b2c3d Add retry to retriever"
 
-    def test_unknown_remote_host_omits_link(self) -> None:
-        git = {"repo": "git.internal.example.com/org/repo", "branch": "main", "sha": self.SHA}
-        assert default_revision_comment(FIXTURE, git) == f"{self.BASE} (main@a1b2c3d)"
+    def test_marks_uncommitted_changes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "haystack_enterprise_sdk._service.deployment_service._git",
+            lambda _dir, *args: "a1b2c3d Add retry to retriever" if args[0] == "log" else " M pipeline.py",
+        )
+        assert default_revision_comment(FIXTURE) == "a1b2c3d Add retry to retriever (dirty)"
 
-    def test_no_remote_omits_link(self) -> None:
-        assert default_revision_comment(FIXTURE, {"branch": "main", "sha": self.SHA}) == f"{self.BASE} (main@a1b2c3d)"
-
-    def test_detached_head_shows_sha_only(self) -> None:
-        assert default_revision_comment(FIXTURE, {"sha": self.SHA}) == f"{self.BASE} (a1b2c3d)"
-
-    def test_without_a_commit_falls_back_to_plain_comment(self) -> None:
-        assert default_revision_comment(FIXTURE, {}) == self.BASE
-        assert default_revision_comment(FIXTURE, {"branch": "main"}) == self.BASE
+    def test_without_git_falls_back_to_plain_comment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("haystack_enterprise_sdk._service.deployment_service._git", lambda _dir, *_args: None)
+        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI"
 
 
 class TestGitHelper:
