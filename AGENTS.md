@@ -51,6 +51,10 @@ confirm with `haystack-enterprise service-status SERVICE`.
 
 Set `CI=true` to replace spinners and progress bars with plain line output.
 
+On an interactive terminal the CLI checks PyPI at most once a day, cached in
+`~/.haystack-enterprise/version_check.json`, and prints an upgrade hint on stderr when a newer
+release exists. It is skipped in CI and off a TTY. `HAYSTACK_ENTERPRISE_NO_UPDATE_CHECK=1` turns it off.
+
 The CLI verifies TLS against the OS trust store (via `truststore`), so a corporate proxy's root CA
 installed in Windows or macOS is trusted. The SDK used as a library does not; call
 `truststore.inject_into_ssl()` yourself if you hit `CERTIFICATE_VERIFY_FAILED` behind such a proxy.

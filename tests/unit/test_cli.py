@@ -11,6 +11,7 @@ from uuid import UUID
 
 import httpx
 import pytest
+import respx
 import structlog
 import typer
 from typer.testing import CliRunner
@@ -26,7 +27,15 @@ from haystack_enterprise_sdk._api.upload_sessions import (
     UploadSessionWriteModeEnum,
     WriteMode,
 )
-from haystack_enterprise_sdk.cli import _browser_login, _configure_cli_logging, _ui_url_for, cli_app, run_packaged
+from haystack_enterprise_sdk.cli import (
+    _PYPI_URL,
+    _browser_login,
+    _configure_cli_logging,
+    _maybe_print_update_hint,
+    _ui_url_for,
+    cli_app,
+    run_packaged,
+)
 from haystack_enterprise_sdk.models import UserInfo
 from haystack_enterprise_sdk.workflows.sync_client.files import download as sync_download
 
@@ -811,6 +820,61 @@ class TestCLILogging:
         combined = captured.out + captured.err
         assert "info-line" in combined
         assert "debug-line" in combined
+
+
+class TestUpdateHint:
+    @pytest.fixture(autouse=True)
+    def _interactive(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.VERSION_CHECK_PATH", tmp_path / "version_check.json")
+        monkeypatch.setattr("haystack_enterprise_sdk.cli.__version__", "1.0.2")
+        monkeypatch.setattr("haystack_enterprise_sdk.cli._stderr_is_tty", lambda: True)
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.delenv("HAYSTACK_ENTERPRISE_NO_UPDATE_CHECK", raising=False)
+
+    @respx.mock
+    def test_newer_version_prints_hint_and_caches(self, capsys: pytest.CaptureFixture) -> None:
+        route = respx.get(_PYPI_URL).mock(return_value=httpx.Response(200, json={"info": {"version": "1.10.0"}}))
+        _maybe_print_update_hint()
+        _maybe_print_update_hint()
+        assert capsys.readouterr().err.count("1.0.2 -> 1.10.0") == 2
+        assert route.call_count == 1
+
+    @pytest.mark.parametrize(
+        "prefix,command",
+        [
+            ("/home/u/.local/share/uv/tools/haystack-enterprise-sdk", "uv tool upgrade haystack-enterprise-sdk"),
+            ("/home/u/project/.venv", "pip install -U haystack-enterprise-sdk"),
+        ],
+    )
+    @respx.mock
+    def test_upgrade_command_matches_install(
+        self, prefix: str, command: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setattr("sys.prefix", prefix)
+        respx.get(_PYPI_URL).mock(return_value=httpx.Response(200, json={"info": {"version": "1.1.0"}}))
+        _maybe_print_update_hint()
+        assert capsys.readouterr().err.strip().endswith(f"Upgrade with: {command}")
+
+    @pytest.mark.parametrize("latest", ["1.0.2", "0.9.9", "2.0.0rc1"])
+    @respx.mock
+    def test_no_hint_when_not_newer(self, latest: str, capsys: pytest.CaptureFixture) -> None:
+        respx.get(_PYPI_URL).mock(return_value=httpx.Response(200, json={"info": {"version": latest}}))
+        _maybe_print_update_hint()
+        assert capsys.readouterr().err == ""
+
+    @respx.mock
+    def test_network_error_is_silent(self, capsys: pytest.CaptureFixture) -> None:
+        respx.get(_PYPI_URL).mock(side_effect=httpx.ConnectError("offline"))
+        _maybe_print_update_hint()
+        assert capsys.readouterr().err == ""
+
+    @pytest.mark.parametrize("env", ["CI", "HAYSTACK_ENTERPRISE_NO_UPDATE_CHECK"])
+    @respx.mock
+    def test_disabled_skips_network(self, env: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(env, "1")
+        route = respx.get(_PYPI_URL)
+        _maybe_print_update_hint()
+        assert not route.called
 
 
 def test_run_packaged_uses_os_trust_store() -> None:
