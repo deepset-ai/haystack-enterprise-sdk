@@ -35,6 +35,19 @@ class FailedToUploadFileException(Exception):
     """Exception raised when a file failed to be uploaded."""
 
 
+def as_upload_error(error: Exception) -> FailedToUploadFileException:
+    """Report any per-file upload failure as ``FailedToUploadFileException``, whichever upload path it came from.
+
+    :param error: The original error, kept as ``__cause__``.
+    :return: The error itself if it already is a ``FailedToUploadFileException``, otherwise a wrapper around it.
+    """
+    if isinstance(error, FailedToUploadFileException):
+        return error
+    wrapped = FailedToUploadFileException(f"Failed to upload file: {str(error) or type(error).__name__}")
+    wrapped.__cause__ = error
+    return wrapped
+
+
 @dataclass
 class File:
     """File primitive from Haystack Enterprise Platform. This dataclass is used for all file-related operations that don't include the actual file content."""

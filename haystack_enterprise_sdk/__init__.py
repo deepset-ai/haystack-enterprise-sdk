@@ -11,6 +11,7 @@ from haystack_enterprise_sdk._api.deployments import (
     PipelineValidationIssue,
     PipelineValidationResult,
 )
+from haystack_enterprise_sdk._api.files import FailedToUploadFileException
 from haystack_enterprise_sdk._api.pipeline_run import PipelineRunError
 from haystack_enterprise_sdk._api.shared_prototypes import (
     FailedToCreateSharedPrototypeError,
@@ -60,6 +61,7 @@ __all__ = [
     "AsyncPipelineClient",
     "BaseConfig",
     "ErrorDetail",
+    "FailedToUploadFileException",
     "PipelineClient",
     "PipelineConfig",
     "PipelineInputs",
