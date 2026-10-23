@@ -103,6 +103,10 @@ class OAuthError(Exception):
     """The OAuth login or token refresh failed."""
 
 
+class DeviceLoginUnsupported(OAuthError):
+    """The identity provider doesn't offer the device authorization grant."""
+
+
 @dataclass
 class CliOAuthConfig:
     """The platform's CLI OAuth client, as advertised at ``/api/v1/sso/cli-config``."""
@@ -324,11 +328,12 @@ def device_login(
     :param show_code: Shows the user code and verification URLs to the user.
     :param sleep: Waits between polls. Replaced in tests.
     :return: The new credentials.
-    :raises OAuthError: If the platform doesn't support the device flow, or the login was denied or expired.
+    :raises DeviceLoginUnsupported: If the platform doesn't support the device flow.
+    :raises OAuthError: If the login was denied or expired.
     """
     metadata = discover(config.issuer)
     if "device_authorization_endpoint" not in metadata:
-        raise OAuthError("This platform does not support device login. Run `haystack-enterprise login` instead.")
+        raise DeviceLoginUnsupported("This platform does not support device login.")
 
     response = httpx.post(
         metadata["device_authorization_endpoint"],

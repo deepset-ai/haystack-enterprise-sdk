@@ -15,6 +15,7 @@ from haystack_enterprise_sdk._api import oauth
 from haystack_enterprise_sdk._api.config import CommonConfig
 from haystack_enterprise_sdk._api.oauth import (
     CliOAuthConfig,
+    DeviceLoginUnsupported,
     OAuthAuth,
     OAuthCredentials,
     OAuthError,
@@ -168,6 +169,15 @@ def test_device_login_polls_until_approved() -> None:
     assert [call.args[0] for call in sleep.call_args_list] == [5.0, 5.0, 10.0]
     assert request_token.call_args.args[1]["grant_type"] == oauth.DEVICE_CODE_GRANT
     assert credentials.access_token == "access-1"
+
+
+def test_device_login_unsupported() -> None:
+    metadata = {key: value for key, value in METADATA.items() if key != "device_authorization_endpoint"}
+    with (
+        patch("haystack_enterprise_sdk._api.oauth.discover", return_value=metadata),
+        pytest.raises(DeviceLoginUnsupported),
+    ):
+        device_login(API_URL, CONFIG, Mock(), sleep=Mock())
 
 
 def test_device_login_denied() -> None:
