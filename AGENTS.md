@@ -44,9 +44,10 @@ haystack-enterprise deploy pipeline.py SERVICE
 Redirect with `--output`, never with `>`. The CLI's logger writes to stdout, so a shell redirect
 interleaves warning lines into the YAML or JSON and the result no longer parses.
 
-Exit codes worth knowing: 1 for validation, transform, and API errors; 130 when `run` is interrupted;
-and 0 when a `deploy` rollout is detached or times out. A zero exit from `deploy` does not mean the
-service is serving — confirm with `haystack-enterprise service-status SERVICE`.
+Exit codes worth knowing: 1 for validation, transform, and API errors, and for a `deploy` rollout that
+fails or does not finish within the wait limit; 130 when `run` is interrupted; and 0 when you detach from
+a `deploy` on purpose (Ctrl-C or `--skip-activation`). A rollout that timed out may still come up —
+confirm with `haystack-enterprise service-status SERVICE`.
 
 Set `CI=true` to replace spinners and progress bars with plain line output.
 

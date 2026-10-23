@@ -146,8 +146,8 @@ class TestDeployCommand:
     def test_deploy_activate_timed_out(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=True, timed_out=True)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
-        assert result.exit_code == 0
-        assert "still in progress" in result.stdout
+        assert result.exit_code == 1
+        assert "did not finish within the wait limit" in result.stdout
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_failure_exits_1(self, client_cls: Mock) -> None:
@@ -455,7 +455,7 @@ class TestDeployCommand:
         # Rollout timed out: the service never reached DEPLOYED, so the prototype must not be attempted.
         client_cls.return_value.deploy.return_value = _result(activated=True, timed_out=True)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--share"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "Skipped shared prototype" in result.stdout
         client_cls.return_value.create_shared_prototype.assert_not_called()
 
@@ -496,7 +496,7 @@ class TestDeployCommand:
         _stub_endpoint(client_cls)
         client_cls.return_value.deploy.return_value = _result(activated=True, timed_out=True)
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "chat/completions" not in result.stdout
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
