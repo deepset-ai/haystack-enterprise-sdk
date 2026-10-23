@@ -24,16 +24,32 @@ from yaspin import yaspin
 # Values that mean "not CI" -- so `CI=false` turns the animations back on.
 _CI_OFF = ("", "0", "false")
 
+# CI systems that announce themselves with their own variable instead of ``CI``: Azure Pipelines,
+# Jenkins, TeamCity, AWS CodeBuild and Bamboo.
+_CI_MARKERS = ("TF_BUILD", "JENKINS_URL", "TEAMCITY_VERSION", "CODEBUILD_BUILD_ID", "bamboo_buildKey")
+
 T = TypeVar("T")
+
+
+def in_ci() -> bool:
+    """Whether this process runs in an automated pipeline.
+
+    ``CI`` decides when it is set, so ``CI=false`` opts out anywhere. Otherwise any of the vendor
+    variables in ``_CI_MARKERS`` counts.
+    """
+    ci = os.environ.get("CI")
+    if ci is not None:
+        return ci.strip().lower() not in _CI_OFF
+    return any(map(os.environ.get, _CI_MARKERS))
 
 
 def animations_enabled() -> bool:
     """Whether this process may draw a spinner or progress bar over its own output.
 
-    False in CI, which GitHub Actions, GitLab CI and Jenkins all announce by setting ``CI``. Kept as
-    one predicate so every constructor in this module agrees on the answer.
+    False in CI, as detected by :func:`in_ci`. Kept as one predicate so every constructor in this
+    module agrees on the answer.
     """
-    return os.environ.get("CI", "").strip().lower() in _CI_OFF
+    return not in_ci()
 
 
 def status_spinner() -> Any:

@@ -1,9 +1,10 @@
 """Tests for the deployment service orchestration."""
 
+import json
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, Mock
+from typing import TYPE_CHECKING, Dict, Optional, Tuple, cast
+from unittest.mock import ANY, AsyncMock, Mock
 from uuid import UUID, uuid4
 
 import pytest
@@ -27,6 +28,8 @@ from haystack_enterprise_sdk._service.deployment_service import (
     DeploymentService,
     ServiceNotFoundError,
     _git,
+    _repo_id,
+    collect_source_metadata,
     default_revision_comment,
 )
 
@@ -103,7 +106,7 @@ class TestResolveAndPush:
         assert result.activated is False
         assert result.timed_out is False
         service._deployments.push_revision.assert_awaited_once_with(
-            "ws", deployment.deployment_id, "components: {}\n", "Bump embedder"
+            "ws", deployment.deployment_id, "components: {}\n", "Bump embedder", source_metadata=ANY
         )
         service._deployments.activate_revision.assert_not_called()
 
@@ -599,6 +602,45 @@ class TestCreateSharedPrototype:
         assert 6.9 < delta_days < 7.1
 
 
+class TestRepoId:
+    @pytest.mark.parametrize(
+        ("remote", "expected"),
+        [
+            ("https://github.com/org/repo.git", "github.com/org/repo"),
+            ("git@github.com:org/repo.git", "github.com/org/repo"),
+            ("https://GitHub.com/Org/Repo.git/", "github.com/Org/Repo"),
+            ("https://user@bitbucket.org/org/repo.git", "bitbucket.org/org/repo"),
+            ("ssh://git@gitlab.com/group/sub/repo.git", "gitlab.com/group/sub/repo"),
+            ("ssh://git@git.corp.example:2222/team/repo.git", "git.corp.example/team/repo"),
+            ("https://git.corp.example:8443/team/sub/repo", "git.corp.example/team/sub/repo"),
+            ("git@git.internal.example.com:org/repo.git", "git.internal.example.com/org/repo"),
+            ("git@host:/abs/repo.git", "host/abs/repo"),
+            # scp syntax has no port: a numeric first path segment is part of the path.
+            ("git@github.com:12345/repo.git", "github.com/12345/repo"),
+            # Credentials never survive, however the URL is shaped.
+            ("https://oauth2:glpat-XXXX@gitlab.com/org/repo.git", "gitlab.com/org/repo"),
+            ("https://x-access-token:ghs_XXXX@github.com/org/repo", "github.com/org/repo"),
+            ("https://gitlab-ci-token:glpat-ZZZZ@gitlab.com:8443/org/repo.git", "gitlab.com/org/repo"),
+            ("https://user:p@ss@gitlab.com/org/repo.git", "gitlab.com/org/repo"),
+            ("https://user:p%40ss@gitlab.com/org/repo.git", "gitlab.com/org/repo"),
+            # Anything that could leak a credential or a local path is omitted rather than guessed at.
+            ("https://tok@github.com", None),
+            ("https://github.com", None),
+            ("https://user:pa/ss@host/org/repo", None),
+            ("https://gitlab.com/org/repo.git?private_token=glpat-QQQQ", None),
+            ("file:///srv/git/repo.git", None),
+            ("/srv/git/repo.git", None),
+            ("../relative/repo.git", None),
+            ("C:\\repos\\proj", None),
+            ("ssh://git@[::1]:2222/org/repo", None),
+            ("", None),
+            (None, None),
+        ],
+    )
+    def test_repo_id(self, remote: Optional[str], expected: Optional[str]) -> None:
+        assert _repo_id(remote) == expected
+
+
 class TestDefaultRevisionComment:
     def test_uses_the_head_commit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
@@ -640,3 +682,141 @@ class TestGitHelper:
 
     def test_returns_stripped_stdout(self) -> None:
         assert _git(Path(__file__).parent, "rev-parse", "--abbrev-ref", "HEAD")
+
+
+class TestCollectSourceMetadata:
+    SHA = "a1b2c3d4" + "0" * 32
+    INSIDE = ("rev-parse", "--is-inside-work-tree", "--show-prefix")
+    STATUS = ("status", "--porcelain", "--branch")
+    BRANCH = ("symbolic-ref", "--short", "-q", "HEAD")
+    REPO_OUTPUTS = {
+        INSIDE: "true\npipelines/",
+        ("remote", "get-url", "origin"): "git@github.com:org/repo.git",
+        BRANCH: "main",
+        ("rev-parse", "HEAD"): SHA,
+        STATUS: "## main",
+    }
+
+    @pytest.fixture(autouse=True)
+    def _not_ci(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CI", raising=False)
+
+    @staticmethod
+    def _patch_git(monkeypatch: pytest.MonkeyPatch, outputs: Dict[Tuple[str, ...], str]) -> None:
+        """Replace _git with a stand-in answering from ``outputs``, keyed by the git arguments."""
+        monkeypatch.setattr(
+            "haystack_enterprise_sdk._service.deployment_service._git", lambda _target_dir, *args: outputs.get(args)
+        )
+
+    def _without(self, *keys: Tuple[str, ...]) -> Dict[Tuple[str, ...], str]:
+        return {k: v for k, v in self.REPO_OUTPUTS.items() if k not in keys}
+
+    def test_normal_checkout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(monkeypatch, self.REPO_OUTPUTS)
+        assert collect_source_metadata(FIXTURE) == {
+            "ci": False,
+            "custom": {"client": "Haystack Enterprise SDK"},
+            "git": {"repo": "github.com/org/repo", "branch": "main", "sha": self.SHA, "dirty": False},
+            "file": "pipelines/pipeline.py",
+        }
+
+    def test_dirty_tree(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(monkeypatch, {**self.REPO_OUTPUTS, self.STATUS: "## main\n M x.py"})
+        assert collect_source_metadata(FIXTURE)["git"]["dirty"] is True
+
+    def test_failed_status_does_not_claim_clean(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(monkeypatch, self._without(self.STATUS))
+        assert "dirty" not in collect_source_metadata(FIXTURE)["git"]
+
+    def test_file_at_repo_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(monkeypatch, {**self.REPO_OUTPUTS, self.INSIDE: "true"})
+        assert collect_source_metadata(FIXTURE)["file"] == "pipeline.py"
+
+    @pytest.mark.parametrize(
+        "missing",
+        [BRANCH, ("rev-parse", "HEAD"), ("remote", "get-url", "origin")],
+        ids=["detached-head", "no-commits", "no-remote"],
+    )
+    def test_omits_what_it_cannot_determine(self, monkeypatch: pytest.MonkeyPatch, missing: Tuple[str, ...]) -> None:
+        self._patch_git(monkeypatch, self._without(missing))
+        info = collect_source_metadata(FIXTURE)
+        assert len({"repo", "branch", "sha"} & set(info["git"])) == 2
+        assert info["file"] == "pipelines/pipeline.py"
+
+    def test_not_a_repo_or_no_git(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(monkeypatch, {})
+        assert collect_source_metadata(FIXTURE) == {"ci": False, "custom": {"client": "Haystack Enterprise SDK"}}
+
+    def test_self_hosted_host_with_custom_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        remote = "ssh://git@git.corp.example:2222/team/repo.git"
+        self._patch_git(monkeypatch, {**self.REPO_OUTPUTS, ("remote", "get-url", "origin"): remote})
+        assert collect_source_metadata(FIXTURE)["git"]["repo"] == "git.corp.example/team/repo"
+
+    @pytest.mark.parametrize(("value", "expected"), [("true", True), ("1", True), ("false", False), ("", False)])
+    def test_ci_flag(self, monkeypatch: pytest.MonkeyPatch, value: str, expected: bool) -> None:
+        monkeypatch.setenv("CI", value)
+        self._patch_git(monkeypatch, {})
+        assert collect_source_metadata(FIXTURE)["ci"] is expected
+
+    def test_values_are_cut_to_the_platform_limits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_git(
+            monkeypatch,
+            {
+                **self.REPO_OUTPUTS,
+                self.BRANCH: "b" * 1000,
+                ("remote", "get-url", "origin"): "git@github.com:" + "o" * 1000,
+                ("rev-parse", "HEAD"): "c" * 100,
+                self.INSIDE: "true\n" + "d" * 2000 + "/",
+            },
+        )
+        info = collect_source_metadata(FIXTURE)
+        assert len(info["git"]["branch"]) == 255
+        assert len(info["git"]["repo"]) == 300
+        assert len(info["git"]["sha"]) == 64
+        assert len(info["file"]) == 1024
+
+    def test_sends_only_known_keys_and_no_credentials(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        remote = "https://gitlab-ci-token:glpat-SECRET@gitlab.com/org/repo.git"
+        self._patch_git(monkeypatch, {**self.REPO_OUTPUTS, ("remote", "get-url", "origin"): remote})
+        info = collect_source_metadata(tmp_path / "pipeline.py")
+        assert set(info) <= {"ci", "custom", "git", "file"}
+        assert set(info["git"]) <= {"repo", "branch", "sha", "dirty"}
+        sent = json.dumps(info)
+        assert info["git"]["repo"] == "gitlab.com/org/repo"
+        for forbidden in ("glpat-SECRET", "gitlab-ci-token", remote, str(tmp_path)):
+            assert forbidden not in sent
+
+    def test_real_repository(self, tmp_path: Path) -> None:
+        def git(*args: str) -> None:
+            subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)  # noqa: S603, S607
+
+        git("init", "-b", "main")
+        sub = tmp_path / "svc"
+        sub.mkdir()
+        target = sub / "pipeline.py"
+        target.write_text("x = 1\n")
+
+        # No commits yet: branch and file are known, sha is not.
+        info = collect_source_metadata(target)
+        assert info["file"] == "svc/pipeline.py"
+        assert info["git"]["branch"] == "main"
+        assert "sha" not in info["git"]
+
+        git("add", ".")
+        git(
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=author@secret.example",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "init",
+        )
+        assert collect_source_metadata(target)["git"]["dirty"] is False
+        target.write_text("x = 2\n")
+        info = collect_source_metadata(target)
+        assert info["git"]["dirty"] is True
+        assert len(info["git"]["sha"]) == 40
+        assert "author@secret.example" not in json.dumps(info)
