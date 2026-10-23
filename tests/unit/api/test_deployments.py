@@ -224,6 +224,17 @@ class TestRevisions:
             },
         )
 
+    async def test_push_revision_sends_source_metadata(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        deployment_id = uuid4()
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=_revision_body(str(deployment_id)))
+        source_metadata = {"git": {"branch": "main"}, "ci": False}
+        await deployments_api.push_revision(
+            "ws", deployment_id, config_yaml="components: {}", comment="c", source_metadata=source_metadata
+        )
+        assert mocked_haystack_enterprise_api.post.call_args.kwargs["json"]["source_metadata"] == source_metadata
+
     async def test_push_revision_tolerates_missing_status(
         self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:

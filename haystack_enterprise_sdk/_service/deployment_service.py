@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -37,6 +38,7 @@ from haystack_enterprise_sdk._api.shared_prototypes import (
     SharedPrototype,
     SharedPrototypesAPI,
 )
+from haystack_enterprise_sdk._console import in_ci
 from haystack_enterprise_sdk._service import pipeline_transform
 
 logger = structlog.get_logger(__name__)
@@ -48,8 +50,15 @@ _FAILURE_STATUSES = frozenset({DeploymentStatus.DEPLOYMENT_FAILED})
 DEFAULT_POLL_INTERVAL_S = 3.0
 DEFAULT_ACTIVATION_TIMEOUT_S = 600.0
 
-# Seconds allowed for the best-effort git lookup behind the default revision comment.
+# Seconds allowed for each best-effort git lookup behind the default revision comment and source metadata.
 _GIT_TIMEOUT_S = 3.0
+
+# Display name sent with every push. The packaged CLI entrypoint (``run_packaged``) overrides it.
+# ponytail: module global; an explicit client_name kwarg through deploy() if more clients appear.
+CLIENT_NAME = "Haystack Enterprise SDK"
+
+# Longest value the platform accepts per source-metadata field; anything longer is a 422, so cut first.
+_SOURCE_LIMITS = {"repo": 300, "branch": 255, "sha": 64, "file": 1024}
 
 
 def _git(target_dir: Path, *args: str) -> Optional[str]:
@@ -75,6 +84,33 @@ def _git(target_dir: Path, *args: str) -> Optional[str]:
     return completed.stdout.strip() or None
 
 
+# A git remote in either of its two forms: ``scheme://[userinfo@]host[:port]/path`` or scp-style
+# ``[user@]host:path``. Anything else (local paths, ``file://``, a missing path, a query string) does
+# not match, so it is omitted instead of risking a credential or a local path in the result. Userinfo
+# runs to the last ``@`` of the authority, and only the URL form may carry a port: in scp syntax
+# ``host:12345/repo`` is the path ``12345/repo``.
+_REMOTE = re.compile(
+    r"^(?:[\w.+-]+://(?:[^/]*@)?([^/:@]+)(?::\d+)?/"
+    r"|(?:[^/@:]+@)?([^/:@]+):(?!//))"
+    r"([^\\?#]+?)(?:\.git)?/?$"
+)
+
+
+def _repo_id(remote: Optional[str]) -> Optional[str]:
+    """Reduce a git remote URL to ``host/path``, dropping userinfo, port, ``.git`` and any local path.
+
+    Handles ``git@host:org/repo.git``, ``ssh://git@host:2222/org/repo.git`` and ``https://host/org/repo.git``.
+
+    :param remote: The remote URL as reported by git.
+    :return: e.g. ``github.com/org/repo`` (host lowercased), or None for an unrecognized or unsafe form.
+    """
+    match = _REMOTE.match(remote.strip()) if remote else None
+    if match is None:
+        return None
+    path = match.group(3).lstrip("/")
+    return f"{(match.group(1) or match.group(2)).lower()}/{path}" if path else None
+
+
 def default_revision_comment(target: Path) -> str:
     """Build the comment used when the caller does not supply one.
 
@@ -92,6 +128,39 @@ def default_revision_comment(target: Path) -> str:
     if _git(target_dir, "status", "--porcelain", "--untracked-files=no"):
         comment += " (dirty)"
     return comment
+
+
+def collect_source_metadata(target: Path) -> Dict[str, Any]:
+    """Describe where a push came from, for the platform to store on the revision.
+
+    Every git lookup is best-effort: whatever cannot be determined (detached HEAD, no remote, no
+    commits, not a repository, git missing or slow) is left out rather than failing the push. Only
+    ``host/path`` of the remote is kept, so credentials embedded in the URL are never sent, and the
+    file is given relative to the repository root, never as an absolute path.
+
+    :param target: Path to the pipeline file being deployed.
+    :return: ``{"git": {...}, "file": ..., "ci": bool, "custom": {"client": ...}}`` with unknown keys
+        omitted. Values are cut to the platform's per-field limits rather than risk a 422.
+    """
+    info: Dict[str, Any] = {"ci": in_ci(), "custom": {"client": CLIENT_NAME}}
+    target_dir = target.parent
+    # --show-prefix is target_dir relative to the repo root: "" at the root, so the output is just "true".
+    inside, _, prefix = (_git(target_dir, "rev-parse", "--is-inside-work-tree", "--show-prefix") or "").partition("\n")
+    if inside != "true":
+        return info
+
+    git = {
+        "repo": _repo_id(_git(target_dir, "remote", "get-url", "origin")),
+        "branch": _git(target_dir, "symbolic-ref", "--short", "-q", "HEAD"),  # fails on a detached HEAD
+        "sha": _git(target_dir, "rev-parse", "HEAD"),  # fails before the first commit
+    }
+    info["git"] = {key: value[: _SOURCE_LIMITS[key]] for key, value in git.items() if value}
+    # The "## branch" header makes the output non-empty on success, so None means git failed (not "clean").
+    status = _git(target_dir, "status", "--porcelain", "--branch")
+    if status is not None:
+        info["git"]["dirty"] = "\n" in status
+    info["file"] = (prefix + target.name)[: _SOURCE_LIMITS["file"]]
+    return info
 
 
 @dataclass
@@ -291,11 +360,13 @@ class DeploymentService:
         if secrets:
             await self._upsert_secrets(deployment.deployment_id, secrets)
 
+        source_metadata = collect_source_metadata(target)
         revision = await self._deployments.push_revision(
             self._workspace_name,
             deployment.deployment_id,
             config_yaml,
             comment or default_revision_comment(target),
+            source_metadata=source_metadata,
         )
         logger.info("Pushed deployment revision.", service=service_name, revision_id=str(revision.revision_id))
 

@@ -64,6 +64,7 @@ from haystack_enterprise_sdk._api.secrets import FailedToSetServiceSecretError
 from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
 from haystack_enterprise_sdk._console import animations_enabled, status_spinner
+from haystack_enterprise_sdk._service import deployment_service
 from haystack_enterprise_sdk._service.deployment_service import (
     CreateOptions,
     DeploymentFailedError,
@@ -2182,8 +2183,9 @@ def run_packaged() -> None:
 
     This is the console-script entrypoint (``haystack-enterprise``) declared in ``pyproject.toml``;
     it is not a subcommand. It runs the Typer app and turns API errors into a clean exit, then hints at
-    an available upgrade.
+    an available upgrade. Pushes made from here are recorded as coming from the CLI rather than the SDK.
     """
+    deployment_service.CLIENT_NAME = "Haystack Enterprise CLI"
     # Verify TLS against the OS trust store instead of certifi, so CAs installed by corporate
     # TLS-inspecting proxies (common on Windows) are trusted. CLI only: the library leaves `ssl` alone.
     truststore.inject_into_ssl()
