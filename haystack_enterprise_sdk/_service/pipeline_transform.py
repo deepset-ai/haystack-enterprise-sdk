@@ -528,8 +528,11 @@ def extract_via_subprocess(
     python = python_executable or detect_project_python(target)
     extractor = str(Path(__file__).with_name("pipeline_extract.py"))
 
-    with tempfile.NamedTemporaryFile("r", suffix=".json", delete=True) as out_file:
-        cmd = [python, extractor, str(target), "--out", out_file.name]
+    # A temp dir rather than NamedTemporaryFile: on Windows an open NamedTemporaryFile is locked, so the
+    # subprocess cannot write to it (PermissionError).
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        out_path = Path(tmp_dir) / "bundle.json"
+        cmd = [python, extractor, str(target), "--out", str(out_path)]
         if entrypoint:
             cmd += ["--entrypoint", entrypoint]
         logger.debug("Extracting pipeline via subprocess.", python=python, target=str(target))
@@ -538,8 +541,7 @@ def extract_via_subprocess(
             message = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
             raise PipelineTransformError(f"Failed to load the pipeline using interpreter '{python}':\n{message}")
         _forward_extractor_warnings(completed.stderr)
-        out_file.seek(0)
-        return ExtractionBundle.from_dict(json.load(out_file))
+        return ExtractionBundle.from_dict(json.loads(out_path.read_text(encoding="utf-8")))
 
 
 def _forward_extractor_warnings(stderr: str) -> None:
