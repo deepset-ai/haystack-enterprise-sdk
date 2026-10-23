@@ -19,6 +19,7 @@ from haystack_enterprise_sdk._api.files import (
     File,
     FileNotFoundInHaystackEnterpriseException,
     FilesAPI,
+    as_upload_error,
 )
 from haystack_enterprise_sdk._api.haystack_enterprise_api import HaystackEnterpriseAPI
 from haystack_enterprise_sdk._api.upload_sessions import (
@@ -67,7 +68,7 @@ def _all_failed(file_names: List[str], error: Exception) -> S3UploadSummary:
     Mirrors the direct-upload path, which reports per-file failures instead of raising.
     """
     logger.error("Failed creating upload session.", error=error)
-    failed = [S3UploadResult(file_name=name, success=False, exception=error) for name in file_names]
+    failed = [S3UploadResult(file_name=name, success=False, exception=as_upload_error(error)) for name in file_names]
     return S3UploadSummary(
         total_files=len(failed), successful_upload_count=0, failed_upload_count=len(failed), failed=failed
     )
@@ -197,7 +198,7 @@ class FilesService:
             return S3UploadResult(file_name=file_path.name, success=True)
         except Exception as error:
             logger.error("Failed uploading file.", file_path=file_path, error=error)
-            return S3UploadResult(file_name=file_path.name, success=False, exception=error)
+            return S3UploadResult(file_name=file_path.name, success=False, exception=as_upload_error(error))
 
     async def _wrapped_direct_upload_in_memory(
         self,
@@ -219,7 +220,7 @@ class FilesService:
             return S3UploadResult(file_name=file_name, success=True)
         except Exception as error:
             logger.error("Failed uploading file.", file_name=file_name, error=error)
-            return S3UploadResult(file_name=file_name, success=False, exception=error)
+            return S3UploadResult(file_name=file_name, success=False, exception=as_upload_error(error))
 
     async def upload_file_paths(
         self,

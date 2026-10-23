@@ -18,6 +18,7 @@ from pyrate_limiter import Duration, Limiter, Rate
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from haystack_enterprise_sdk._api.config import ASYNC_CLIENT_TIMEOUT
+from haystack_enterprise_sdk._api.files import as_upload_error
 from haystack_enterprise_sdk._api.upload_sessions import (
     AWSPrefixedRequestConfig,
     UploadSession,
@@ -304,7 +305,7 @@ class S3:
                         session_id=upload_session.session_id,
                         reason=reason,
                     )
-                    return S3UploadResult(file_name=file_name, success=False, exception=exception)
+                    return S3UploadResult(file_name=file_name, success=False, exception=as_upload_error(exception))
 
     async def upload_from_memory(
         self,
@@ -336,7 +337,7 @@ class S3:
                     session_id=upload_session.session_id,
                     reason=str(exception),
                 )
-                return S3UploadResult(file_name=file_name, success=False, exception=exception)
+                return S3UploadResult(file_name=file_name, success=False, exception=as_upload_error(exception))
 
     async def _process_results(
         self,

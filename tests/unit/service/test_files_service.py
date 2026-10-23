@@ -273,7 +273,8 @@ class TestFilePathsUpload:
         assert result.successful_upload_count == 0
         assert result.failed_upload_count == doc_count
         assert {r.file_name for r in result.failed} == {f"doc{i}.pdf" for i in range(doc_count)}
-        assert all(r.exception is error for r in result.failed)
+        assert all(isinstance(r.exception, FailedToUploadFileException) for r in result.failed)
+        assert all(getattr(r.exception, "__cause__", None) is error for r in result.failed)
 
 
 @pytest.mark.asyncio
@@ -526,7 +527,8 @@ class TestUploadTexts:
 
         assert result.total_files == len(files)
         assert result.failed_upload_count == len(files)
-        assert all(r.exception is error for r in result.failed)
+        assert all(isinstance(r.exception, FailedToUploadFileException) for r in result.failed)
+        assert all(getattr(r.exception, "__cause__", None) is error for r in result.failed)
 
 
 @pytest.mark.asyncio

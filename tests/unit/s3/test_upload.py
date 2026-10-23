@@ -10,6 +10,7 @@ import pytest
 from pyrate_limiter import Duration, Rate
 from tqdm.asyncio import tqdm
 
+from haystack_enterprise_sdk._api.files import FailedToUploadFileException
 from haystack_enterprise_sdk._api.upload_sessions import UploadSession
 from haystack_enterprise_sdk._s3.upload import (
     S3,
@@ -173,7 +174,10 @@ class TestUploadsS3:
                         "35887.txt",
                         "35887.txt.meta.json",
                     ]
-                    assert all(isinstance(f.exception, RetryableHttpError) for f in results.failed)
+                    assert all(isinstance(f.exception, FailedToUploadFileException) for f in results.failed)
+                    assert all(
+                        isinstance(getattr(f.exception, "__cause__", None), RetryableHttpError) for f in results.failed
+                    )
 
         async def test_upload_files_from_path_with_client_disconnect_error(
             self, post: Mock, upload_session_response: UploadSession
@@ -192,7 +196,10 @@ class TestUploadsS3:
                     assert results.failed_upload_count == 2
                     assert len(results.failed) == 2
                     assert [f.file_name for f in results.failed] == ["16675.txt", "16675.txt.meta.json"]
-                    assert all(isinstance(f.exception, RetryableHttpError) for f in results.failed)
+                    assert all(isinstance(f.exception, FailedToUploadFileException) for f in results.failed)
+                    assert all(
+                        isinstance(getattr(f.exception, "__cause__", None), RetryableHttpError) for f in results.failed
+                    )
 
         async def test_upload_in_memory_http_error(self, post: Mock, upload_session_response: UploadSession) -> None:
             exception = aiohttp.ClientResponseError(request_info=Mock(), history=Mock(), status=503)
@@ -215,7 +222,10 @@ class TestUploadsS3:
                         "two.txt",
                         "three.txt",
                     ]
-                    assert all(isinstance(f.exception, RetryableHttpError) for f in results.failed)
+                    assert all(isinstance(f.exception, FailedToUploadFileException) for f in results.failed)
+                    assert all(
+                        isinstance(getattr(f.exception, "__cause__", None), RetryableHttpError) for f in results.failed
+                    )
 
         async def test_upload_in_memory_with_metadata_http_error(
             self, post: Mock, upload_session_response: UploadSession
@@ -242,7 +252,10 @@ class TestUploadsS3:
                         "three.txt",
                         "three.txt.meta.json",
                     ]
-                    assert all(isinstance(f.exception, RetryableHttpError) for f in results.failed)
+                    assert all(isinstance(f.exception, FailedToUploadFileException) for f in results.failed)
+                    assert all(
+                        isinstance(getattr(f.exception, "__cause__", None), RetryableHttpError) for f in results.failed
+                    )
 
         @pytest.mark.parametrize("status", [503, 502, 500, 504, 408, 400])
         @patch("aiohttp.ClientSession")
