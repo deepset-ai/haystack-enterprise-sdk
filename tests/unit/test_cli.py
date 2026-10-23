@@ -592,7 +592,7 @@ class TestCLIUtils:
                     {"organization_id": "org-b", "name": "Beta"},
                 ]
             },
-            "https://api.cloud.deepset.ai/api/v1/users/me": {"organization": {"workspaces": [{"name": "default"}]}},
+            "https://api.cloud.deepset.ai/api/v1/me": {"organization": {"workspaces": [{"name": "default"}]}},
         }
 
         def fake_get(url: str, headers: Dict[str, str], timeout: int) -> httpx.Response:
@@ -638,7 +638,7 @@ class TestCLIUtils:
                     {"organization_id": "org-b", "name": "Beta"},
                 ]
             },
-            "https://api.cloud.deepset.ai/api/v1/users/me": {
+            "https://api.cloud.deepset.ai/api/v1/me": {
                 "organization": {"workspaces": [{"name": "default"}, {"name": "prod"}]}
             },
         }
