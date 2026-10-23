@@ -493,8 +493,8 @@ def _pick_organization(api_url: str, headers: Dict[str, str]) -> str:
 
 def _pick_workspace(api_url: str, headers: Dict[str, str]) -> str:
     """:return: The default workspace, asking if the user has access to several."""
-    # /workspaces lists every workspace of the organization to its members; /users/me only the user's own.
-    response = httpx.get(f"{api_url}/{API_VERSION_PATH}/users/me", headers=headers, timeout=30)
+    # /workspaces lists every workspace of the organization to its members; /me only the user's own.
+    response = httpx.get(f"{api_url}/{API_VERSION_PATH}/me", headers=headers, timeout=30)
     response.raise_for_status()
     names = sorted(workspace["name"] for workspace in response.json()["organization"]["workspaces"])
     return _choose("Default workspace", names, default="default") if names else "default"
