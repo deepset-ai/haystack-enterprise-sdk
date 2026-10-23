@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -49,16 +48,8 @@ _FAILURE_STATUSES = frozenset({DeploymentStatus.DEPLOYMENT_FAILED})
 DEFAULT_POLL_INTERVAL_S = 3.0
 DEFAULT_ACTIVATION_TIMEOUT_S = 600.0
 
-# Seconds allowed for the best-effort git lookups behind the default revision comment.
+# Seconds allowed for the best-effort git lookup behind the default revision comment.
 _GIT_TIMEOUT_S = 3.0
-
-# Commit-page path template per known hosting provider. A self-hosted GitHub/GitLab is not
-# recognizable from the remote URL alone, so anything unlisted gets no link rather than a wrong one.
-_COMMIT_URL_TEMPLATES = {
-    "github.com": "https://{host}/{path}/commit/{sha}",
-    "gitlab.com": "https://{host}/{path}/-/commit/{sha}",
-    "bitbucket.org": "https://{host}/{path}/commits/{sha}",
-}
 
 
 def _git(target_dir: Path, *args: str) -> Optional[str]:
@@ -84,52 +75,17 @@ def _git(target_dir: Path, *args: str) -> Optional[str]:
     return completed.stdout.strip() or None
 
 
-def _commit_url(remote: str, sha: str) -> Optional[str]:
-    """Build a web URL for ``sha`` from a git remote URL.
-
-    Handles ``git@host:org/repo.git``, ``ssh://git@host/org/repo.git`` and ``https://host/org/repo.git``.
-
-    :param remote: The remote URL as reported by git.
-    :param sha: Full commit sha.
-    :return: A browsable commit URL, or None for an unrecognized host.
-    """
-    match = re.match(r"^(?:[\w.+-]+://)?(?:[^@/]+@)?([^/:]+)[:/](.+?)(?:\.git)?/?$", remote.strip())
-    if match is None:
-        return None
-    host, path = match.group(1).lower(), match.group(2)
-    template = _COMMIT_URL_TEMPLATES.get(host)
-    if template is None:
-        return None
-    return template.format(host=host, path=path, sha=sha)
-
-
 def default_revision_comment(target: Path) -> str:
     """Build the comment used when the caller does not supply one.
 
-    Adds the current git branch, commit and a link to the commit page when the pipeline file sits in a
-    git repository with a recognized remote. Every git lookup is best-effort: the comment degrades to
-    branch@sha, and then to the bare CLI message, rather than failing the deploy.
+    The HEAD commit's short sha and subject when the pipeline file sits in a git repository, otherwise
+    a message naming the file. The git lookup is best-effort and never fails the deploy.
 
     :param target: Path to the pipeline file being deployed.
     :return: A single-line comment.
     """
-    base = f"Deployed {target.name} via haystack-enterprise CLI"
-
     target_dir = target.parent if target.parent != Path("") else Path(".")
-    sha = _git(target_dir, "rev-parse", "HEAD")
-    if sha is None:
-        return base
-
-    branch = _git(target_dir, "rev-parse", "--abbrev-ref", "HEAD")
-    # A detached HEAD reports the branch as "HEAD", which says nothing: show the sha alone.
-    ref = f"{branch}@{sha[:7]}" if branch and branch != "HEAD" else sha[:7]
-    comment = f"{base} ({ref})"
-
-    remote = _git(target_dir, "remote", "get-url", "origin")
-    url = _commit_url(remote, sha) if remote else None
-    # Appended as a bare URL, not markdown: the platform stores the comment as a plain string, and
-    # unrendered markdown would show up as literal brackets.
-    return f"{comment} {url}" if url else comment
+    return _git(target_dir, "log", "-1", "--format=%h %s") or f"Deployed {target.name} via haystack-enterprise CLI"
 
 
 @dataclass

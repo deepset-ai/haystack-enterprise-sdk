@@ -204,10 +204,9 @@ Common options:
   `--idle-timeout` require `--managed`; passing them without `--managed`, or passing creation-only
   flags for a service that already exists, is an error rather than a silently ignored flag.
 - `--comment` / `-m` is the comment stored on the revision, so you can tell revisions apart in the
-  platform UI. Every revision needs one; when you omit the flag the CLI generates a comment naming the
-  pipeline file and, if it sits in a git repository, the current branch, commit and a link to the commit
-  on GitHub/GitLab/Bitbucket — e.g.
-  `Deployed pipeline.py via haystack-enterprise CLI (main@a1b2c3d) https://github.com/org/repo/commit/…`.
+  platform UI. Every revision needs one. When you omit the flag, the CLI uses the short sha and
+  subject of the HEAD commit (e.g. `a1b2c3d Add retry to retriever`) if the pipeline file sits in a
+  git repository, and otherwise `Deployed pipeline.py via haystack-enterprise CLI`.
 - `--skip-activation` pushes the revision as `PENDING` without rolling it out.
 - `--skip-validation` skips the pre-deploy YAML validation (validation runs by default and aborts on
   blocking issues).
