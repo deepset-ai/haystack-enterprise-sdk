@@ -462,8 +462,12 @@ def _open_login_url(url: str) -> None:
 
 
 def _show_device_code(user_code: str, verification_uri: str, verification_uri_complete: Optional[str]) -> None:
-    typer.echo(f"On any device, open:\n\n  {verification_uri_complete or verification_uri}\n")
+    url = verification_uri_complete or verification_uri
+    typer.echo(f"Opening your browser to log in. If it doesn't open, on any device visit:\n\n  {url}\n")
     typer.echo(f"and confirm the code {user_code}. Waiting for approval...")
+    # Over SSH the only "browser" is a console one (lynx, w3m) that would take over the terminal.
+    if not os.environ.get("SSH_CONNECTION"):
+        webbrowser.open(url)
 
 
 def _choose(label: str, options: List[str], default: Optional[str] = None) -> str:
