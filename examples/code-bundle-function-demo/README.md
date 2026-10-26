@@ -79,6 +79,20 @@ uv run haystack-enterprise invoke klingon --inputs '{"text": "Hello warrior, the
 
 A function build only serves `/run`; chat completions answer 400.
 
+## Sync job (`sync.py:run`)
+
+Plain Python, no Haystack and no secrets: fetch from an API, write to a data sink, return `"success"`.
+Both ends are dummy functions, so swap in real calls when you need them.
+
+```sh
+uv run haystack-enterprise deploy examples/code-bundle-function-demo sync-job --entrypoint sync.py:run
+uv run haystack-enterprise invoke sync-job --inputs '{"source": "orders"}'
+```
+
+```json
+"success"
+```
+
 ## Other libraries
 
 Nothing here is Haystack-specific. LangChain or anything else works the same way: list it in
