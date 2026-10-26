@@ -1,6 +1,8 @@
 """CLI tests for the `deploy` and `service-status` commands."""
 
+import io
 import json
+import sys
 from pathlib import Path
 from typing import Literal, Optional
 from unittest.mock import Mock, patch
@@ -35,7 +37,7 @@ from haystack_enterprise_sdk._service.pipeline_transform import (
     ExtractionBundle,
     PipelineTransformError,
 )
-from haystack_enterprise_sdk.cli import cli_app
+from haystack_enterprise_sdk.cli import _echo_verdict, cli_app
 from haystack_enterprise_sdk.models import PipelineOutputType
 
 runner = CliRunner()
@@ -89,6 +91,10 @@ def _result(
         config_hash="hash",
     )
     return DeployResult(deployment=deployment, revision=revision, activated=activated, timed_out=timed_out)
+
+
+def _last_line(stdout: str) -> str:
+    return stdout.strip().splitlines()[-1]
 
 
 def _prototype() -> SharedPrototype:
@@ -148,6 +154,50 @@ class TestDeployCommand:
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 1
         assert "did not finish within the wait limit" in result.stdout
+        assert _last_line(result.stdout).startswith("✖ Deploy not confirmed — 'svc' still rolling out after ")
+
+    @pytest.mark.parametrize("mode", [DeploymentMode.MANAGED, DeploymentMode.SERVERLESS])
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_success_ends_with_verdict_line(self, client_cls: Mock, mode: DeploymentMode) -> None:
+        # The endpoint block is long, so the outcome must come after it, not before.
+        _stub_endpoint(client_cls)
+        deployed = _result(activated=True, mode=mode)
+        client_cls.return_value.deploy.return_value = deployed
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
+        assert result.exit_code == 0
+        assert "chat/completions" in result.stdout
+        revision = str(deployed.revision.revision_id)[:8]
+        last = _last_line(result.stdout)
+        assert last.startswith("✔ Deployed 'svc' in ")
+        assert last.endswith(f"— revision {revision} is active")
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_verdict_is_plain_in_ci(self, client_cls: Mock, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CI", "true")
+        monkeypatch.setenv("NO_COLOR", "1")
+        _stub_endpoint(client_cls)
+        client_cls.return_value.deploy.return_value = _result(activated=True)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"], color=True)
+        assert result.exit_code == 0
+        assert "\x1b[" not in result.stdout
+        assert _last_line(result.stdout).startswith("✔ Deployed 'svc' in ")
+
+    def test_verdict_falls_back_to_ascii(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A console that cannot encode the glyph (e.g. a legacy Windows code page) must not crash on it.
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="ascii")
+        monkeypatch.setattr(sys, "stdout", stream)
+        _echo_verdict(True, "Deployed")
+        _echo_verdict(False, "Deploy failed")
+        stream.flush()
+        assert raw.getvalue().decode("ascii").splitlines() == ["OK Deployed", "FAIL Deploy failed"]
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_skip_activation_has_no_verdict_line(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--skip-activation"])
+        assert result.exit_code == 0
+        assert "✔" not in result.stdout
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_failure_exits_1(self, client_cls: Mock) -> None:
@@ -155,6 +205,8 @@ class TestDeployCommand:
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
         assert result.exit_code == 1
         assert "check the UI" in result.stdout
+        assert _last_line(result.stdout).startswith("✖ Deploy failed — ")
+        assert "check the UI" in _last_line(result.stdout)
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_service_not_found_exits_1(self, client_cls: Mock) -> None:
