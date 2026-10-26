@@ -863,6 +863,8 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     if build not in _BUILDS:
         typer.echo(f"--build must be 'auto' or 'yaml', got '{build}'.")
         raise typer.Exit(1)
+    # `.` has no name, and the io-config lookup, revision comment and source metadata all use it.
+    target = target.resolve()
     # `auto` means a code build for a project with a deepset.yaml, else YAML.
     if build == "auto":
         build = "code" if not is_yaml_target(target) and has_project_file(target) else "yaml"

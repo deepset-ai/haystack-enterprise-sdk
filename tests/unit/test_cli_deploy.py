@@ -331,7 +331,7 @@ class TestDeployCommand:
         assert resolver.func is _resolve_io_interactive
         assert resolver.keywords["mode"] == "review"
         assert resolver.keywords["skip_validation"] is False
-        assert resolver.keywords["save_path"] == Path(FIXTURE).with_suffix(".io.yaml")
+        assert resolver.keywords["save_path"] == Path(FIXTURE).resolve().with_suffix(".io.yaml")
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_without_share_asks_only_what_serving_needs(self, client_cls: Mock) -> None:
@@ -1770,3 +1770,16 @@ class TestInvokeCommand:
         result = runner.invoke(cli_app, ["invoke", "svc", "--inputs", "{}"])
         assert result.exit_code == 1
         assert "use chat for those" in result.output
+
+
+class TestDotTarget:
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_dot_target_resolves_to_the_directory(self, client_cls: Mock, monkeypatch: pytest.MonkeyPatch) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        monkeypatch.chdir("tests/test_data/deploy")
+        result = runner.invoke(
+            cli_app,
+            ["deploy", ".", "svc", "--skip-activation", "--build", "code", "--entrypoint", "pipeline.py:pipeline"],
+        )
+        assert result.exit_code == 0, result.output
+        assert client_cls.return_value.deploy.call_args.args[0] == Path.cwd()
