@@ -39,6 +39,25 @@ curl -s "$API_URL/api/v1/workspaces/<workspace>/deployments/<deployment id>/run"
 {"result": {"message": "hello fleet", "marker": "served from a code bundle"}}
 ```
 
+## Agent with a skill
+
+`translate.py:run` is a second entrypoint in the same project: an Agent that translates text into
+Klingon-ish. It follows instructions from the `translate` skill, which ships inside the bundle as
+`skills/translate/SKILL.md`. `SkillToolset` lists the skill in the agent's `load_skill` tool, and the
+agent loads it when it needs it. The OpenAI key is a service secret, so the module only builds the
+Agent on its first call.
+
+```sh
+uv sync --project examples/code-bundle-function-demo   # haystack-ai 3.2 (skills), so the CLI can import it
+OPENAI_API_KEY=sk-... uv run haystack-enterprise deploy examples/code-bundle-function-demo klingon \
+  --entrypoint translate.py:run --env OPENAI_API_KEY
+uv run haystack-enterprise invoke klingon --inputs '{"text": "Hello warrior, the coffee is ready"}'
+```
+
+```json
+{"translation": "nuqneH! ..."}
+```
+
 ## Other libraries
 
 Nothing here is Haystack-specific. LangChain or anything else works the same way: list it in
