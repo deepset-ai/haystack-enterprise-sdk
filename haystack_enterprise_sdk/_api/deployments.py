@@ -10,6 +10,7 @@ list endpoint and matching client-side.
 
 import asyncio
 import enum
+import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar
 from uuid import UUID
@@ -247,6 +248,10 @@ class FailedToPushRevisionError(Exception):
 
 class CodeBundleRequestError(Exception):
     """A code bundle lookup or upload failed. The message is meant for the user as-is."""
+
+
+class FailedToInvokeDeploymentError(Exception):
+    """Calling a deployed service failed. The message is meant for the user as-is."""
 
 
 class FailedToActivateRevisionError(Exception):
@@ -513,6 +518,47 @@ class DeploymentsAPI:
             raise CodeBundleRequestError(f"Uploaded code bundle {sha256} but the platform stored {body.get('sha256')}.")
         return body
 
+    async def run_deployment(self, workspace_name: str, deployment_id: UUID, payload: Dict[str, Any]) -> Any:
+        """Call a function code build's ``/run`` endpoint with ``payload``.
+
+        :param workspace_name: Name of the workspace.
+        :param deployment_id: Deployment id.
+        :param payload: The JSON object passed to the function.
+        :raises FailedToInvokeDeploymentError: If the platform rejected the call (not a function build,
+            payload doesn't match the input schema, not deployed, ...).
+        :return: What the function returned.
+        """
+        response = await self._haystack_enterprise_api.post(
+            workspace_name=workspace_name,
+            endpoint=f"{self._ENDPOINT}/{deployment_id}/run",
+            json=payload,
+            timeout_s=300,
+        )
+        _raise_for_invoke(response)
+        return response.json().get("result")
+
+    async def chat_completion(self, workspace_name: str, deployment_id: UUID, query: str) -> str:
+        """Send ``query`` as one user message to the OpenAI-compatible chat-completions endpoint.
+
+        :param workspace_name: Name of the workspace.
+        :param deployment_id: Deployment id.
+        :param query: The user message.
+        :raises FailedToInvokeDeploymentError: If the platform rejected the call.
+        :return: The assistant message content.
+        """
+        response = await self._haystack_enterprise_api.post(
+            workspace_name=workspace_name,
+            endpoint=f"{self._ENDPOINT}/v1/chat/completions",
+            json={
+                "model": f"{workspace_name}/{deployment_id}",
+                "messages": [{"role": "user", "content": query}],
+            },
+            timeout_s=300,
+        )
+        _raise_for_invoke(response)
+        content: str = response.json()["choices"][0]["message"]["content"] or ""
+        return content
+
     async def activate_revision(
         self,
         workspace_name: str,
@@ -778,6 +824,20 @@ class PaginatedDeployments:
     data: List[Deployment]
     has_more: bool
     total: int
+
+
+def _raise_for_invoke(response: Response) -> None:
+    """Raise :class:`FailedToInvokeDeploymentError` with the platform's own message on a non-2xx response."""
+    if response.is_success:
+        return
+    _, message = _typed_error(response)
+    if message is None:
+        try:
+            detail = response.json().get("detail")
+        except (ValueError, AttributeError):
+            detail = None
+        message = detail if isinstance(detail, str) else json.dumps(detail) if detail else response.text
+    raise FailedToInvokeDeploymentError(f"{message} (status {response.status_code})")
 
 
 def _typed_error(response: Response) -> Tuple[Optional[str], Optional[str]]:

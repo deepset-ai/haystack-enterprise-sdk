@@ -16,6 +16,7 @@ from haystack_enterprise_sdk._api.deployments import (
     DeploymentRevisionStatus,
     DeploymentServiceLevel,
     DeploymentStatus,
+    FailedToInvokeDeploymentError,
     FailedToTagDeploymentError,
     PipelineValidationError,
     PipelineValidationIssue,
@@ -1737,3 +1738,35 @@ def test_packaged_cli_reports_itself_as_the_cli(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(cli, "cli_app", lambda: None)
     cli.run_packaged()
     assert deployment_service.CLIENT_NAME == "Haystack Enterprise CLI"
+
+
+class TestInvokeCommand:
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_inputs_go_to_run(self, client_cls: Mock) -> None:
+        client_cls.return_value.invoke.return_value = {"greeting": "hi"}
+        result = runner.invoke(cli_app, ["invoke", "svc", "--inputs", '{"name": "x"}'])
+        assert result.exit_code == 0, result.output
+        client_cls.return_value.invoke.assert_called_once_with("svc", payload={"name": "x"}, query=None)
+        assert json.loads(result.stdout) == {"greeting": "hi"}
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_query_prints_answer(self, client_cls: Mock) -> None:
+        client_cls.return_value.invoke.return_value = "Hello!"
+        result = runner.invoke(cli_app, ["invoke", "svc", "--query", "hi"])
+        assert result.exit_code == 0, result.output
+        client_cls.return_value.invoke.assert_called_once_with("svc", payload=None, query="hi")
+        assert result.stdout.strip() == "Hello!"
+
+    @pytest.mark.parametrize("args", [[], ["--query", "q", "--inputs", "{}"]])
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_needs_exactly_one_of_query_and_inputs(self, client_cls: Mock, args: list) -> None:
+        result = runner.invoke(cli_app, ["invoke", "svc", *args])
+        assert result.exit_code == 2
+        client_cls.return_value.invoke.assert_not_called()
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_platform_error_exits_1(self, client_cls: Mock) -> None:
+        client_cls.return_value.invoke.side_effect = FailedToInvokeDeploymentError("use chat for those (status 400)")
+        result = runner.invoke(cli_app, ["invoke", "svc", "--inputs", "{}"])
+        assert result.exit_code == 1
+        assert "use chat for those" in result.output

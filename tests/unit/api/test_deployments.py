@@ -18,6 +18,7 @@ from haystack_enterprise_sdk._api.deployments import (
     DeploymentStatus,
     FailedToActivateRevisionError,
     FailedToCreateDeploymentError,
+    FailedToInvokeDeploymentError,
     FailedToPushRevisionError,
     FailedToTagDeploymentError,
     FailedToValidatePipelineError,
@@ -648,3 +649,39 @@ class TestCodeBundles:
             "source_type": "EXTERNAL_PIPELINE",
             "code_bundle": field,
         }
+
+
+@pytest.mark.asyncio
+class TestInvoke:
+    async def test_run_returns_result(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        deployment_id = uuid4()
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.OK, json={"result": {"greeting": "hi"}})
+        assert await deployments_api.run_deployment("ws", deployment_id, {"name": "x"}) == {"greeting": "hi"}
+        mocked_haystack_enterprise_api.post.assert_called_once_with(
+            workspace_name="ws", endpoint=f"deployments/{deployment_id}/run", json={"name": "x"}, timeout_s=300
+        )
+
+    @pytest.mark.parametrize(
+        ("status", "detail"),
+        [(codes.BAD_REQUEST, "use chat for those"), (codes.UNPROCESSABLE_ENTITY, "'name' is a required property")],
+    )
+    async def test_run_surfaces_platform_message(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock, status: int, detail: str
+    ) -> None:
+        mocked_haystack_enterprise_api.post.return_value = _resp(status, json={"detail": detail})
+        with pytest.raises(FailedToInvokeDeploymentError, match=f"{detail}.*status {status}"):
+            await deployments_api.run_deployment("ws", uuid4(), {})
+
+    async def test_chat_completion_returns_content(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        deployment_id = uuid4()
+        mocked_haystack_enterprise_api.post.return_value = _resp(
+            codes.OK, json={"choices": [{"message": {"role": "assistant", "content": "Hello!"}}]}
+        )
+        assert await deployments_api.chat_completion("ws", deployment_id, "hi") == "Hello!"
+        _, kwargs = mocked_haystack_enterprise_api.post.call_args
+        assert kwargs["endpoint"] == "deployments/v1/chat/completions"
+        assert kwargs["json"] == {"model": f"ws/{deployment_id}", "messages": [{"role": "user", "content": "hi"}]}

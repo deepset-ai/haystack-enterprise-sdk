@@ -187,6 +187,12 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
         """Return the current deployment (with live runtime status) for ``service_name``."""
         return _run(self._async_client.get_service_status(service_name))
 
+    def invoke(
+        self, service_name: str, *, payload: Optional[Dict[str, Any]] = None, query: Optional[str] = None
+    ) -> Any:
+        """Call a deployed service synchronously. See :meth:`AsyncDeploymentClient.invoke`."""
+        return _run(self._async_client.invoke(service_name, payload=payload, query=query))
+
     def add_tag(self, service_name: str, tag_name: str) -> List[str]:
         """Add a tag to a service by name, independent of deploy/create, synchronously."""
         return _run(self._async_client.add_tag(service_name, tag_name))

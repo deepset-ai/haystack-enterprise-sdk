@@ -393,7 +393,6 @@ class DeploymentService:
             config_yaml,
             comment or default_revision_comment(target),
             source_metadata=source_metadata,
-
             **({"code_bundle": packed.request_field()} if packed is not None else {}),
         )
         logger.info("Pushed deployment revision.", service=service_name, revision_id=str(revision.revision_id))
@@ -589,6 +588,29 @@ class DeploymentService:
                 f"No service deployment named '{service_name}' in workspace '{self._workspace_name}'."
             )
         return await self._deployments.get_deployment(self._workspace_name, deployment.deployment_id)
+
+    async def invoke(
+        self, service_name: str, *, payload: Optional[Dict[str, Any]] = None, query: Optional[str] = None
+    ) -> Any:
+        """Call a deployed service: ``payload`` goes to a function build's ``/run``, ``query`` to chat completions.
+
+        :param service_name: Name of the service deployment.
+        :param payload: JSON object for a function code build.
+        :param query: User message for any chat-capable service.
+        :raises ServiceNotFoundError: If no service with that name exists.
+        :raises FailedToInvokeDeploymentError: If the platform rejected the call.
+        :return: The function's result, or the assistant's answer.
+        """
+        if (payload is None) == (query is None):
+            raise ValueError("Pass exactly one of payload or query.")
+        deployment = await self.find_service(service_name)
+        if deployment is None:
+            raise ServiceNotFoundError(
+                f"No service deployment named '{service_name}' in workspace '{self._workspace_name}'."
+            )
+        if payload is not None:
+            return await self._deployments.run_deployment(self._workspace_name, deployment.deployment_id, payload)
+        return await self._deployments.chat_completion(self._workspace_name, deployment.deployment_id, str(query))
 
     async def add_tag(self, service_name: str, tag_name: str) -> List[str]:
         """Add a tag to a service by name, independent of deploy/create.

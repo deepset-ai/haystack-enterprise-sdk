@@ -45,6 +45,7 @@ from haystack_enterprise_sdk._api.deployments import (
     CodeBundleRequestError,
     DeploymentMode,
     DeploymentServiceLevel,
+    FailedToInvokeDeploymentError,
     FailedToTagDeploymentError,
     PipelineValidationError,
 )
@@ -1315,7 +1316,7 @@ def _parse_inputs_option(inputs: Optional[str]) -> Optional[dict]:
         typer.echo(f"--inputs is not valid JSON: {err}")
         raise typer.Exit(1)  # noqa: B904
     if not isinstance(parsed, dict):
-        typer.echo("--inputs must be a JSON object mapping component names to their inputs.")
+        typer.echo("--inputs must be a JSON object.")
         raise typer.Exit(1)
     return parsed
 
@@ -1540,7 +1541,7 @@ def _echo_endpoint(client: DeploymentClient, service_name: str, result: DeployRe
         return
 
     if result.code_bundle is not None and result.code_bundle.kind == "function":
-        _echo_run_endpoint(client, result.deployment.deployment_id, result.code_bundle.input_schema)
+        _echo_run_endpoint(client, service_name, result.deployment.deployment_id, result.code_bundle.input_schema)
         return
 
     base_url = client.chat_completions_base_url()
@@ -1553,6 +1554,7 @@ def _echo_endpoint(client: DeploymentClient, service_name: str, result: DeployRe
         f'    -d \'{{"model": "{model}", "messages": [{{"role": "user", "content": "Hello"}}]}}\''
     )
     typer.echo(f'\n  Or point an OpenAI client at base_url={base_url} with model="{model}".')
+    typer.echo(f'\n  Or: haystack-enterprise invoke {service_name} --query "Hello"')
 
     if not shared and result.deployment.output_type is PipelineOutputType.CHAT:
         typer.echo("\nThis is a chat pipeline — re-run with --share for a shareable chat UI link.")
@@ -1569,7 +1571,9 @@ _EXAMPLE_VALUES: Dict[str, Any] = {
 }
 
 
-def _echo_run_endpoint(client: DeploymentClient, deployment_id: Any, input_schema: Optional[dict]) -> None:
+def _echo_run_endpoint(
+    client: DeploymentClient, service_name: str, deployment_id: Any, input_schema: Optional[dict]
+) -> None:
     """Print the ``/run`` endpoint of a function build, with a curl whose body follows the input schema."""
     schema = input_schema or {}
     payload = {
@@ -1584,6 +1588,7 @@ def _echo_run_endpoint(client: DeploymentClient, deployment_id: Any, input_schem
         f'    -H "Content-Type: application/json" \\\n'
         f"    -d '{json.dumps(payload)}'"
     )
+    typer.echo(f"\n  Or: haystack-enterprise invoke {service_name} --inputs '{json.dumps(payload)}'")
 
 
 # Sentinel returned by _select_socket when the user keeps the current mapping (Enter in edit mode).
@@ -2110,6 +2115,42 @@ def service_status(
             indent=4,
         )
     )
+
+
+@cli_app.command()
+def invoke(
+    service_name: str,
+    query: Optional[str] = typer.Option(None, help="Send a user message to the service's chat completions."),
+    inputs: Optional[str] = typer.Option(
+        None, help="JSON payload for a function code build's /run endpoint, or '@path' to a JSON file."
+    ),
+    api_key: Optional[str] = None,
+    api_url: Optional[str] = None,
+    workspace_name: str = DEFAULT_WORKSPACE_NAME,
+) -> None:
+    """Call a deployed service and print its answer.
+
+    :param service_name: Name of the service deployment.
+    :param query: User message, for pipeline, agent and SuperComponent services.
+    :param inputs: JSON payload, for function code builds.
+    :param api_key: deepset API key to use for authentication.
+    :param api_url: API URL to use for authentication.
+    :param workspace_name: Workspace of the service. Uses the workspace from the .ENV file by default.
+
+    Example:
+    `haystack-enterprise invoke my-service --query "What is Haystack?"`
+    `haystack-enterprise invoke my-function --inputs '{"name": "Ada"}'`
+    """
+    if (query is None) == (inputs is None):
+        typer.echo("Pass exactly one of --query or --inputs.")
+        raise typer.Exit(2)
+    client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
+    try:
+        answer = client.invoke(service_name, payload=_parse_inputs_option(inputs), query=query)
+    except (ServiceNotFoundError, FailedToInvokeDeploymentError) as err:
+        typer.echo(str(err), err=True)
+        raise typer.Exit(1)  # noqa: B904
+    typer.echo(answer if isinstance(answer, str) else json.dumps(answer, indent=2))
 
 
 @cli_app.command()
