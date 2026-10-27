@@ -954,6 +954,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         if not exact:
             comment = typer.prompt("Revision comment", default=auto_comment)
 
+    started = time.monotonic()
     try:
         if activate:
             with status_spinner() as spinner:
@@ -1005,8 +1006,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             f"Check with `haystack-enterprise service-status {service_name}`."
         )
         raise typer.Exit(0)  # noqa: B904
+    except DeploymentFailedError as err:
+        _echo_verdict(False, f"Deploy failed — {err}")
+        raise typer.Exit(1)  # noqa: B904
     except (
-        DeploymentFailedError,
         ServiceNotFoundError,
         PipelineTransformError,
         PipelineValidationError,
@@ -1015,14 +1018,16 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         typer.echo(str(err))
         raise typer.Exit(1)  # noqa: B904
 
+    # Taken here, before the share prompt below waits on the user.
+    elapsed = _duration(time.monotonic() - started)
+
     if existing is None:
         # Highlighted: creating a service is a side effect the user did not explicitly ask for, so it
         # should stand out from the regular deploy output.
-        typer.secho(
+        _secho_bold(
             f"Created {result.deployment.deployment_mode.value.lower()} service '{service_name}' "
             f"in workspace '{workspace_name}'.",
-            fg=typer.colors.GREEN,
-            bold=True,
+            typer.colors.GREEN,
         )
 
     if not activate:
@@ -1053,8 +1058,16 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         )
         _echo_endpoint(client, service_name, result, shared=bool(share))
 
+    # Last on purpose: the endpoint block above is long, and the outcome has to be the final line.
+    if activate and result.is_deployed:
+        _echo_verdict(
+            True,
+            f"Deployed '{service_name}' in {elapsed} — revision {str(result.revision.revision_id)[:8]} is active",
+        )
+
     # A job result answers "is the new revision serving?", so an unfinished rollout must not look like success.
     if result.timed_out:
+        _echo_verdict(False, f"Deploy not confirmed — '{service_name}' still rolling out after {elapsed}")
         raise typer.Exit(1)
 
 
@@ -1370,6 +1383,34 @@ def _deploy_dry_run(
 def _stdin_is_tty() -> bool:
     """Whether stdin is an interactive terminal (indirection kept simple to patch in tests)."""
     return sys.stdin.isatty()
+
+
+def _duration(seconds: float) -> str:
+    """``2m 14s`` / ``45s``: elapsed time for the closing deploy line."""
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}m {secs}s" if minutes else f"{secs}s"
+
+
+def _secho_bold(text: str, fg: str) -> None:
+    """Print ``text`` in bold ``fg``; ``NO_COLOR`` turns the colour off (click only strips it off a TTY)."""
+    typer.secho(text, fg=fg, bold=True, color=False if os.environ.get("NO_COLOR") else None)
+
+
+def _echo_verdict(ok: bool, text: str) -> None:
+    """Print the one-line outcome that ends a ``deploy``, so success and failure cannot be confused.
+
+    Bold green with ``✔`` for success, bold red with ``✖`` otherwise. The glyph falls back to ``OK`` /
+    ``FAIL`` on a console that cannot encode it, and is what tells the two apart in a colourless CI log.
+
+    :param ok: Whether the deploy succeeded.
+    :param text: The message after the glyph.
+    """
+    glyph, fallback = ("✔", "OK") if ok else ("✖", "FAIL")
+    try:
+        glyph.encode(sys.stdout.encoding or "ascii")
+    except UnicodeEncodeError:
+        glyph = fallback
+    _secho_bold(f"{glyph} {text}", typer.colors.GREEN if ok else typer.colors.RED)
 
 
 def _first_line(text: str, *, limit: int) -> str:

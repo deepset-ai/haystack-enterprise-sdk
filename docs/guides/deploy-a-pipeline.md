@@ -442,6 +442,12 @@ The exit code of `deploy` answers "is the new revision serving?", so a CI job th
   case the rollout continues on the platform and the service may still come up; check with
   `haystack-enterprise service-status my-service`, then re-run the job or fix the service.
 
+Once the rollout has started, `deploy` ends with one outcome line, after the endpoint details, so you can
+read the result off the last line of the log: `✔ Deployed 'my-service' in 2m 14s — revision 3f2a9c1e is active`,
+`✖ Deploy not confirmed — 'my-service' still rolling out after 10m 0s`, or `✖ Deploy failed — …`. The
+glyph tells them apart where there is no colour; `NO_COLOR` turns the colour off, and a console that cannot
+print `✔`/`✖` shows `OK`/`FAIL`.
+
 To push a revision without waiting for a rollout, use `--skip-activation` and activate it later.
 
 To pass CI secrets to the service, expose them to the step's environment and name them with a bare
