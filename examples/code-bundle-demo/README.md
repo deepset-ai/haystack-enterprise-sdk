@@ -2,7 +2,7 @@
 
 The smallest project that exercises a code build end to end, with no LLM and no secrets:
 
-- `app.py`: a `SuperComponent` with a platform-shaped API (`query` in, `answers` out).
+- `app.py`: a `Pipeline` with a platform-shaped API (`query` in, `answers` out).
 - `demo_lib/text.py`: a helper module. Every answer contains "served from a code bundle", which proves
   the platform imported the whole project, not just the entrypoint.
 
@@ -21,18 +21,18 @@ export API_KEY=<api key of a user in the fleet-enabled org>
 
 ```sh
 uv run haystack-enterprise deploy examples/code-bundle-demo code-bundle-demo \
-  --build code --entrypoint app.py:app --dry-run --output /tmp/demo.tar.gz
+  --entrypoint app.py:app --dry-run --output /tmp/demo.tar.gz
 tar -tzf /tmp/demo.tar.gz
 ```
 
-The output shows the settings the platform gets (`query` → `app.query`, `answers` → `app.answers`,
+The output shows the settings the platform gets (`query` → `shouter.query`, `answers` → `shouter.answers`,
 `haystack-ai==3.2.0`) and the bundle sha. The same files always give the same sha.
 
 ## 2. Deploy
 
 ```sh
 uv run haystack-enterprise deploy examples/code-bundle-demo code-bundle-demo \
-  --build code --entrypoint app.py:app --workspace-name <workspace>
+  --entrypoint app.py:app --workspace-name <workspace>
 ```
 
 This checks that the platform supports code builds, uploads the bundle if it isn't there yet, then
