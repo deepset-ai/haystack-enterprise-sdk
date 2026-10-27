@@ -45,6 +45,14 @@ runner = CliRunner()
 FIXTURE = "tests/test_data/deploy/pipeline.py"
 
 
+@pytest.fixture(autouse=True)
+def _exact_auto_comment(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A real git lookup would make the comment prompt depend on the checkout; tests that care override it.
+    monkeypatch.setattr(
+        "haystack_enterprise_sdk.cli.deployment_service.default_revision_comment", lambda _target: ("auto", True)
+    )
+
+
 def _bundle(**raw: object) -> ExtractionBundle:
     """An ExtractionBundle for extract_via_subprocess mocks, from the raw dict keys."""
     return ExtractionBundle.from_dict({"pipeline": {"components": {}}, **raw})  # type: ignore[arg-type]
@@ -137,6 +145,41 @@ class TestDeployCommand:
         assert result.exit_code == 0
         _, kwargs = client_cls.return_value.deploy.call_args
         assert kwargs["comment"] is None
+
+    @pytest.mark.parametrize(
+        ("args", "input_", "tty", "exact", "ci", "expected"),
+        [
+            ([], "Bump embedder\n", True, False, False, "Bump embedder"),  # dirty tree or no git: asks
+            ([], "\n", True, False, False, "abc1234 Fix (dirty)"),  # Enter accepts the auto comment
+            ([], "", True, True, False, None),  # clean tree: no prompt
+            ([], "", False, False, False, None),  # off a TTY: no prompt
+            ([], "", True, False, True, None),  # CI: no prompt
+            (["-m", "Mine"], "", True, False, False, "Mine"),  # --comment: no prompt
+        ],
+    )
+    @patch("haystack_enterprise_sdk.cli.deployment_service.default_revision_comment")
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_deploy_prompts_for_comment_only_when_auto_one_is_inexact(
+        self,
+        client_cls: Mock,
+        auto: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+        args: list,
+        input_: str,
+        tty: bool,
+        exact: bool,
+        ci: bool,
+        expected: Optional[str],
+    ) -> None:
+        auto.return_value = ("abc1234 Fix (dirty)", exact)
+        monkeypatch.setattr("haystack_enterprise_sdk.cli._stdin_is_tty", lambda: tty)
+        monkeypatch.setenv("CI", "true" if ci else "false")
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--skip-activation", *args], input=input_)
+        assert result.exit_code == 0
+        assert ("Revision comment" in result.stdout) == (tty and not exact and not ci and not args)
+        _, kwargs = client_cls.return_value.deploy.call_args
+        assert kwargs["comment"] == expected
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_activates_by_default(self, client_cls: Mock) -> None:

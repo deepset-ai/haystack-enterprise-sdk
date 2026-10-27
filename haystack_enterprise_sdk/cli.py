@@ -67,7 +67,7 @@ from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, Pipel
 from haystack_enterprise_sdk._api.secrets import FailedToSetServiceSecretError
 from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
-from haystack_enterprise_sdk._console import animations_enabled, status_spinner
+from haystack_enterprise_sdk._console import animations_enabled, in_ci, status_spinner
 from haystack_enterprise_sdk._service import deployment_service
 from haystack_enterprise_sdk._service.deployment_service import (
     CreateOptions,
@@ -783,7 +783,8 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         when the service is created.
     :param comment: Comment stored on the new revision (the platform requires one). Defaults to the
         HEAD commit's short sha and subject (suffixed "(dirty)" for uncommitted changes) when the file sits in a git
-        repository, otherwise to a message naming the pipeline file.
+        repository, otherwise to a message naming the pipeline file. On an interactive terminal (not in CI) you are
+        prompted for it, with that default, when the tree is dirty or there is no git repository.
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
     :param service_level: Service sizing tier when creating the service (with --managed).
     :param min_replicas: Minimum query replicas (with --managed).
@@ -946,6 +947,12 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         )
     else:
         io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="serve")
+
+    # The auto comment misdescribes a dirty tree or a file outside git, so ask (Enter accepts it).
+    if comment is None and _stdin_is_tty() and not in_ci():
+        auto_comment, exact = deployment_service.default_revision_comment(Path(target))
+        if not exact:
+            comment = typer.prompt("Revision comment", default=auto_comment)
 
     started = time.monotonic()
     try:
