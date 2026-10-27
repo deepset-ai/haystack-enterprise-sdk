@@ -1,6 +1,7 @@
 """CLI tests for the `deploy` and `service-status` commands."""
 
 import json
+import re
 from pathlib import Path
 from typing import Literal, Optional
 from unittest.mock import Mock, patch
@@ -632,9 +633,10 @@ class TestBuildOption:
         assert "'auto' or 'yaml'" in result.stdout
 
     def test_help_does_not_mention_code_builds(self) -> None:
-        result = runner.invoke(cli_app, ["deploy", "--help"])
-        assert "--build" in result.stdout
-        assert "code" not in result.stdout.replace("Code component", "")
+        # CI forces a color terminal, whose escape codes split "--build".
+        stdout = re.sub(r"\x1b\[[0-9;]*m", "", runner.invoke(cli_app, ["deploy", "--help"]).stdout)
+        assert "--build" in stdout
+        assert "code" not in stdout.replace("Code component", "")
 
     @patch("haystack_enterprise_sdk.cli.build_code_bundle")
     def test_dry_run_writes_the_code_bundle(self, build_mock: Mock, tmp_path: Path) -> None:
