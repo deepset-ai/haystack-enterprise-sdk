@@ -71,7 +71,7 @@ from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedP
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
 from haystack_enterprise_sdk._console import animations_enabled, status_spinner
 from haystack_enterprise_sdk._service import deployment_service
-from haystack_enterprise_sdk._service.code_bundle import build_code_bundle, has_project_file
+from haystack_enterprise_sdk._service.code_bundle import build_code_bundle
 from haystack_enterprise_sdk._service.deployment_service import (
     CreateOptions,
     DeploymentFailedError,
@@ -762,8 +762,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     build: str = typer.Option(
         "auto",
         "--build",
-        help="How to build the deployable: auto (default) or yaml. auto ships the project as-is when its "
-        "root has a deepset.yaml (entrypoint, kind, dependencies).",
+        help="How to build the deployable: auto (default) or yaml. auto ships a directory target as-is.",
     ),
 ) -> None:
     """Deploy a pipeline as a new revision of a service, creating the service if it does not exist.
@@ -865,11 +864,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         raise typer.Exit(1)
     # `.` has no name, and the io-config lookup, revision comment and source metadata all use it.
     target = target.resolve()
-    # `auto` means a code build for a directory (only a code build takes one) or a project with a
-    # deepset.yaml, else YAML.
+    # `auto` means a code build for a directory (only a code build takes one), else YAML.
     if build == "auto":
-        code = target.is_dir() or (not is_yaml_target(target) and has_project_file(target))
-        build = "code" if code else "yaml"
+        build = "code" if target.is_dir() else "yaml"
 
     io_config_path = _resolve_io_config_path(target, io_config)
     io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()

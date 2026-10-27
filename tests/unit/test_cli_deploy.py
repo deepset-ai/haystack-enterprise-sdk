@@ -655,17 +655,9 @@ class TestBuildOption:
         assert "Code bundle abc" in result.stdout
 
 
-class TestProjectFileBuild:
+class TestDirectoryBuild:
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
-    def test_auto_is_code_with_a_project_file(self, client_cls: Mock, tmp_path: Path) -> None:
-        (tmp_path / "deepset.yaml").write_text("entrypoint: app.py:run\n", encoding="utf-8")
-        client_cls.return_value.deploy.return_value = _result(activated=False)
-        result = runner.invoke(cli_app, ["deploy", str(tmp_path), "svc", "--skip-activation"])
-        assert result.exit_code == 0
-        assert client_cls.return_value.deploy.call_args.kwargs["build"] == "code"
-
-    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
-    def test_auto_is_code_for_a_directory_without_a_project_file(self, client_cls: Mock) -> None:
+    def test_auto_is_code_for_a_directory(self, client_cls: Mock) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=False)
         args = ["deploy", "tests/test_data/deploy", "svc", "--skip-activation", "--entrypoint", "pipeline.py:pipeline"]
         result = runner.invoke(cli_app, args)
@@ -673,23 +665,18 @@ class TestProjectFileBuild:
         assert client_cls.return_value.deploy.call_args.kwargs["build"] == "code"
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
-    def test_explicit_yaml_wins_over_the_project_file(self, client_cls: Mock, tmp_path: Path) -> None:
-        (tmp_path / "deepset.yaml").write_text("", encoding="utf-8")
+    def test_explicit_yaml_wins_over_a_directory(self, client_cls: Mock, tmp_path: Path) -> None:
         client_cls.return_value.deploy.return_value = _result(activated=False)
         result = runner.invoke(cli_app, ["deploy", str(tmp_path), "svc", "--skip-activation", "--build", "yaml"])
         assert result.exit_code == 0
         assert client_cls.return_value.deploy.call_args.kwargs["build"] == "yaml"
 
-    def test_help_mentions_the_project_file(self) -> None:
-        assert "deepset.yaml" in runner.invoke(cli_app, ["deploy", "--help"]).stdout
-
     @patch("haystack_enterprise_sdk.cli.build_code_bundle")
     def test_dry_run_shows_function_kind_and_settings(self, build_mock: Mock, tmp_path: Path) -> None:
-        (tmp_path / "deepset.yaml").write_text("entrypoint: app.py:run\n", encoding="utf-8")
         build_mock.return_value = Mock(
             config_yaml="inputs:\n  payload:\n  - app.payload\noutputs:\n  result: app.result\n",
             sha256="abc",
-            files=["app.py", "deepset.yaml"],
+            files=["app.py"],
             archive=b"tgz",
             entrypoint="app.py:run",
             kind="function",

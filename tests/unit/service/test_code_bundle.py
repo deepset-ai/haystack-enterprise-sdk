@@ -13,16 +13,13 @@ from ruamel.yaml import YAML
 
 from haystack_enterprise_sdk._service.code_bundle import (
     CodeBundleError,
-    ProjectFile,
     build_code_bundle,
     find_project_root,
-    has_project_file,
     list_project_files,
-    load_project_file,
     pack,
     project_dependencies,
 )
-from haystack_enterprise_sdk._service.pipeline_transform import PipelineSettings, PipelineTransformError
+from haystack_enterprise_sdk._service.pipeline_transform import PipelineSettings
 
 
 def _tree(root: Path, files: dict) -> Path:
@@ -154,46 +151,18 @@ def run(name: str = "world") -> dict:
 """
 
 
-class TestProjectFile:
-    def test_absent_file_declares_nothing(self, tmp_path: Path) -> None:
-        assert load_project_file(tmp_path) == ProjectFile()
-        assert not has_project_file(tmp_path)
-
-    def test_parses_all_keys(self, tmp_path: Path) -> None:
-        _tree(tmp_path, {"deepset.yaml": "entrypoint: app.py:run\nkind: function\ndependencies: [langchain==0.3.0]\n"})
-        assert load_project_file(tmp_path) == ProjectFile("app.py:run", "function", ["langchain==0.3.0"])
-
-    def test_found_from_a_file_in_the_project(self, tmp_path: Path) -> None:
-        root = _tree(tmp_path, {"pyproject.toml": "", "deepset.yaml": "", "src/app.py": ""})
-        assert has_project_file(root / "src" / "app.py")
-
-    @pytest.mark.parametrize(
-        ("content", "message"),
-        [
-            ("entrypoint: app.py:run\nimage: x\n", "Unknown key.*image.*Allowed keys: entrypoint, kind, dependencies"),
-            ("entrypoint: app.py\n", "path.py:attr"),
-            ("kind: lambda\n", "must be one of pipeline, agent, super_component, function"),
-            ("dependencies: langchain\n", "list of requirement strings"),
-            ("- a\n", "must be a mapping"),
-        ],
-    )
-    def test_invalid_file_is_rejected(self, tmp_path: Path, content: str, message: str) -> None:
-        _tree(tmp_path, {"deepset.yaml": content})
-        with pytest.raises(CodeBundleError, match=message):
-            load_project_file(tmp_path)
-
-
 class TestFunctionBuild:
-    def test_project_file_names_entrypoint_and_dependencies(self, tmp_path: Path) -> None:
-        root = _tree(
-            tmp_path,
-            {**_PROJECT, "app.py": _FUNCTION_APP, "deepset.yaml": "entrypoint: app.py:run\ndependencies: [x==1]\n"},
+    def test_function_entrypoint_with_declared_dependencies(self, tmp_path: Path) -> None:
+        root = _tree(tmp_path, {**_PROJECT, "app.py": _FUNCTION_APP})
+        code_bundle = build_code_bundle(
+            root,
+            entrypoint="app.py:run",
+            settings=PipelineSettings(dependencies=["x==1"]),
+            python_executable=sys.executable,
         )
-        code_bundle = build_code_bundle(root, python_executable=sys.executable)
 
         assert code_bundle.kind == "function"
         assert code_bundle.entrypoint == "app.py:run"
-        assert "deepset.yaml" in code_bundle.files
         assert YAML(typ="safe").load(code_bundle.config_yaml) == {
             "inputs": {"payload": ["app.payload"]},
             "outputs": {"result": "app.result"},
@@ -204,9 +173,10 @@ class TestFunctionBuild:
         assert set(code_bundle.request_field()) == {"sha256", "entrypoint", "kind", "input_schema"}
 
     def test_mapping_and_output_type_are_fixed_for_a_function(self, tmp_path: Path) -> None:
-        root = _tree(tmp_path, {"app.py": _FUNCTION_APP, "deepset.yaml": "entrypoint: app.py:run\n"})
+        root = _tree(tmp_path, {"app.py": _FUNCTION_APP})
         code_bundle = build_code_bundle(
             root,
+            entrypoint="app.py:run",
             inputs={"query": ["app.name"]},
             settings=PipelineSettings(pipeline_output_type="chat"),
             python_executable=sys.executable,
@@ -214,13 +184,3 @@ class TestFunctionBuild:
         config = YAML(typ="safe").load(code_bundle.config_yaml)
         assert config["inputs"] == {"payload": ["app.payload"]}
         assert "pipeline_output_type" not in config
-
-    def test_cli_entrypoint_beats_project_file(self, tmp_path: Path) -> None:
-        root = _tree(tmp_path, {**_PROJECT, "app.py": _SUPER_APP, "deepset.yaml": "entrypoint: other.py:run\n"})
-        code_bundle = build_code_bundle(root, entrypoint="app.py:app", python_executable=sys.executable)
-        assert code_bundle.kind == "super_component"
-
-    def test_project_file_kind_reaches_the_extractor(self, tmp_path: Path) -> None:
-        root = _tree(tmp_path, {"app.py": _SUPER_APP, "deepset.yaml": "entrypoint: app.py:app\nkind: agent\n"})
-        with pytest.raises(PipelineTransformError, match="kind: agent"):
-            build_code_bundle(root, python_executable=sys.executable)
