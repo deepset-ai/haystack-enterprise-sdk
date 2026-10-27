@@ -665,6 +665,14 @@ class TestProjectFileBuild:
         assert client_cls.return_value.deploy.call_args.kwargs["build"] == "code"
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_auto_is_code_for_a_directory_without_a_project_file(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        args = ["deploy", "tests/test_data/deploy", "svc", "--skip-activation", "--entrypoint", "pipeline.py:pipeline"]
+        result = runner.invoke(cli_app, args)
+        assert result.exit_code == 0
+        assert client_cls.return_value.deploy.call_args.kwargs["build"] == "code"
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_explicit_yaml_wins_over_the_project_file(self, client_cls: Mock, tmp_path: Path) -> None:
         (tmp_path / "deepset.yaml").write_text("", encoding="utf-8")
         client_cls.return_value.deploy.return_value = _result(activated=False)

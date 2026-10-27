@@ -865,9 +865,11 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         raise typer.Exit(1)
     # `.` has no name, and the io-config lookup, revision comment and source metadata all use it.
     target = target.resolve()
-    # `auto` means a code build for a project with a deepset.yaml, else YAML.
+    # `auto` means a code build for a directory (only a code build takes one) or a project with a
+    # deepset.yaml, else YAML.
     if build == "auto":
-        build = "code" if not is_yaml_target(target) and has_project_file(target) else "yaml"
+        code = target.is_dir() or (not is_yaml_target(target) and has_project_file(target))
+        build = "code" if code else "yaml"
 
     io_config_path = _resolve_io_config_path(target, io_config)
     io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
