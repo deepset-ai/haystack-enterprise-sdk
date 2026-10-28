@@ -32,6 +32,7 @@ from haystack_enterprise_sdk.cli import (
     _browser_login,
     _configure_cli_logging,
     _maybe_print_update_hint,
+    _show_device_code,
     _ui_url_for,
     cli_app,
     run_packaged,
@@ -544,6 +545,19 @@ class TestCLIUtils:
     def test_browser_login_times_out(self) -> None:
         with patch("haystack_enterprise_sdk.cli.webbrowser.open"), pytest.raises(typer.Exit):
             _browser_login("https://cloud.deepset.ai", timeout=0.2)
+
+    @pytest.mark.parametrize("ssh, opened", [(False, True), (True, False)])
+    def test_show_device_code_opens_browser_unless_over_ssh(
+        self, ssh: bool, opened: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        if ssh:
+            monkeypatch.setenv("SSH_CONNECTION", "10.0.0.1 22 10.0.0.2 22")
+        with patch("haystack_enterprise_sdk.cli.webbrowser.open") as open_mock:
+            _show_device_code("123", "https://id.example/device", "https://id.example/device?code=123")
+        assert open_mock.called is opened
+        if opened:
+            open_mock.assert_called_once_with("https://id.example/device?code=123")
 
     @pytest.mark.parametrize(
         "api_url, ui_url",

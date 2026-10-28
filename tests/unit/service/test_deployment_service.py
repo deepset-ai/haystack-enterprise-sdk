@@ -649,18 +649,18 @@ class TestDefaultRevisionComment:
             "haystack_enterprise_sdk._service.deployment_service._git",
             lambda _dir, *args: "a1b2c3d Add retry to retriever" if args[0] == "log" else None,
         )
-        assert default_revision_comment(FIXTURE) == "a1b2c3d Add retry to retriever"
+        assert default_revision_comment(FIXTURE) == ("a1b2c3d Add retry to retriever", True)
 
     def test_marks_uncommitted_changes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "haystack_enterprise_sdk._service.deployment_service._git",
             lambda _dir, *args: "a1b2c3d Add retry to retriever" if args[0] == "log" else " M pipeline.py",
         )
-        assert default_revision_comment(FIXTURE) == "a1b2c3d Add retry to retriever (dirty)"
+        assert default_revision_comment(FIXTURE) == ("a1b2c3d Add retry to retriever (dirty)", False)
 
     def test_without_git_falls_back_to_plain_comment(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("haystack_enterprise_sdk._service.deployment_service._git", lambda _dir, *_args: None)
-        assert default_revision_comment(FIXTURE) == "Deployed pipeline.py via haystack-enterprise CLI"
+        assert default_revision_comment(FIXTURE) == ("Deployed pipeline.py via haystack-enterprise CLI", False)
 
 
 class TestGitHelper:

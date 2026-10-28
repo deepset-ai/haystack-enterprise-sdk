@@ -111,7 +111,7 @@ def _repo_id(remote: Optional[str]) -> Optional[str]:
     return f"{(match.group(1) or match.group(2)).lower()}/{path}" if path else None
 
 
-def default_revision_comment(target: Path) -> str:
+def default_revision_comment(target: Path) -> Tuple[str, bool]:
     """Build the comment used when the caller does not supply one.
 
     The HEAD commit's short sha and subject when the pipeline file sits in a git repository, suffixed
@@ -119,15 +119,16 @@ def default_revision_comment(target: Path) -> str:
     not HEAD. Otherwise a message naming the file. The git lookups are best-effort and never fail the deploy.
 
     :param target: Path to the pipeline file being deployed.
-    :return: A single-line comment.
+    :return: A single-line comment, and whether it exactly describes the deploy (False when the tree is
+        dirty or the file is not in a git repository).
     """
     target_dir = target.parent if target.parent != Path("") else Path(".")
     comment = _git(target_dir, "log", "-1", "--format=%h %s")
     if comment is None:
-        return f"Deployed {target.name} via haystack-enterprise CLI"
+        return f"Deployed {target.name} via haystack-enterprise CLI", False
     if _git(target_dir, "status", "--porcelain", "--untracked-files=no"):
-        comment += " (dirty)"
-    return comment
+        return comment + " (dirty)", False
+    return comment, True
 
 
 def collect_source_metadata(target: Path) -> Dict[str, Any]:
@@ -391,7 +392,7 @@ class DeploymentService:
             self._workspace_name,
             deployment.deployment_id,
             config_yaml,
-            comment or default_revision_comment(target),
+            comment or default_revision_comment(target)[0],
             source_metadata=source_metadata,
             **({"code_bundle": packed.request_field()} if packed is not None else {}),
         )

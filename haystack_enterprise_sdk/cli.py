@@ -69,7 +69,7 @@ from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, Pipel
 from haystack_enterprise_sdk._api.secrets import FailedToSetServiceSecretError
 from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
-from haystack_enterprise_sdk._console import animations_enabled, status_spinner
+from haystack_enterprise_sdk._console import animations_enabled, in_ci, status_spinner
 from haystack_enterprise_sdk._service import deployment_service
 from haystack_enterprise_sdk._service.code_bundle import build_code_bundle
 from haystack_enterprise_sdk._service.deployment_service import (
@@ -468,8 +468,12 @@ def _open_login_url(url: str) -> None:
 
 
 def _show_device_code(user_code: str, verification_uri: str, verification_uri_complete: Optional[str]) -> None:
-    typer.echo(f"On any device, open:\n\n  {verification_uri_complete or verification_uri}\n")
+    url = verification_uri_complete or verification_uri
+    typer.echo(f"Opening your browser to log in. If it doesn't open, on any device visit:\n\n  {url}\n")
     typer.echo(f"and confirm the code {user_code}. Waiting for approval...")
+    # Over SSH the only "browser" is a console one (lynx, w3m) that would take over the terminal.
+    if not os.environ.get("SSH_CONNECTION"):
+        webbrowser.open(url)
 
 
 def _choose(label: str, options: List[str], default: Optional[str] = None) -> str:
@@ -792,7 +796,8 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         when the service is created.
     :param comment: Comment stored on the new revision (the platform requires one). Defaults to the
         HEAD commit's short sha and subject (suffixed "(dirty)" for uncommitted changes) when the file sits in a git
-        repository, otherwise to a message naming the pipeline file.
+        repository, otherwise to a message naming the pipeline file. On an interactive terminal (not in CI) you are
+        prompted for it, with that default, when the tree is dirty or there is no git repository.
     :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
     :param service_level: Service sizing tier when creating the service (with --managed).
     :param min_replicas: Minimum query replicas (with --managed).
@@ -968,6 +973,13 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     else:
         io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="serve")
 
+    # The auto comment misdescribes a dirty tree or a file outside git, so ask (Enter accepts it).
+    if comment is None and _stdin_is_tty() and not in_ci():
+        auto_comment, exact = deployment_service.default_revision_comment(Path(target))
+        if not exact:
+            comment = typer.prompt("Revision comment", default=auto_comment)
+
+    started = time.monotonic()
     try:
         if activate:
             with status_spinner() as spinner:
@@ -1021,8 +1033,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             f"Check with `haystack-enterprise service-status {service_name}`."
         )
         raise typer.Exit(0)  # noqa: B904
+    except DeploymentFailedError as err:
+        _echo_verdict(False, f"Deploy failed — {err}")
+        raise typer.Exit(1)  # noqa: B904
     except (
-        DeploymentFailedError,
         ServiceNotFoundError,
         PipelineTransformError,
         PipelineValidationError,
@@ -1032,14 +1046,16 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         typer.echo(str(err))
         raise typer.Exit(1)  # noqa: B904
 
+    # Taken here, before the share prompt below waits on the user.
+    elapsed = _duration(time.monotonic() - started)
+
     if existing is None:
         # Highlighted: creating a service is a side effect the user did not explicitly ask for, so it
         # should stand out from the regular deploy output.
-        typer.secho(
+        _secho_bold(
             f"Created {result.deployment.deployment_mode.value.lower()} service '{service_name}' "
             f"in workspace '{workspace_name}'.",
-            fg=typer.colors.GREEN,
-            bold=True,
+            typer.colors.GREEN,
         )
 
     if not activate:
@@ -1070,8 +1086,16 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         )
         _echo_endpoint(client, service_name, result, shared=bool(share))
 
+    # Last on purpose: the endpoint block above is long, and the outcome has to be the final line.
+    if activate and result.is_deployed:
+        _echo_verdict(
+            True,
+            f"Deployed '{service_name}' in {elapsed} — revision {str(result.revision.revision_id)[:8]} is active",
+        )
+
     # A job result answers "is the new revision serving?", so an unfinished rollout must not look like success.
     if result.timed_out:
+        _echo_verdict(False, f"Deploy not confirmed — '{service_name}' still rolling out after {elapsed}")
         raise typer.Exit(1)
 
 
@@ -1412,6 +1436,34 @@ def _deploy_dry_run(
 def _stdin_is_tty() -> bool:
     """Whether stdin is an interactive terminal (indirection kept simple to patch in tests)."""
     return sys.stdin.isatty()
+
+
+def _duration(seconds: float) -> str:
+    """``2m 14s`` / ``45s``: elapsed time for the closing deploy line."""
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}m {secs}s" if minutes else f"{secs}s"
+
+
+def _secho_bold(text: str, fg: str) -> None:
+    """Print ``text`` in bold ``fg``; ``NO_COLOR`` turns the colour off (click only strips it off a TTY)."""
+    typer.secho(text, fg=fg, bold=True, color=False if os.environ.get("NO_COLOR") else None)
+
+
+def _echo_verdict(ok: bool, text: str) -> None:
+    """Print the one-line outcome that ends a ``deploy``, so success and failure cannot be confused.
+
+    Bold green with ``✔`` for success, bold red with ``✖`` otherwise. The glyph falls back to ``OK`` /
+    ``FAIL`` on a console that cannot encode it, and is what tells the two apart in a colourless CI log.
+
+    :param ok: Whether the deploy succeeded.
+    :param text: The message after the glyph.
+    """
+    glyph, fallback = ("✔", "OK") if ok else ("✖", "FAIL")
+    try:
+        glyph.encode(sys.stdout.encoding or "ascii")
+    except UnicodeEncodeError:
+        glyph = fallback
+    _secho_bold(f"{glyph} {text}", typer.colors.GREEN if ok else typer.colors.RED)
 
 
 def _first_line(text: str, *, limit: int) -> str:
