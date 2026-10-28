@@ -15,7 +15,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           python-version: "3.10"
@@ -32,7 +32,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           python-version: "3.10"
@@ -49,7 +49,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           python-version: "3.10"
@@ -66,7 +66,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           python-version: "3.10"
@@ -108,7 +108,7 @@ jobs:
           # for coverage comment action
           fetch-depth: 1000
       - name: Install uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
           python-version: "3.10"
@@ -118,7 +118,7 @@ jobs:
         run: make tests-with-cov
       - name: Coverage comment
         id: coverage_comment
-        uses: py-cov-action/python-coverage-comment-action@a05be3d2e8a6272d3ef5fb2840ab20368bb2eb71
+        uses: py-cov-action/python-coverage-comment-action@e5fb2218463c3377f3504b0c5b5646ed53da7a2f
         with:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -129,7 +129,7 @@ jobs:
       # so this step is skipped.
       - name: Upload coverage comment to be posted
         if: steps.coverage_comment.outputs.COMMENT_FILE_WRITTEN == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-coverage-comment-action
           path: python-coverage-comment-action.txt
