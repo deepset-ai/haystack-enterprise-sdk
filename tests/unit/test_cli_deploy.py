@@ -722,16 +722,21 @@ class TestBuildOption:
         assert kwargs["build"] == "code"
         assert kwargs["entrypoint"] == "pipeline.py:pipeline"
 
-    def test_unknown_value_is_rejected_without_naming_code(self) -> None:
+    def test_unknown_value_is_rejected(self) -> None:
         result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--build", "docker"])
-        assert result.exit_code == 1
-        assert "'auto' or 'yaml'" in result.stdout
+        assert result.exit_code == 2
 
-    def test_help_does_not_mention_code_builds(self) -> None:
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_code_build_warns_it_is_experimental(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        result = runner.invoke(cli_app, ["deploy", "tests/test_data/deploy", "svc", "--skip-activation"])
+        assert result.exit_code == 0
+        assert "Code builds are experimental" in result.stderr
+
+    def test_help_marks_code_builds_experimental(self) -> None:
         # CI forces a color terminal, whose escape codes split "--build".
         stdout = re.sub(r"\x1b\[[0-9;]*m", "", runner.invoke(cli_app, ["deploy", "--help"]).stdout)
-        assert "--build" in stdout
-        assert "code" not in stdout.replace("Code component", "")
+        assert "code (experimental)" in re.sub(r"\s+", " ", stdout.replace("│", ""))
 
     @patch("haystack_enterprise_sdk.cli.build_code_bundle")
     def test_dry_run_writes_the_code_bundle(self, build_mock: Mock, tmp_path: Path) -> None:

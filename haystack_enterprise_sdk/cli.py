@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from importlib.metadata import version
 from pathlib import Path
 from socket import gethostname
-from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
@@ -114,9 +114,6 @@ from haystack_enterprise_sdk.workflows.sync_client.files import (
 from haystack_enterprise_sdk.workflows.sync_client.files import upload as sync_upload
 
 cli_app = typer.Typer(pretty_exceptions_show_locals=False)
-
-# Accepted `deploy --build` values. Only auto and yaml are documented while code builds roll out.
-_BUILDS = ("auto", "yaml", "code")
 
 # How long a sandbox run has to be waiting before the spinner explains that this is normal.
 _RUN_HINT_AFTER_S = 20
@@ -761,12 +758,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     api_key: Optional[str] = None,
     api_url: Optional[str] = None,
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
-    # Phase A: `code` works but stays undocumented until code builds are generally available, so the
-    # value is checked by hand instead of a Choice that would list it in --help.
-    build: str = typer.Option(
+    build: Literal["auto", "yaml", "code"] = typer.Option(
         "auto",
         "--build",
-        help="How to build the deployable: auto (default) or yaml. auto ships a directory target as-is.",
+        help="How to build the deployable: yaml, code (experimental), or auto: code for a directory, else yaml.",
     ),
 ) -> None:
     """Deploy a pipeline as a new revision of a service, creating the service if it does not exist.
@@ -864,14 +859,13 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     Set service secrets from a committed file plus CI secrets exported in the environment:
     `haystack-enterprise deploy pipeline.py my-service --env-file .env.prod --env OPENAI_API_KEY`
     """
-    if build not in _BUILDS:
-        typer.echo(f"--build must be 'auto' or 'yaml', got '{build}'.")
-        raise typer.Exit(1)
     # `.` has no name, and the io-config lookup, revision comment and source metadata all use it.
     target = target.resolve()
     # `auto` means a code build for a directory (only a code build takes one), else YAML.
     if build == "auto":
         build = "code" if target.is_dir() else "yaml"
+    if build == "code":
+        typer.echo("Code builds are experimental: the bundle format and the /run API may change.", err=True)
 
     io_config_path = _resolve_io_config_path(target, io_config)
     io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
