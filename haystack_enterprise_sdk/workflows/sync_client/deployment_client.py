@@ -93,6 +93,7 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         on_status: Optional[Callable[[DeploymentStatus], None]] = None,
+        build: str = "yaml",
     ) -> DeployResult:
         """Transform ``target`` and push it as a new revision of ``service_name`` synchronously."""
         return _run(
@@ -114,6 +115,7 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
                 timeout_s=timeout_s,
                 poll_interval_s=poll_interval_s,
                 on_status=on_status,
+                build=build,
             )
         )
 
@@ -184,6 +186,12 @@ class DeploymentClient:  # pylint: disable=too-few-public-methods
     def get_service_status(self, service_name: str) -> Deployment:
         """Return the current deployment (with live runtime status) for ``service_name``."""
         return _run(self._async_client.get_service_status(service_name))
+
+    def invoke(
+        self, service_name: str, *, payload: Optional[Dict[str, Any]] = None, query: Optional[str] = None
+    ) -> Any:
+        """Call a deployed service synchronously. See :meth:`AsyncDeploymentClient.invoke`."""
+        return _run(self._async_client.invoke(service_name, payload=payload, query=query))
 
     def add_tag(self, service_name: str, tag_name: str) -> List[str]:
         """Add a tag to a service by name, independent of deploy/create, synchronously."""

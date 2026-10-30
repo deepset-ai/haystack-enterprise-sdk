@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from importlib.metadata import version
 from pathlib import Path
 from socket import gethostname
-from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Literal, NamedTuple, Optional, Sequence, Tuple, Union
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
@@ -42,8 +42,10 @@ from haystack_enterprise_sdk._api.config import (
     normalize_base_url,
 )
 from haystack_enterprise_sdk._api.deployments import (
+    CodeBundleRequestError,
     DeploymentMode,
     DeploymentServiceLevel,
+    FailedToInvokeDeploymentError,
     FailedToTagDeploymentError,
     PipelineValidationError,
 )
@@ -69,6 +71,7 @@ from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedP
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
 from haystack_enterprise_sdk._console import animations_enabled, in_ci, status_spinner
 from haystack_enterprise_sdk._service import deployment_service
+from haystack_enterprise_sdk._service.code_bundle import build_code_bundle
 from haystack_enterprise_sdk._service.deployment_service import (
     CreateOptions,
     DeploymentFailedError,
@@ -755,6 +758,11 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     api_key: Optional[str] = None,
     api_url: Optional[str] = None,
     workspace_name: str = DEFAULT_WORKSPACE_NAME,
+    build: Literal["auto", "yaml", "code"] = typer.Option(
+        "auto",
+        "--build",
+        help="How to build the deployable: yaml, code (experimental), or auto: code for a directory, else yaml.",
+    ),
 ) -> None:
     """Deploy a pipeline as a new revision of a service, creating the service if it does not exist.
 
@@ -851,12 +859,20 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     Set service secrets from a committed file plus CI secrets exported in the environment:
     `haystack-enterprise deploy pipeline.py my-service --env-file .env.prod --env OPENAI_API_KEY`
     """
+    # `.` has no name, and the io-config lookup, revision comment and source metadata all use it.
+    target = target.resolve()
+    # `auto` means a code build for a directory (only a code build takes one), else YAML.
+    if build == "auto":
+        build = "code" if target.is_dir() else "yaml"
+    if build == "code":
+        typer.echo("Code builds are experimental: the bundle format and the /run API may change.", err=True)
+
     io_config_path = _resolve_io_config_path(target, io_config)
     io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
     env_vars = _collect_env_vars(env or [], env_file)
 
     if dry_run:
-        _deploy_dry_run(target, entrypoint, python, output, skip_io_validation, io_cfg)
+        _deploy_dry_run(target, entrypoint, python, output, skip_io_validation, io_cfg, build)
         if env_vars:
             typer.echo(f"Would set service secrets: {', '.join(sorted(env_vars))}.", err=True)
         return
@@ -936,7 +952,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     # for the two things the platform requires of a servable pipeline (a query input and one output) and
     # only when inference did not already supply them. A pipeline YAML has no live sockets to offer, so
     # its own mapping is used as-is.
-    if io_cfg.inputs is not None or io_cfg.outputs is not None or is_yaml_target(target):
+    # A code build defines its own API (/run), so the chat mapping is optional and never asked for unless
+    # it is about to be shared.
+    pinned = io_cfg.inputs is not None or io_cfg.outputs is not None
+    if pinned or is_yaml_target(target) or (build == "code" and not share):
         io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="warn")
     elif share:
         io_resolver = functools.partial(
@@ -983,6 +1002,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     validate=not skip_validation,
                     secrets=env_vars,
                     on_status=_on_status,
+                    build=build,
                 )
         else:
             result = client.deploy(
@@ -999,6 +1019,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 python_executable=python,
                 validate=not skip_validation,
                 secrets=env_vars,
+                build=build,
             )
     except KeyboardInterrupt:
         typer.echo(
@@ -1014,6 +1035,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         PipelineTransformError,
         PipelineValidationError,
         FailedToSetServiceSecretError,
+        CodeBundleRequestError,
     ) as err:
         typer.echo(str(err))
         raise typer.Exit(1)  # noqa: B904
@@ -1313,7 +1335,7 @@ def _parse_inputs_option(inputs: Optional[str]) -> Optional[dict]:
         typer.echo(f"--inputs is not valid JSON: {err}")
         raise typer.Exit(1)  # noqa: B904
     if not isinstance(parsed, dict):
-        typer.echo("--inputs must be a JSON object mapping component names to their inputs.")
+        typer.echo("--inputs must be a JSON object.")
         raise typer.Exit(1)
     return parsed
 
@@ -1352,13 +1374,38 @@ def _deploy_dry_run(
     output: Optional[Path],
     skip_io_validation: bool = False,
     io_cfg: IoConfig = IoConfig(),
+    build: str = "yaml",
 ) -> None:
     """Transform the pipeline and print/write the YAML without contacting the API.
 
     Uses the same extract → resolve → render path as the real deploy (:func:`build_config_yaml`).
     Never prompts (``mode="warn"``): a dry run renders YAML, it does not serve or query anything.
+    A code build prints its settings YAML and writes the code bundle itself to ``output``.
     """
     io_resolver = functools.partial(_resolve_io_interactive, skip_validation=skip_io_validation, mode="warn")
+    if build == "code":
+        try:
+            packed = build_code_bundle(
+                target,
+                entrypoint=entrypoint,
+                inputs=io_cfg.inputs,
+                outputs=io_cfg.outputs,
+                settings=io_cfg.settings,
+                io_resolver=io_resolver,
+                python_executable=python,
+            )
+        except PipelineTransformError as err:
+            typer.echo(str(err))
+            raise typer.Exit(1)  # noqa: B904
+        typer.echo(packed.config_yaml)
+        typer.echo(
+            f"Code bundle {packed.sha256}: {len(packed.files)} files, {len(packed.archive)} bytes, "
+            f"entrypoint {packed.entrypoint} ({packed.kind})."
+        )
+        if output is not None:
+            output.write_bytes(packed.archive)
+            typer.echo(f"Wrote the code bundle to {output}.")
+        return
     try:
         config_yaml = build_config_yaml(
             target,
@@ -1540,6 +1587,10 @@ def _echo_endpoint(client: DeploymentClient, service_name: str, result: DeployRe
     if not result.is_deployed:
         return
 
+    if result.code_bundle is not None and result.code_bundle.kind == "function":
+        _echo_run_endpoint(client, service_name, result.deployment.deployment_id, result.code_bundle.input_schema)
+        return
+
     base_url = client.chat_completions_base_url()
     model = f"{client.workspace_name}/{result.deployment.deployment_id}"
     typer.echo(f"\nChat completions endpoint (OpenAI-compatible):\n  POST {base_url}/chat/completions")
@@ -1550,9 +1601,41 @@ def _echo_endpoint(client: DeploymentClient, service_name: str, result: DeployRe
         f'    -d \'{{"model": "{model}", "messages": [{{"role": "user", "content": "Hello"}}]}}\''
     )
     typer.echo(f'\n  Or point an OpenAI client at base_url={base_url} with model="{model}".')
+    typer.echo(f'\n  Or: haystack-enterprise invoke {service_name} --query "Hello"')
 
     if not shared and result.deployment.output_type is PipelineOutputType.CHAT:
         typer.echo("\nThis is a chat pipeline — re-run with --share for a shareable chat UI link.")
+
+
+# Placeholder values for the example payload of a function build, by JSON schema type.
+_EXAMPLE_VALUES: Dict[str, Any] = {
+    "string": "...",
+    "integer": 0,
+    "number": 0,
+    "boolean": False,
+    "array": [],
+    "object": {},
+}
+
+
+def _echo_run_endpoint(
+    client: DeploymentClient, service_name: str, deployment_id: Any, input_schema: Optional[dict]
+) -> None:
+    """Print the ``/run`` endpoint of a function build, with a curl whose body follows the input schema."""
+    schema = input_schema or {}
+    payload = {
+        name: prop.get("default", _EXAMPLE_VALUES.get(prop.get("type", ""), "..."))
+        for name, prop in (schema.get("properties") or {}).items()
+    }
+    url = f"{client.deployment_base_url(deployment_id)}/run"
+    typer.echo(f'\nRun endpoint (responds with {{"result": ...}}):\n  POST {url}')
+    typer.echo(
+        f"\n  curl {url} \\\n"
+        f'    -H "Authorization: Bearer $API_KEY" \\\n'
+        f'    -H "Content-Type: application/json" \\\n'
+        f"    -d '{json.dumps(payload)}'"
+    )
+    typer.echo(f"\n  Or: haystack-enterprise invoke {service_name} --inputs '{json.dumps(payload)}'")
 
 
 # Sentinel returned by _select_socket when the user keeps the current mapping (Enter in edit mode).
@@ -2079,6 +2162,42 @@ def service_status(
             indent=4,
         )
     )
+
+
+@cli_app.command()
+def invoke(
+    service_name: str,
+    query: Optional[str] = typer.Option(None, help="Send a user message to the service's chat completions."),
+    inputs: Optional[str] = typer.Option(
+        None, help="JSON payload for a function code build's /run endpoint, or '@path' to a JSON file."
+    ),
+    api_key: Optional[str] = None,
+    api_url: Optional[str] = None,
+    workspace_name: str = DEFAULT_WORKSPACE_NAME,
+) -> None:
+    """Call a deployed service and print its answer.
+
+    :param service_name: Name of the service deployment.
+    :param query: User message, for pipeline, agent and SuperComponent services.
+    :param inputs: JSON payload, for function code builds.
+    :param api_key: deepset API key to use for authentication.
+    :param api_url: API URL to use for authentication.
+    :param workspace_name: Workspace of the service. Uses the workspace from the .ENV file by default.
+
+    Example:
+    `haystack-enterprise invoke my-service --query "What is Haystack?"`
+    `haystack-enterprise invoke my-function --inputs '{"name": "Ada"}'`
+    """
+    if (query is None) == (inputs is None):
+        typer.echo("Pass exactly one of --query or --inputs.")
+        raise typer.Exit(2)
+    client = DeploymentClient(api_key=api_key, api_url=api_url, workspace_name=workspace_name)
+    try:
+        answer = client.invoke(service_name, payload=_parse_inputs_option(inputs), query=query)
+    except (ServiceNotFoundError, FailedToInvokeDeploymentError) as err:
+        typer.echo(str(err), err=True)
+        raise typer.Exit(1)  # noqa: B904
+    typer.echo(answer if isinstance(answer, str) else json.dumps(answer, indent=2))
 
 
 @cli_app.command()

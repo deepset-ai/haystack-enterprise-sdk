@@ -120,6 +120,7 @@ class AsyncDeploymentClient:
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         on_status: Optional[Callable[[DeploymentStatus], None]] = None,
+        build: str = "yaml",
     ) -> DeployResult:
         """Transform ``target`` and push it as a new revision of ``service_name``.
 
@@ -144,6 +145,7 @@ class AsyncDeploymentClient:
                 timeout_s=timeout_s,
                 poll_interval_s=poll_interval_s,
                 on_status=on_status,
+                build=build,
             )
 
     async def validate(
@@ -219,6 +221,15 @@ class AsyncDeploymentClient:
         """Return the current deployment (with live runtime status) for ``service_name``."""
         async with self._service() as service:
             return await service.get_service_status(service_name)
+
+    async def invoke(
+        self, service_name: str, *, payload: Optional[Dict[str, Any]] = None, query: Optional[str] = None
+    ) -> Any:
+        """Call a deployed service. See
+        :meth:`haystack_enterprise_sdk._service.deployment_service.DeploymentService.invoke`.
+        """
+        async with self._service() as service:
+            return await service.invoke(service_name, payload=payload, query=query)
 
     async def add_tag(self, service_name: str, tag_name: str) -> List[str]:
         """Add a tag to a service by name, independent of deploy/create. See

@@ -2,6 +2,7 @@
 
 import io
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Literal, Optional
@@ -18,6 +19,7 @@ from haystack_enterprise_sdk._api.deployments import (
     DeploymentRevisionStatus,
     DeploymentServiceLevel,
     DeploymentStatus,
+    FailedToInvokeDeploymentError,
     FailedToTagDeploymentError,
     PipelineValidationError,
     PipelineValidationIssue,
@@ -425,7 +427,7 @@ class TestDeployCommand:
         assert resolver.func is _resolve_io_interactive
         assert resolver.keywords["mode"] == "review"
         assert resolver.keywords["skip_validation"] is False
-        assert resolver.keywords["save_path"] == Path(FIXTURE).with_suffix(".io.yaml")
+        assert resolver.keywords["save_path"] == Path(FIXTURE).resolve().with_suffix(".io.yaml")
 
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_deploy_without_share_asks_only_what_serving_needs(self, client_cls: Mock) -> None:
@@ -700,6 +702,112 @@ class TestEnvSecrets:
         assert "Would set service secrets: A." in result.output
         assert "1" not in result.output.split("Would set service secrets")[1]
         client_cls.assert_not_called()
+
+
+class TestBuildOption:
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_auto_is_yaml(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--skip-activation"])
+        assert result.exit_code == 0
+        assert client_cls.return_value.deploy.call_args.kwargs["build"] == "yaml"
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_code_is_forwarded(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        args = ["deploy", "tests/test_data/deploy", "svc", "--skip-activation", "--build", "code"]
+        result = runner.invoke(cli_app, args + ["--entrypoint", "pipeline.py:pipeline"])
+        assert result.exit_code == 0
+        kwargs = client_cls.return_value.deploy.call_args.kwargs
+        assert kwargs["build"] == "code"
+        assert kwargs["entrypoint"] == "pipeline.py:pipeline"
+
+    def test_unknown_value_is_rejected(self) -> None:
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--build", "docker"])
+        assert result.exit_code == 2
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_code_build_warns_it_is_experimental(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        result = runner.invoke(cli_app, ["deploy", "tests/test_data/deploy", "svc", "--skip-activation"])
+        assert result.exit_code == 0
+        assert "Code builds are experimental" in result.stderr
+
+    def test_help_marks_code_builds_experimental(self) -> None:
+        # CI forces a color terminal, whose escape codes split "--build".
+        stdout = re.sub(r"\x1b\[[0-9;]*m", "", runner.invoke(cli_app, ["deploy", "--help"]).stdout)
+        assert "code (experimental)" in re.sub(r"\s+", " ", stdout.replace("│", ""))
+
+    @patch("haystack_enterprise_sdk.cli.build_code_bundle")
+    def test_dry_run_writes_the_code_bundle(self, build_mock: Mock, tmp_path: Path) -> None:
+        build_mock.return_value = Mock(
+            config_yaml="inputs: {}\n",
+            sha256="abc",
+            files=["app.py"],
+            archive=b"tgz",
+            entrypoint="app.py:app",
+            kind="pipeline",
+        )
+        out = tmp_path / "bundle.tar.gz"
+        result = runner.invoke(
+            cli_app, ["deploy", FIXTURE, "svc", "--dry-run", "--build", "code", "--output", str(out)]
+        )
+        assert result.exit_code == 0
+        assert out.read_bytes() == b"tgz"
+        assert "Code bundle abc" in result.stdout
+
+
+class TestDirectoryBuild:
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_auto_is_code_for_a_directory(self, client_cls: Mock) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        args = ["deploy", "tests/test_data/deploy", "svc", "--skip-activation", "--entrypoint", "pipeline.py:pipeline"]
+        result = runner.invoke(cli_app, args)
+        assert result.exit_code == 0
+        assert client_cls.return_value.deploy.call_args.kwargs["build"] == "code"
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_explicit_yaml_wins_over_a_directory(self, client_cls: Mock, tmp_path: Path) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        result = runner.invoke(cli_app, ["deploy", str(tmp_path), "svc", "--skip-activation", "--build", "yaml"])
+        assert result.exit_code == 0
+        assert client_cls.return_value.deploy.call_args.kwargs["build"] == "yaml"
+
+    @patch("haystack_enterprise_sdk.cli.build_code_bundle")
+    def test_dry_run_shows_function_kind_and_settings(self, build_mock: Mock, tmp_path: Path) -> None:
+        build_mock.return_value = Mock(
+            config_yaml="inputs:\n  payload:\n  - app.payload\noutputs:\n  result: app.result\n",
+            sha256="abc",
+            files=["app.py"],
+            archive=b"tgz",
+            entrypoint="app.py:run",
+            kind="function",
+        )
+        result = runner.invoke(cli_app, ["deploy", str(tmp_path), "svc", "--dry-run"])
+        assert result.exit_code == 0
+        assert "result: app.result" in result.stdout
+        assert "entrypoint app.py:run (function)" in result.stdout
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_function_deploy_prints_the_run_endpoint(self, client_cls: Mock) -> None:
+        _stub_endpoint(client_cls)
+        client_cls.return_value.deployment_base_url.return_value = (
+            "https://api.example/api/v1/workspaces/ws/deployments/d1"
+        )
+        deployed = _result(activated=True)
+        deployed.code_bundle = Mock(
+            kind="function",
+            input_schema={
+                "type": "object",
+                "properties": {"name": {"type": "string", "default": "world"}, "n": {"type": "integer"}},
+            },
+        )
+        client_cls.return_value.deploy.return_value = deployed
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
+        assert result.exit_code == 0
+        assert "POST https://api.example/api/v1/workspaces/ws/deployments/d1/run" in result.stdout
+        assert """-d '{"name": "world", "n": 0}'""" in result.stdout
+        assert "chat/completions" not in result.stdout
 
 
 class TestDryRun:
@@ -1727,3 +1835,48 @@ def test_packaged_cli_reports_itself_as_the_cli(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(cli, "cli_app", lambda: None)
     cli.run_packaged()
     assert deployment_service.CLIENT_NAME == "Haystack Enterprise CLI"
+
+
+class TestInvokeCommand:
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_inputs_go_to_run(self, client_cls: Mock) -> None:
+        client_cls.return_value.invoke.return_value = {"greeting": "hi"}
+        result = runner.invoke(cli_app, ["invoke", "svc", "--inputs", '{"name": "x"}'])
+        assert result.exit_code == 0, result.output
+        client_cls.return_value.invoke.assert_called_once_with("svc", payload={"name": "x"}, query=None)
+        assert json.loads(result.stdout) == {"greeting": "hi"}
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_query_prints_answer(self, client_cls: Mock) -> None:
+        client_cls.return_value.invoke.return_value = "Hello!"
+        result = runner.invoke(cli_app, ["invoke", "svc", "--query", "hi"])
+        assert result.exit_code == 0, result.output
+        client_cls.return_value.invoke.assert_called_once_with("svc", payload=None, query="hi")
+        assert result.stdout.strip() == "Hello!"
+
+    @pytest.mark.parametrize("args", [[], ["--query", "q", "--inputs", "{}"]])
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_needs_exactly_one_of_query_and_inputs(self, client_cls: Mock, args: list) -> None:
+        result = runner.invoke(cli_app, ["invoke", "svc", *args])
+        assert result.exit_code == 2
+        client_cls.return_value.invoke.assert_not_called()
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_platform_error_exits_1(self, client_cls: Mock) -> None:
+        client_cls.return_value.invoke.side_effect = FailedToInvokeDeploymentError("use chat for those (status 400)")
+        result = runner.invoke(cli_app, ["invoke", "svc", "--inputs", "{}"])
+        assert result.exit_code == 1
+        assert "use chat for those" in result.output
+
+
+class TestDotTarget:
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_dot_target_resolves_to_the_directory(self, client_cls: Mock, monkeypatch: pytest.MonkeyPatch) -> None:
+        client_cls.return_value.deploy.return_value = _result(activated=False)
+        monkeypatch.chdir("tests/test_data/deploy")
+        result = runner.invoke(
+            cli_app,
+            ["deploy", ".", "svc", "--skip-activation", "--build", "code", "--entrypoint", "pipeline.py:pipeline"],
+        )
+        assert result.exit_code == 0, result.output
+        assert client_cls.return_value.deploy.call_args.args[0] == Path.cwd()

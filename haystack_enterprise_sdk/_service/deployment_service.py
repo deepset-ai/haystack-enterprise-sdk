@@ -39,7 +39,7 @@ from haystack_enterprise_sdk._api.shared_prototypes import (
     SharedPrototypesAPI,
 )
 from haystack_enterprise_sdk._console import in_ci
-from haystack_enterprise_sdk._service import pipeline_transform
+from haystack_enterprise_sdk._service import code_bundle, pipeline_transform
 
 logger = structlog.get_logger(__name__)
 
@@ -218,6 +218,8 @@ class DeployResult:
     revision: DeploymentRevision
     activated: bool
     timed_out: bool
+    #: The code bundle a code build pushed (its ``kind`` and ``input_schema`` shape the endpoint to call).
+    code_bundle: Optional[code_bundle.CodeBundle] = None
 
     @property
     def is_deployed(self) -> bool:
@@ -302,10 +304,11 @@ class DeploymentService:
         timeout_s: float = DEFAULT_ACTIVATION_TIMEOUT_S,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         on_status: Optional[Callable[[DeploymentStatus], None]] = None,
+        build: str = "yaml",
     ) -> DeployResult:
         """Transform ``target`` and push it as a new revision of ``service_name``.
 
-        :param target: Path to the pipeline ``.py`` file.
+        :param target: Path to the pipeline ``.py`` file (or, for a code build, the project directory).
         :param service_name: Name of the target service deployment.
         :param activate: If True, activate the new revision and poll until it is live or fails.
         :param create: If True, create the service when it does not exist.
@@ -328,22 +331,45 @@ class DeploymentService:
         :param timeout_s: Max seconds to poll for activation before detaching.
         :param poll_interval_s: Seconds between activation polls.
         :param on_status: Optional callback invoked with the deployment status on each poll.
+        :param build: ``"yaml"`` converts the pipeline to platform YAML. ``"code"`` ships the project as a
+            code bundle (see :mod:`code_bundle`) and pushes a settings-only YAML pointing at it; the
+            platform YAML validation does not apply and is skipped.
         :raises ServiceNotFoundError: If the service is missing and ``create`` is False.
         :raises PipelineValidationError: If ``validate`` is set and the YAML has blocking issues.
         :raises DeploymentFailedError: If ``activate`` is set and the rollout fails.
+        :raises CodeBundleRequestError: If the platform cannot take a code build (checked before anything
+            is created or pushed).
         :return: A :class:`DeployResult`.
         """
-        config_yaml = pipeline_transform.build_config_yaml(
-            target,
-            entrypoint=entrypoint,
-            inputs=inputs,
-            outputs=outputs,
-            settings=settings,
-            io_resolver=io_resolver,
-            python_executable=python_executable,
-        )
+        if build not in ("yaml", "code"):
+            raise ValueError(f"build must be 'yaml' or 'code', got '{build}'.")
+        packed: Optional[code_bundle.CodeBundle] = None
+        if build == "code":
+            packed = code_bundle.build_code_bundle(
+                target,
+                entrypoint=entrypoint,
+                inputs=inputs,
+                outputs=outputs,
+                settings=settings,
+                io_resolver=io_resolver,
+                python_executable=python_executable,
+            )
+            config_yaml = packed.config_yaml
+            # The capability check: an old server ignores the code_bundle field and would store a revision
+            # with no code, so nothing is created or pushed until the server has proven it knows bundles.
+            await self._ensure_code_bundle(packed)
+        else:
+            config_yaml = pipeline_transform.build_config_yaml(
+                target,
+                entrypoint=entrypoint,
+                inputs=inputs,
+                outputs=outputs,
+                settings=settings,
+                io_resolver=io_resolver,
+                python_executable=python_executable,
+            )
 
-        if validate:
+        if validate and packed is None:
             # Validate before resolving/creating the service so an invalid config never provisions one,
             # against the Haystack this pipeline pins -- the same version it will be served under, and
             # the same check `validate` runs, so the two commands cannot disagree.
@@ -368,11 +394,14 @@ class DeploymentService:
             config_yaml,
             comment or default_revision_comment(target)[0],
             source_metadata=source_metadata,
+            **({"code_bundle": packed.request_field()} if packed is not None else {}),
         )
         logger.info("Pushed deployment revision.", service=service_name, revision_id=str(revision.revision_id))
 
         if not activate:
-            return DeployResult(deployment=deployment, revision=revision, activated=False, timed_out=False)
+            return DeployResult(
+                deployment=deployment, revision=revision, activated=False, timed_out=False, code_bundle=packed
+            )
 
         deployment = await self._deployments.activate_revision(
             self._workspace_name, deployment.deployment_id, revision.revision_id
@@ -383,7 +412,9 @@ class DeploymentService:
             # status to wait for: the activated revision is what gets run per request. Polling here
             # would only burn the timeout on a status that never settles.
             logger.info("Activated serverless revision; no rollout to wait for.", service=service_name)
-            return DeployResult(deployment=deployment, revision=revision, activated=True, timed_out=False)
+            return DeployResult(
+                deployment=deployment, revision=revision, activated=True, timed_out=False, code_bundle=packed
+            )
 
         deployment, timed_out = await self._poll_until_settled(
             deployment.deployment_id, timeout_s, poll_interval_s, on_status
@@ -392,7 +423,9 @@ class DeploymentService:
         if deployment.status in _FAILURE_STATUSES:
             raise DeploymentFailedError(deployment, self._ui_hint(service_name))
 
-        return DeployResult(deployment=deployment, revision=revision, activated=True, timed_out=timed_out)
+        return DeployResult(
+            deployment=deployment, revision=revision, activated=True, timed_out=timed_out, code_bundle=packed
+        )
 
     async def _upsert_secrets(self, deployment_id: UUID, secrets: Dict[str, str]) -> None:
         """Create or update the service's secrets. Secrets not in ``secrets`` are left untouched."""
@@ -404,6 +437,14 @@ class DeploymentService:
             else:
                 await self._secrets.create(workspace_id, deployment_id, name, value)
         logger.info("Set service secrets.", names=sorted(secrets))
+
+    async def _ensure_code_bundle(self, packed: code_bundle.CodeBundle) -> None:
+        """Upload ``packed`` unless the platform already has it. Raises if the platform cannot take code builds."""
+        if await self._deployments.get_code_bundle(self._workspace_name, packed.sha256) is not None:
+            logger.info("Code bundle already uploaded.", sha256=packed.sha256)
+            return
+        await self._deployments.upload_code_bundle(self._workspace_name, packed.archive, packed.sha256)
+        logger.info("Uploaded code bundle.", sha256=packed.sha256, size_bytes=len(packed.archive))
 
     async def validate(
         self,
@@ -548,6 +589,29 @@ class DeploymentService:
                 f"No service deployment named '{service_name}' in workspace '{self._workspace_name}'."
             )
         return await self._deployments.get_deployment(self._workspace_name, deployment.deployment_id)
+
+    async def invoke(
+        self, service_name: str, *, payload: Optional[Dict[str, Any]] = None, query: Optional[str] = None
+    ) -> Any:
+        """Call a deployed service: ``payload`` goes to a function build's ``/run``, ``query`` to chat completions.
+
+        :param service_name: Name of the service deployment.
+        :param payload: JSON object for a function code build.
+        :param query: User message for any chat-capable service.
+        :raises ServiceNotFoundError: If no service with that name exists.
+        :raises FailedToInvokeDeploymentError: If the platform rejected the call.
+        :return: The function's result, or the assistant's answer.
+        """
+        if (payload is None) == (query is None):
+            raise ValueError("Pass exactly one of payload or query.")
+        deployment = await self.find_service(service_name)
+        if deployment is None:
+            raise ServiceNotFoundError(
+                f"No service deployment named '{service_name}' in workspace '{self._workspace_name}'."
+            )
+        if payload is not None:
+            return await self._deployments.run_deployment(self._workspace_name, deployment.deployment_id, payload)
+        return await self._deployments.chat_completion(self._workspace_name, deployment.deployment_id, str(query))
 
     async def add_tag(self, service_name: str, tag_name: str) -> List[str]:
         """Add a tag to a service by name, independent of deploy/create.
