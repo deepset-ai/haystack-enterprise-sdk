@@ -64,6 +64,20 @@ def _write_private_file(path: Path, text: str) -> None:
     os.replace(tmp_path, path)
 
 
+def _restrict_to_owner(path: Path) -> None:
+    """Make an existing file readable by the current user only.
+
+    Repairs files that deepset-cloud-sdk 1.x wrote with the default umask (often mode 644). Failures are ignored,
+    so a file the user cannot chmod (for example one owned by someone else) never stops the SDK from loading.
+
+    :param path: The file to restrict.
+    """
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
 def load_environment(show_warnings: bool = True) -> bool:
     """Load environment variables using a cascading fallback model.
 
@@ -79,6 +93,8 @@ def load_environment(show_warnings: bool = True) -> bool:
     local_loaded = current_path_env.is_file() and load_dotenv(current_path_env)
     global_loaded = ENV_FILE_PATH.is_file() and load_dotenv(ENV_FILE_PATH, override=False)
     legacy_loaded = LEGACY_ENV_FILE_PATH.is_file() and load_dotenv(LEGACY_ENV_FILE_PATH, override=False)
+    if legacy_loaded:
+        _restrict_to_owner(LEGACY_ENV_FILE_PATH)
 
     # These success messages are gated on ``show_warnings`` so the import-time call
     # (``show_warnings=False``) stays silent, before structlog is even configured.

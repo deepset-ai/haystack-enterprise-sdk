@@ -123,6 +123,19 @@ class TestLoadEnvironment:
         assert os.environ["API_KEY"] == "legacy_key"
         assert os.environ["DEFAULT_WORKSPACE_NAME"] == "legacy_workspace"
 
+    def test_legacy_env_is_restricted_to_owner(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """A world-readable key file left by deepset-cloud-sdk 1.x is tightened to 600 when loaded."""
+        legacy_env = tmp_path / "legacy" / ".env"
+        legacy_env.parent.mkdir()
+        legacy_env.write_text("API_KEY=legacy_key\nDEFAULT_WORKSPACE_NAME=legacy_workspace")
+        legacy_env.chmod(0o644)
+
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.Path.cwd", Mock(return_value=tmp_path))
+        monkeypatch.setattr("haystack_enterprise_sdk._api.config.LEGACY_ENV_FILE_PATH", legacy_env)
+
+        load_environment()
+        assert legacy_env.stat().st_mode & 0o777 == 0o600
+
     def test_global_env_takes_precedence_over_legacy(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """The new global file wins; the legacy file only fills in what it lacks."""
         global_env = tmp_path / "global" / ".env"
