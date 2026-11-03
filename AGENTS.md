@@ -115,8 +115,9 @@ Importing the file runs all of its top-level code. If no instance is found, ever
 callable in the module is then *called* to see whether it returns a pipeline. Keep import-time side
 effects out of these files.
 
-Indexing pipelines — anything containing a `DocumentWriter` — are rejected in this SDK version.
-Deploy a query pipeline.
+Indexing pipelines — anything containing a `DocumentWriter` — are rejected by `deploy`. Use
+`haystack-enterprise deploy-index FILE INDEX_NAME` instead: same transform, but saved and deployed as an
+index (a `files` input inferred from `sources`/`files` sockets, no `haystack-ai` pin unless declared).
 
 ## Custom components are rewritten, their dependencies are not
 

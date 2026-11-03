@@ -30,6 +30,7 @@ from ruamel.yaml.error import YAMLError
 from haystack_enterprise_sdk._service.pipeline_extract import (
     _INDEX_MARKER_SUFFIXES,
     CODE_COMPONENT_TYPE,
+    INDEX_REJECTED_MESSAGE,
     STANDARD_INPUT_KEYS,
     STANDARD_OUTPUT_KEYS,
     PipelineTransformError,
@@ -255,6 +256,7 @@ def build_config_yaml(
     settings: Optional[PipelineSettings] = None,
     io_resolver: Optional[IoResolver] = None,
     python_executable: Optional[str] = None,
+    allow_index: bool = False,
 ) -> str:
     """Transform ``target`` into deployable YAML — the single extract → resolve → render path.
 
@@ -266,11 +268,12 @@ def build_config_yaml(
     given) gets the final say — see :func:`resolve_io`.
 
     :param settings: The top-level ``config_yaml`` keys to declare — see :class:`PipelineSettings`.
+    :param allow_index: Accept an indexing pipeline instead of rejecting it (``deploy-index``).
     """
     if is_yaml_target(target):
-        bundle = bundle_from_yaml(target)
+        bundle = bundle_from_yaml(target, allow_index)
     else:
-        bundle = extract_via_subprocess(target, entrypoint, python_executable)
+        bundle = extract_via_subprocess(target, entrypoint, python_executable, allow_index)
     resolved_inputs, resolved_outputs = resolve_io(bundle, inputs, outputs, io_resolver)
     return render_config_yaml(bundle, inputs=resolved_inputs, outputs=resolved_outputs, settings=settings)
 
@@ -463,7 +466,7 @@ def is_yaml_target(target: Path) -> bool:
     return name.endswith((".yaml", ".yml")) and not name.endswith((".io.yaml", ".io.yml"))
 
 
-def bundle_from_yaml(target: Path) -> ExtractionBundle:
+def bundle_from_yaml(target: Path, allow_index: bool = False) -> ExtractionBundle:
     """Build the extraction bundle from a platform pipeline YAML, without loading it in Python.
 
     The file is taken as the platform stores it, so it can reference platform-only types such as the
@@ -475,8 +478,9 @@ def bundle_from_yaml(target: Path) -> ExtractionBundle:
     the renderer's overrides replace them instead of leaving the file's copies behind.
 
     :param target: Path to the pipeline ``.yaml`` / ``.yml`` file.
+    :param allow_index: Accept an indexing pipeline instead of rejecting it.
     :raises PipelineTransformError: If the file cannot be read or parsed, is not a mapping, or contains
-        a ``DocumentWriter``.
+        a ``DocumentWriter`` while ``allow_index`` is false.
     :return: The extraction bundle.
     """
     try:
@@ -487,11 +491,8 @@ def bundle_from_yaml(target: Path) -> ExtractionBundle:
         raise PipelineTransformError(f"Pipeline YAML '{target}' must be a mapping with a 'components' section.")
 
     for component in (data.get("components") or {}).values():
-        if str((component or {}).get("type", "")).endswith(_INDEX_MARKER_SUFFIXES):
-            raise PipelineTransformError(
-                "This looks like an indexing pipeline (it contains a DocumentWriter). "
-                "Index deployment is not yet supported; deploy a query pipeline instead."
-            )
+        if not allow_index and str((component or {}).get("type", "")).endswith(_INDEX_MARKER_SUFFIXES):
+            raise PipelineTransformError(INDEX_REJECTED_MESSAGE)
 
     inputs = {
         key: [value] if isinstance(value, str) else value for key, value in (data.pop("inputs", None) or {}).items()
@@ -510,6 +511,7 @@ def extract_via_subprocess(
     target: Path,
     entrypoint: Optional[str] = None,
     python_executable: Optional[str] = None,
+    allow_index: bool = False,
 ) -> ExtractionBundle:
     """Extract the pipeline bundle by running the extractor in the pipeline's own interpreter.
 
@@ -523,10 +525,12 @@ def extract_via_subprocess(
     :param entrypoint: Pipeline instance/factory name (when the file is ambiguous).
     :param python_executable: Interpreter to run the extractor with. Defaults to a virtualenv detected
         near ``target``, falling back to the current interpreter.
+    :param allow_index: Accept an indexing pipeline instead of rejecting it.
     :raises PipelineTransformError: If extraction fails (bubbling up the extractor's error message).
     :return: The extraction bundle.
     """
-    return ExtractionBundle.from_dict(_run_extractor(target, entrypoint, python_executable))
+    extra = ["--allow-index"] if allow_index else []
+    return ExtractionBundle.from_dict(_run_extractor(target, entrypoint, python_executable, extra))
 
 
 @dataclass(frozen=True)

@@ -1565,3 +1565,42 @@ class TestValidatePipelineYaml:
         validation_json = validation_call.kwargs["json"]
         assert validation_json["name"] == "test_pipeline"
         assert "query_yaml" in validation_json
+
+
+class TestDeployIndexYaml:
+    @pytest.fixture
+    def mock_api(self) -> AsyncMock:
+        mock = AsyncMock()
+        mock.post.return_value = Mock(status_code=HTTPStatus.NO_CONTENT.value)
+        mock.patch.return_value = Mock(status_code=HTTPStatus.OK.value)
+        return mock
+
+    @pytest.mark.asyncio
+    async def test_validates_saves_and_deploys(self, mock_api: AsyncMock) -> None:
+        await PipelineService(mock_api, workspace_name="ws").deploy_index_yaml("idx", "components: {}\n")
+
+        validate_call, deploy_call = mock_api.post.await_args_list
+        assert validate_call.kwargs["endpoint"] == "pipeline_validations"
+        assert validate_call.kwargs["json"] == {"indexing_yaml": "components: {}\n"}
+        assert mock_api.patch.await_args.kwargs["endpoint"] == "indexes/idx"
+        assert deploy_call.kwargs["endpoint"] == "indexes/idx/deploy"
+
+    @pytest.mark.asyncio
+    async def test_skips_validation_and_activation(self, mock_api: AsyncMock) -> None:
+        await PipelineService(mock_api, workspace_name="ws").deploy_index_yaml(
+            "idx", "components: {}\n", validate=False, activate=False
+        )
+
+        mock_api.post.assert_not_awaited()
+        mock_api.patch.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_invalid_yaml_writes_nothing(self, mock_api: AsyncMock) -> None:
+        mock_api.post.return_value = Response(
+            status_code=HTTPStatus.BAD_REQUEST, json={"details": [{"code": "X", "message": "bad"}]}
+        )
+
+        with pytest.raises(HaystackEnterpriseValidationError):
+            await PipelineService(mock_api, workspace_name="ws").deploy_index_yaml("idx", "components: {}\n")
+
+        mock_api.patch.assert_not_awaited()

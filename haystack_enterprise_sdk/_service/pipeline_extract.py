@@ -48,8 +48,12 @@ CODE_TOOL_TYPE = "deepset_cloud_custom_nodes.tools.code_tool.CodeTool"
 # Serialized type of a plain Haystack function tool (``@tool``); the only tool kind we inline.
 _FUNCTION_TOOL_TYPE_SUFFIX = "tools.tool.Tool"
 
-# A DocumentWriter is the tell-tale sign of an indexing pipeline, which v1 does not support.
+# A DocumentWriter is the tell-tale sign of an indexing pipeline, which `deploy` rejects (see `deploy-index`).
 _INDEX_MARKER_SUFFIXES = ("DocumentWriter",)
+INDEX_REJECTED_MESSAGE = (
+    "This looks like an indexing pipeline (it contains a DocumentWriter). "
+    "Deploy it with `haystack-enterprise deploy-index` instead."
+)
 
 # Path components that mark an installed package (even when the venv lives inside the project dir).
 _INSTALLED_PACKAGE_DIRS = {"site-packages", "dist-packages"}
@@ -77,7 +81,7 @@ class PipelineTransformError(Exception):
 # --------------------------------------------------------------------------- #
 # Loading & auto-detection
 # --------------------------------------------------------------------------- #
-def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any:
+def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None, allow_index: bool = False) -> Any:
     """Import ``path`` and return the Haystack pipeline it defines.
 
     A bare Haystack ``Agent`` (instance or zero-arg factory) is also accepted and is compiled into a
@@ -89,8 +93,9 @@ def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any
         user's module top-level code, so its dependencies must be installed in this environment.
     :param entrypoint: Name of the module-level pipeline/agent instance or zero-arg factory to use.
         Required only when the file exposes more than one candidate.
+    :param allow_index: Accept an indexing pipeline (one with a ``DocumentWriter``) instead of rejecting it.
     :raises PipelineTransformError: If the file can't be imported, no pipeline is found, the choice is
-        ambiguous, or the pipeline looks like an index.
+        ambiguous, or the pipeline looks like an index and ``allow_index`` is false.
     :return: A Haystack ``Pipeline`` or ``AsyncPipeline`` instance.
     """
     from haystack import Pipeline
@@ -102,7 +107,8 @@ def load_pipeline_from_file(path: Path, entrypoint: Optional[str] = None) -> Any
 
     resolved = _resolve_pipeline(module, entrypoint, pipeline_types + agent_types)
     pipeline = _wrap_agent_if_needed(resolved, Pipeline, agent_types)
-    _reject_index_pipeline(pipeline)
+    if not allow_index:
+        _reject_index_pipeline(pipeline)
     return pipeline
 
 
@@ -296,14 +302,11 @@ def _apply_env_file(env_file: Path) -> None:
 
 
 def _reject_index_pipeline(pipeline: Any) -> None:
-    """Raise if the pipeline looks like an indexing pipeline (v1 supports query pipelines only)."""
+    """Raise if the pipeline looks like an indexing pipeline, which ``deploy`` does not take."""
     for _, instance in pipeline.graph.nodes(data="instance"):
         type_name = type(instance).__name__ if instance is not None else ""
         if type_name.endswith(_INDEX_MARKER_SUFFIXES):
-            raise PipelineTransformError(
-                "This looks like an indexing pipeline (it contains a DocumentWriter). "
-                "Index deployment is not yet supported; deploy a query pipeline instead."
-            )
+            raise PipelineTransformError(INDEX_REJECTED_MESSAGE)
 
 
 # --------------------------------------------------------------------------- #
@@ -1719,9 +1722,9 @@ def _suggested_output_type(components: dict) -> Optional[str]:
     return None
 
 
-def extract_from_file(path: Path, entrypoint: Optional[str] = None) -> dict:
+def extract_from_file(path: Path, entrypoint: Optional[str] = None, allow_index: bool = False) -> dict:
     """Load the pipeline from ``path`` and return its extraction bundle."""
-    pipeline = load_pipeline_from_file(path, entrypoint)
+    pipeline = load_pipeline_from_file(path, entrypoint, allow_index)
     return extract_from_pipeline(pipeline, path.resolve().parent)
 
 
@@ -1947,13 +1950,14 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--mode", choices=("yaml", "code"), default="yaml", help="Build to YAML or to code.")
     parser.add_argument("--project-root", type=Path, default=None, help="Code build root (code mode).")
     parser.add_argument("--kind", choices=CODE_KINDS, default=None, help="Declared entrypoint kind (code mode).")
+    parser.add_argument("--allow-index", action="store_true", help="Accept an indexing pipeline (yaml mode).")
     args = parser.parse_args(argv)
 
     try:
         if args.mode == "code":
             bundle = extract_code_entrypoint(args.target, args.entrypoint, args.project_root, args.kind)
         else:
-            bundle = extract_from_file(args.target, args.entrypoint)
+            bundle = extract_from_file(args.target, args.entrypoint, args.allow_index)
     except PipelineTransformError as err:
         print(str(err), file=sys.stderr)
         return 2
