@@ -19,7 +19,7 @@ from haystack_enterprise_sdk._service.code_bundle import (
     pack,
     project_dependencies,
 )
-from haystack_enterprise_sdk._service.pipeline_transform import PipelineSettings
+from haystack_enterprise_sdk._service.pipeline_transform import PipelineSettings, PipelineTransformError
 
 
 def _tree(root: Path, files: dict) -> Path:
@@ -184,3 +184,88 @@ class TestFunctionBuild:
         config = YAML(typ="safe").load(code_bundle.config_yaml)
         assert config["inputs"] == {"payload": ["app.payload"]}
         assert "pipeline_output_type" not in config
+
+
+_WRAPPER = """
+from hayhooks import BasePipelineWrapper
+
+from .helpers import shout
+
+
+class PipelineWrapper(BasePipelineWrapper):
+    def setup(self) -> None:
+        raise RuntimeError("setup must not run at deploy time")
+
+    def run_api(self, question: str, top_k: int = 1) -> str:
+        \"\"\"Answer a question.
+
+        Args:
+            question: The user question.
+            top_k: How many documents to use.
+        \"\"\"
+        return shout(question)
+
+    def run_chat_completion(self, model: str, messages: list, body: dict) -> str:
+        return "hi"
+"""
+
+
+class TestPipelineWrapperBuild:
+    """A hayhooks pipeline folder deploys as it is: same files, same /run schema as `hayhooks run`."""
+
+    def _folder(self, root: Path, wrapper: str = _WRAPPER) -> Path:
+        return (
+            _tree(
+                root,
+                {
+                    "pyproject.toml": '[project]\nname = "outer"\nversion = "0"\n',
+                    "other.py": "x = 1\n",
+                    "my_service/pipeline_wrapper.py": wrapper,
+                    "my_service/helpers.py": "def shout(text):\n    return text.upper()\n",
+                    "my_service/requirements.txt": "hayhooks==2.2.0\ntrafilatura==2.0.0\n",
+                },
+            )
+            / "my_service"
+        )
+
+    @pytest.mark.parametrize("target", ["my_service", "my_service/pipeline_wrapper.py"])
+    def test_folder_is_the_bundle_and_methods_are_the_api(self, tmp_path: Path, target: str) -> None:
+        self._folder(tmp_path)
+
+        code_bundle = build_code_bundle(tmp_path / target, python_executable=sys.executable)
+
+        assert code_bundle.kind == "pipeline_wrapper"
+        assert code_bundle.entrypoint == "pipeline_wrapper.py:PipelineWrapper"
+        assert code_bundle.files == ["helpers.py", "pipeline_wrapper.py", "requirements.txt"]
+        assert YAML(typ="safe").load(code_bundle.config_yaml) == {
+            "inputs": {"payload": ["app.payload"], "messages": ["app.messages"]},
+            "outputs": {"result": "app.result", "messages": "app.messages"},
+            "pipeline_output_type": "chat",
+            "dependencies": ["trafilatura==2.0.0"],
+        }
+        schema = code_bundle.input_schema
+        assert schema is not None
+        assert schema["required"] == ["question"]
+        assert schema["properties"]["question"]["description"] == "The user question."
+        assert schema["properties"]["top_k"]["default"] == 1
+
+    def test_run_only_wrapper_has_no_chat(self, tmp_path: Path) -> None:
+        folder = self._folder(tmp_path, _WRAPPER.split("    def run_chat_completion")[0])
+
+        config = YAML(typ="safe").load(build_code_bundle(folder, python_executable=sys.executable).config_yaml)
+
+        assert config["inputs"] == {"payload": ["app.payload"]}
+        assert "pipeline_output_type" not in config
+
+    @pytest.mark.parametrize(
+        ("extra", "message"),
+        [
+            ("    def run_file_upload(self, *args):\n        pass\n", "run_file_upload"),
+            ("    def run_api(self, files: list) -> str:\n        return ''\n", "takes `files`"),
+        ],
+    )
+    def test_unsupported_wrapper_features_fail_at_deploy(self, tmp_path: Path, extra: str, message: str) -> None:
+        folder = self._folder(tmp_path, _WRAPPER + "\n" + extra)
+
+        with pytest.raises(PipelineTransformError, match=message):
+            build_code_bundle(folder, python_executable=sys.executable)
