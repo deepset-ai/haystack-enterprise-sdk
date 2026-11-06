@@ -278,6 +278,26 @@ class PipelineService:
         response.raise_for_status()
         logger.info("Index successfully imported.")
 
+    async def deploy_index_yaml(
+        self, name: str, config_yaml: str, *, validate: bool = True, activate: bool = True
+    ) -> None:
+        """Create or update an index from ready-made YAML, then deploy it.
+
+        :param name: Name of the index.
+        :param config_yaml: The index YAML, as rendered by :func:`build_config_yaml`.
+        :param validate: Validate the YAML first; any error aborts before anything is written.
+        :param activate: Deploy the index after saving it, so it starts processing files.
+        :raises HaystackEnterpriseValidationError: If ``validate`` is set and the YAML is invalid.
+        :raises HTTPStatusError: If saving or deploying the index fails.
+        """
+        if validate:
+            await self._validate_index(name, config_yaml, IndexConfig(name=name, overwrite=True))
+        response = await self._overwrite_index(name=name, pipeline_yaml=config_yaml)
+        response.raise_for_status()
+        if activate:
+            response = await self._api.post(workspace_name=self._workspace_name, endpoint=f"indexes/{name}/deploy")
+            response.raise_for_status()
+
     async def _import_pipeline(self, config: PipelineConfig, pipeline_yaml: str) -> None:
         """Import a pipeline into Haystack Enterprise Platform.
 

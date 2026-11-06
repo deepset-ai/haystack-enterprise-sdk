@@ -1,6 +1,7 @@
 """The CLI for the Haystack Enterprise SDK."""
 
 import asyncio
+import dataclasses
 import functools
 import json
 import logging
@@ -30,6 +31,8 @@ from tabulate import tabulate
 
 __version__ = version("haystack-enterprise-sdk")
 from haystack_enterprise_sdk._api.config import (
+    API_KEY,
+    API_URL,
     API_VERSION_PATH,
     ASYNC_CLIENT_TIMEOUT,
     CREDENTIALS_PATH,
@@ -50,6 +53,7 @@ from haystack_enterprise_sdk._api.deployments import (
     PipelineValidationError,
 )
 from haystack_enterprise_sdk._api.haystack_enterprise_api import (
+    HaystackEnterpriseAPI,
     HaystackEnterpriseAPIError,
     _client_auth,
     _unauthorized_message,
@@ -84,6 +88,7 @@ from haystack_enterprise_sdk._service.io_spec import (
     IntegrationIoSpec,
     render_io_config,
 )
+from haystack_enterprise_sdk._service.pipeline_service import HaystackEnterpriseValidationError, PipelineService
 from haystack_enterprise_sdk._service.pipeline_transform import (
     KNOWN_SETTING_KEYS,
     STANDARD_INPUT_KEYS,
@@ -1091,6 +1096,103 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     if result.timed_out:
         _echo_verdict(False, f"Deploy not confirmed — '{service_name}' still rolling out after {elapsed}")
         raise typer.Exit(1)
+
+
+@cli_app.command()
+def deploy_index(  # pylint: disable=too-many-arguments
+    target: Path,
+    index_name: str,
+    skip_activation: bool = False,
+    entrypoint: Optional[str] = None,
+    python: Optional[str] = None,
+    dry_run: bool = False,
+    output: Optional[Path] = None,
+    io_config: Optional[Path] = None,
+    skip_validation: bool = False,
+    api_key: Optional[str] = None,
+    api_url: Optional[str] = None,
+    workspace_name: str = DEFAULT_WORKSPACE_NAME,
+) -> None:
+    """Deploy an indexing pipeline as an index, creating the index if it does not exist.
+
+    Indexes are not services: this transforms the pipeline exactly like `deploy` (local custom
+    components become Code components), then saves it as the index's YAML and deploys the index.
+
+    :param target: Path to the Python file or platform YAML that defines the indexing pipeline.
+    :param index_name: Name of the index to create or update.
+    :param skip_activation: Save the index without deploying it.
+    :param entrypoint: Name of the pipeline instance or factory when the file defines more than one.
+    :param python: Path to the Python interpreter used to load your pipeline (defaults to an
+        auto-detected virtualenv near the target file, else the current interpreter).
+    :param dry_run: Transform the pipeline and print/write the YAML without deploying. No credentials needed.
+    :param output: With --dry-run, write the transformed YAML to this file instead of stdout.
+    :param io_config: YAML/JSON file with an `inputs:` section (its `files` key names the sockets that
+        receive uploaded files) plus settings. Defaults to `<target>.io.yaml` next to the pipeline file.
+    :param skip_validation: Skip validating the YAML against the platform before saving it.
+    :param api_key: deepset API key to use for authentication.
+    :param api_url: API URL to use for authentication.
+    :param workspace_name: Workspace of the index. Uses the workspace from the .ENV file by default.
+
+    Example:
+    `haystack-enterprise deploy-index indexing.py my-index`
+    """
+    target = target.resolve()
+    io_config_path = _resolve_io_config_path(target, io_config)
+    io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
+    settings = io_cfg.settings
+    # Indexes run on the platform's own image, so the auto-detected haystack-ai pin is dropped unless declared.
+    if settings.dependencies is None:
+        settings = dataclasses.replace(settings, dependencies=[])
+    try:
+        config_yaml = build_config_yaml(
+            target,
+            entrypoint=entrypoint,
+            inputs=io_cfg.inputs,
+            outputs=io_cfg.outputs,
+            settings=settings,
+            python_executable=python,
+            allow_index=True,
+        )
+    except PipelineTransformError as err:
+        typer.echo(str(err))
+        raise typer.Exit(1)  # noqa: B904
+    from ruamel.yaml import YAML  # local import to keep CLI startup light
+
+    if not (YAML(typ="safe").load(config_yaml).get("inputs") or {}).get("files"):
+        typer.echo(
+            "Warning: no `files` input was inferred, so the index will receive no files. "
+            "Map one in the io-config, for example `inputs: {files: [converter.sources]}`.",
+            err=True,
+        )
+
+    if dry_run:
+        if output is not None:
+            output.write_text(config_yaml, encoding="utf-8")
+            typer.echo(f"Wrote transformed index YAML to {output}.")
+        else:
+            typer.echo(config_yaml)
+        return
+
+    async def _deploy() -> None:
+        config = CommonConfig(api_key=api_key or API_KEY, api_url=api_url or API_URL)
+        async with HaystackEnterpriseAPI.factory(config) as api:
+            await PipelineService(api, workspace_name).deploy_index_yaml(
+                index_name, config_yaml, validate=not skip_validation, activate=not skip_activation
+            )
+
+    try:
+        asyncio.run(_deploy())
+    except HaystackEnterpriseValidationError as err:
+        typer.echo(str(err))
+        raise typer.Exit(1)  # noqa: B904
+    except httpx.HTTPStatusError as err:
+        typer.echo(f"Deploying index '{index_name}' failed ({err.response.status_code}): {err.response.text}")
+        raise typer.Exit(1)  # noqa: B904
+
+    if skip_activation:
+        typer.echo(f"Saved index '{index_name}' in workspace '{workspace_name}' without deploying it.")
+    else:
+        _echo_verdict(True, f"Deployed index '{index_name}' in workspace '{workspace_name}'")
 
 
 @cli_app.command()
