@@ -27,7 +27,7 @@ jobs:
     permissions:
       pull-requests: write
     steps:
-      - uses: py-cov-action/python-coverage-comment-action@a05be3d2e8a6272d3ef5fb2840ab20368bb2eb71 # v4.3
+      - uses: py-cov-action/python-coverage-comment-action@07249dd712cd2464873eb8a59a24f97fd281e76f # v4.6
         with:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_PR_RUN_ID: ${{ github.event.workflow_run.id }}
