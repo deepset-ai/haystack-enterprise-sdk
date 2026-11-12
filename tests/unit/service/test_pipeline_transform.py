@@ -2056,3 +2056,48 @@ class TestHaystackPin:
 
     def test_ignores_non_haystack_requirements(self) -> None:
         assert haystack_pin("components: {}\ndependencies:\n  - trafilatura==2.0.0\n") is None
+
+
+class TestResolveSkillRepositories:
+    _YAML = (
+        "components: {}\n"
+        "skills:\n"
+        "  agent:\n"
+        "    - id: custom-code\n"
+        "      hash: abc123\n"
+        "      repository: https://github.com/Acme/Skills.git\n"
+        "    - id: kept\n"
+        "      hash: def456\n"
+        "      source: ORG\n"
+        "      source_id: existing\n"
+    )
+
+    def test_lists_only_repository_references(self) -> None:
+        assert pipeline_transform.skill_repositories(self._YAML) == ["https://github.com/Acme/Skills.git"]
+        assert pipeline_transform.skill_repositories("components: {}\n") == []
+
+    @pytest.mark.parametrize(
+        "repository", ["acme/skills", "https://github.com/acme/skills", "git@github.com:acme/skills.git"]
+    )
+    def test_matches_repo_url_forms_case_insensitively(self, repository: str) -> None:
+        yaml_in = self._YAML.replace("https://github.com/Acme/Skills.git", repository)
+        resolved = YAML(typ="safe").load(
+            pipeline_transform.resolve_skill_repositories(yaml_in, {"acme/Skills": "uuid-1"})
+        )
+        assert resolved["skills"]["agent"] == [
+            {"id": "custom-code", "hash": "abc123", "source": "ORG", "source_id": "uuid-1"},
+            {"id": "kept", "hash": "def456", "source": "ORG", "source_id": "existing"},
+        ]
+
+    def test_without_repository_reference_returns_yaml_unchanged(self) -> None:
+        yaml_in = "components: {}\nskills:\n  agent:\n    - {id: a, hash: b, source: ORG, source_id: x}\n"
+        assert pipeline_transform.resolve_skill_repositories(yaml_in, {}) is yaml_in
+
+    def test_unconnected_repository_fails(self) -> None:
+        with pytest.raises(PipelineTransformError, match="has not connected.*other/repo"):
+            pipeline_transform.resolve_skill_repositories(self._YAML, {"other/repo": "uuid-2"})
+
+    def test_repository_and_source_id_together_fail(self) -> None:
+        yaml_in = self._YAML.replace("      hash: abc123\n", "      hash: abc123\n      source_id: x\n", 1)
+        with pytest.raises(PipelineTransformError, match="both 'repository' and 'source_id'"):
+            pipeline_transform.resolve_skill_repositories(yaml_in, {"acme/skills": "uuid-1"})

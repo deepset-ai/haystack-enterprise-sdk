@@ -38,6 +38,7 @@ from haystack_enterprise_sdk._api.shared_prototypes import (
     SharedPrototype,
     SharedPrototypesAPI,
 )
+from haystack_enterprise_sdk._api.skills import FailedToListSkillReposError, SkillReposAPI
 from haystack_enterprise_sdk._console import in_ci
 from haystack_enterprise_sdk._service import code_bundle, pipeline_transform
 
@@ -276,6 +277,7 @@ class DeploymentService:
         self._api = api
         self._deployments = DeploymentsAPI(api)
         self._secrets = ServiceSecretsAPI(api)
+        self._skill_repos = SkillReposAPI(api)
         self._workspace_name = workspace_name or DEFAULT_WORKSPACE_NAME
 
     @classmethod
@@ -368,6 +370,7 @@ class DeploymentService:
                 io_resolver=io_resolver,
                 python_executable=python_executable,
             )
+        config_yaml = await self._resolve_skill_repositories(config_yaml)
 
         if validate and packed is None:
             # Validate before resolving/creating the service so an invalid config never provisions one,
@@ -427,6 +430,21 @@ class DeploymentService:
             deployment=deployment, revision=revision, activated=True, timed_out=timed_out, code_bundle=packed
         )
 
+    async def _resolve_skill_repositories(self, config_yaml: str) -> str:
+        """Resolve skill references that name a ``repository`` to this org's ``source_id`` for it.
+
+        Calls the platform only when the YAML has such a reference.
+
+        :raises PipelineTransformError: If the repos cannot be listed, or a named repo is not connected.
+        """
+        if not pipeline_transform.skill_repositories(config_yaml):
+            return config_yaml
+        try:
+            repo_ids = await self._skill_repos.list_repo_ids()
+        except FailedToListSkillReposError as error:
+            raise pipeline_transform.PipelineTransformError(str(error)) from error
+        return pipeline_transform.resolve_skill_repositories(config_yaml, repo_ids)
+
     async def _upsert_secrets(self, deployment_id: UUID, secrets: Dict[str, str]) -> None:
         """Create or update the service's secrets. Secrets not in ``secrets`` are left untouched."""
         workspace_id = await self._secrets.get_workspace_id(self._workspace_name)
@@ -485,6 +503,7 @@ class DeploymentService:
             io_resolver=io_resolver,
             python_executable=python_executable,
         )
+        config_yaml = await self._resolve_skill_repositories(config_yaml)
         # Validate against the Haystack the pipeline pins, not whatever the platform host happens to
         # run -- otherwise a component that only exists in one of the two is judged by the wrong one.
         return await self._deployments.validate_pipeline(
@@ -548,6 +567,7 @@ class DeploymentService:
             io_resolver=io_resolver,
             python_executable=python_executable,
         )
+        config_yaml = await self._resolve_skill_repositories(config_yaml)
         pipeline_config = dict(YAML().load(config_yaml))
         # The sandbox run endpoint executes the config in place: it installs nothing, has no search
         # session, and renders no Playground result, so every key that describes a deployed revision is

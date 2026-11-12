@@ -370,6 +370,24 @@ passed through.
 nothing, has no search session, and renders no Playground result — are stripped by `run`.
 `async_enabled` is not one of them: it changes how the graph executes, which a sandbox run does too.
 
+### Skills from one repo across environments
+
+`skills:` is passed through like any other platform key. Each skill reference normally carries a
+`source_id`: the id of *one organization's* connection to the skills repo, so it differs between
+organizations and platform environments. Name the repo with `repository:` instead and `deploy`,
+`validate` and `run` replace it with the target organization's `source_id` for that repo:
+
+```yaml
+skills:
+  agent:                                   # component name
+    - id: custom-code
+      hash: d2d23c7f54ccc2b3dd9398075b1aaf7b30eac70f   # commit sha, the same everywhere
+      repository: acme/skills              # or https://github.com/acme/skills
+```
+
+The repo must be connected in every organization you deploy to; otherwise the command fails before
+anything is pushed. `--dry-run` makes no API calls, so it prints `repository:` unresolved.
+
 ---
 
 ## Working from YAML
