@@ -797,6 +797,8 @@ class TestDirectoryBuild:
         deployed = _result(activated=True)
         deployed.code_bundle = Mock(
             kind="function",
+            has_run=True,
+            has_chat=False,
             input_schema={
                 "type": "object",
                 "properties": {"name": {"type": "string", "default": "world"}, "n": {"type": "integer"}},
@@ -808,6 +810,35 @@ class TestDirectoryBuild:
         assert "POST https://api.example/api/v1/workspaces/ws/deployments/d1/run" in result.stdout
         assert """-d '{"name": "world", "n": 0}'""" in result.stdout
         assert "chat/completions" not in result.stdout
+
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_pipeline_wrapper_deploy_prints_its_api(self, client_cls: Mock) -> None:
+        """The run_api signature and docstring read off the terminal, next to the chat endpoint."""
+        _stub_endpoint(client_cls)
+        client_cls.return_value.deployment_base_url.return_value = (
+            "https://api.example/api/v1/workspaces/ws/deployments/d1"
+        )
+        deployed = _result(activated=True)
+        deployed.code_bundle = Mock(
+            kind="pipeline_wrapper",
+            has_run=True,
+            has_chat=True,
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "The user question."},
+                    "top_k": {"type": "integer", "default": 5},
+                },
+                "required": ["question"],
+            },
+        )
+        client_cls.return_value.deploy.return_value = deployed
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc"])
+        assert result.exit_code == 0
+        assert "question: string  The user question." in result.stdout
+        assert "top_k: integer = 5" in result.stdout
+        assert "/deployments/d1/run" in result.stdout
+        assert "chat/completions" in result.stdout
 
 
 class TestDryRun:

@@ -1689,8 +1689,10 @@ def _echo_endpoint(client: DeploymentClient, service_name: str, result: DeployRe
     if not result.is_deployed:
         return
 
-    if result.code_bundle is not None and result.code_bundle.kind == "function":
-        _echo_run_endpoint(client, service_name, result.deployment.deployment_id, result.code_bundle.input_schema)
+    code = result.code_bundle
+    if code is not None and code.has_run:
+        _echo_run_endpoint(client, service_name, result.deployment.deployment_id, code.input_schema)
+    if code is not None and not code.has_chat:
         return
 
     base_url = client.chat_completions_base_url()
@@ -1723,7 +1725,10 @@ _EXAMPLE_VALUES: Dict[str, Any] = {
 def _echo_run_endpoint(
     client: DeploymentClient, service_name: str, deployment_id: Any, input_schema: Optional[dict]
 ) -> None:
-    """Print the ``/run`` endpoint of a function build, with a curl whose body follows the input schema."""
+    """Print the ``/run`` endpoint (function or PipelineWrapper build), with a curl whose body follows the input schema.
+
+    The body's fields are listed with their types and descriptions first, so the API reads off the terminal.
+    """
     schema = input_schema or {}
     payload = {
         name: prop.get("default", _EXAMPLE_VALUES.get(prop.get("type", ""), "..."))
@@ -1731,6 +1736,11 @@ def _echo_run_endpoint(
     }
     url = f"{client.deployment_base_url(deployment_id)}/run"
     typer.echo(f'\nRun endpoint (responds with {{"result": ...}}):\n  POST {url}')
+    required = set(schema.get("required") or [])
+    for name, prop in (schema.get("properties") or {}).items():
+        default = "" if name in required else f" = {json.dumps(prop.get('default'))}"
+        description = f"  {prop['description']}" if prop.get("description") else ""
+        typer.echo(f"    {name}: {prop.get('type', 'any')}{default}{description}")
     typer.echo(
         f"\n  curl {url} \\\n"
         f'    -H "Authorization: Bearer $API_KEY" \\\n'
@@ -2271,7 +2281,8 @@ def invoke(
     service_name: str,
     query: Optional[str] = typer.Option(None, help="Send a user message to the service's chat completions."),
     inputs: Optional[str] = typer.Option(
-        None, help="JSON payload for a function code build's /run endpoint, or '@path' to a JSON file."
+        None,
+        help="JSON body for the service's /run endpoint (run_api of a PipelineWrapper), or '@path' to a JSON file.",
     ),
     api_key: Optional[str] = None,
     api_url: Optional[str] = None,
@@ -2280,8 +2291,8 @@ def invoke(
     """Call a deployed service and print its answer.
 
     :param service_name: Name of the service deployment.
-    :param query: User message, for pipeline, agent and SuperComponent services.
-    :param inputs: JSON payload, for function code builds.
+    :param query: User message, sent to chat completions (run_chat_completion of a PipelineWrapper).
+    :param inputs: JSON body for /run, the keyword arguments of a PipelineWrapper's run_api.
     :param api_key: deepset API key to use for authentication.
     :param api_url: API URL to use for authentication.
     :param workspace_name: Workspace of the service. Uses the workspace from the .ENV file by default.
