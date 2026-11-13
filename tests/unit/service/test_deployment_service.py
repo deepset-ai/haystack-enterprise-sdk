@@ -22,6 +22,7 @@ from haystack_enterprise_sdk._api.deployments import (
     PipelineValidationIssue,
     PipelineValidationResult,
 )
+from haystack_enterprise_sdk._api.pipeline_versions import FailedToPublishPipelineVersionError
 from haystack_enterprise_sdk._service import pipeline_transform
 from haystack_enterprise_sdk._service.code_bundle import CodeBundle
 from haystack_enterprise_sdk._service.deployment_service import (
@@ -990,6 +991,22 @@ class TestPipelineVersion:
 
         versions.create_pipeline.assert_awaited_once_with("ws", "pipe")
         versions.create_draft.assert_awaited_once()
+
+    async def test_failed_publish_creates_no_service(
+        self, service: MockedDeploymentService, versions: AsyncMock
+    ) -> None:
+        service._deployments.find_by_name.return_value = None
+        versions.pipeline_exists.return_value = True
+        versions.publish.side_effect = FailedToPublishPipelineVersionError("forbidden")
+        secrets = AsyncMock()
+        service._secrets = secrets  # type: ignore[assignment]
+
+        with pytest.raises(FailedToPublishPipelineVersionError):
+            await service.deploy(FIXTURE, "svc", comment="c", create=True, pipeline_name="pipe", secrets={"K": "v"})
+
+        service._deployments.create_deployment.assert_not_called()
+        secrets.get_workspace_id.assert_not_called()
+        service._deployments.push_revision.assert_not_called()
 
     async def test_without_pipeline_name_nothing_is_published(
         self, service: MockedDeploymentService, versions: AsyncMock

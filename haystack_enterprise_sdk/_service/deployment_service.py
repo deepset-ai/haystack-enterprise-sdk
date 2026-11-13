@@ -409,14 +409,16 @@ class DeploymentService:
             if result.has_errors:
                 raise PipelineValidationError(result.errors)
 
+        comment = comment or default_revision_comment(target)[0]
+        version: Optional[Dict[str, Any]] = None
+        if pipeline_name is not None:
+            # Before the service exists, so a failed publish never leaves a service without a revision.
+            version = await self._publish_pipeline_version(pipeline_name, config_yaml, comment)
+
         deployment = await self._resolve_or_create(service_name, create, create_options)
         if secrets:
             await self._upsert_secrets(deployment.deployment_id, secrets)
 
-        comment = comment or default_revision_comment(target)[0]
-        version: Optional[Dict[str, Any]] = None
-        if pipeline_name is not None:
-            version = await self._publish_pipeline_version(pipeline_name, config_yaml, comment)
         source_metadata = collect_source_metadata(target)
         revision = await self._deployments.push_revision(
             self._workspace_name,
