@@ -447,7 +447,7 @@ class TestDeployCommand:
         assert "save_path" not in resolver.keywords
         client_cls.return_value.create_shared_prototype.assert_not_called()
 
-    @pytest.mark.parametrize("flag", ["--io-config", "--platform-config"])
+    @pytest.mark.parametrize("flag", ["--io-config", "--pipeline-settings"])
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
     def test_pinned_io_config_asks_nothing(self, client_cls: Mock, tmp_path: Path, flag: str) -> None:
         # An io-config already answers both questions, so even a plain deploy has nothing to ask.
