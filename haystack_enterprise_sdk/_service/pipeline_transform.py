@@ -684,3 +684,100 @@ def haystack_pin(config_yaml: str) -> Optional[str]:
         if isinstance(requirement, str) and requirement.startswith(_HAYSTACK_PIN_PREFIX):
             return requirement[len(_HAYSTACK_PIN_PREFIX) :].strip() or None
     return None
+
+
+def _repository_key(repository: str) -> Tuple[Optional[str], str]:
+    """Reduce a repo URL or ``owner/name`` to its host's provider and the lowercase path the platform matches on.
+
+    Accepts ``owner/name``, ``https://github.com/owner/name(.git)`` and ``git@github.com:owner/name.git``.
+    Lowercase because GitHub (and GitLab) paths are case-insensitive.
+
+    :return: ``GITHUB`` or ``GITLAB`` when a URL names that host (``None`` for ``owner/name`` or another
+        host), and the path.
+    """
+    value = repository.strip()
+    host = ""
+    if "://" in value:
+        host, _, value = value.split("://", 1)[1].partition("/")
+    elif value.startswith("git@"):
+        host, _, value = value[len("git@") :].partition(":")
+    value = value.strip("/")
+    if value.endswith(".git"):
+        value = value[: -len(".git")]
+    provider = next((name.upper() for name in ("github", "gitlab") if name in host.lower()), None)
+    return provider, value.lower()
+
+
+def skill_repositories(config_yaml: str) -> List[str]:
+    """Return the ``repository`` values the YAML's ``skills`` block uses in place of a ``source_id``.
+
+    :param config_yaml: Rendered platform YAML.
+    :return: Each skill reference's ``repository``, in order; empty when there is none.
+    """
+    parsed = YAML(typ="safe").load(config_yaml)
+    skill_sets = parsed.get("skills") if isinstance(parsed, dict) else None
+    if not isinstance(skill_sets, dict):
+        return []
+    return [
+        skill["repository"]
+        for skills in skill_sets.values()
+        if isinstance(skills, list)
+        for skill in skills
+        if isinstance(skill, dict) and isinstance(skill.get("repository"), str)
+    ]
+
+
+def resolve_skill_repositories(config_yaml: str, repos: Sequence[Tuple[str, str, str]]) -> str:
+    """Replace each skill reference's ``repository`` with the target org's ``source_id`` for that repo.
+
+    A ``source_id`` is the id of one org's connection to a repo, so it differs per organization and per
+    platform environment while the repo, the skill ``id`` and its ``hash`` (a commit sha) do not. Naming
+    the repo lets one config deploy everywhere; the platform still stores the exact ``source_id``.
+
+    :param config_yaml: Rendered platform YAML.
+    :param repos: The org's skill repos as ``(repository, provider, connection id)``
+        (``SkillReposAPI.list_repos``).
+    :raises PipelineTransformError: If a reference sets both ``repository`` and ``source_id``, names a repo
+        the organization has not connected, or names ``owner/name`` connected on both GitHub and GitLab.
+    :return: The YAML with every ``repository`` resolved, or ``config_yaml`` unchanged when there is none.
+    """
+    if not skill_repositories(config_yaml):
+        return config_yaml
+    yaml = YAML()
+    yaml.indent(mapping=2, sequence=2)
+    yaml.width = NO_WRAP_WIDTH
+    parsed = yaml.load(config_yaml)
+    for component_name, skills in parsed["skills"].items():
+        for skill in skills if isinstance(skills, list) else []:
+            if not isinstance(skill, dict) or "repository" not in skill:
+                continue
+            repository = skill.pop("repository")
+            if skill.get("source_id"):
+                raise PipelineTransformError(
+                    f"Skill '{skill.get('id')}' on component '{component_name}' sets both 'repository' and "
+                    "'source_id'; keep one."
+                )
+            provider, path = _repository_key(str(repository))
+            matches = [
+                (repo_provider, connection_id)
+                for repo, repo_provider, connection_id in repos
+                if _repository_key(repo)[1] == path and provider in (None, repo_provider)
+            ]
+            if not matches:
+                connected = ", ".join(sorted(repo for repo, _, _ in repos)) or "none"
+                raise PipelineTransformError(
+                    f"Skill '{skill.get('id')}' on component '{component_name}' names repository '{repository}', "
+                    f"which this organization has not connected (connected: {connected})."
+                )
+            if len(matches) > 1:
+                hosts = ", ".join(sorted(repo_provider for repo_provider, _ in matches))
+                raise PipelineTransformError(
+                    f"Skill '{skill.get('id')}' on component '{component_name}' names repository '{repository}', "
+                    f"which this organization has connected on more than one host ({hosts}); use the repo's URL "
+                    "(e.g. https://gitlab.com/owner/name) to pick one."
+                )
+            skill.setdefault("source", "ORG")
+            skill["source_id"] = matches[0][1]
+    buffer = StringIO()
+    yaml.dump(parsed, buffer)
+    return buffer.getvalue()

@@ -332,6 +332,55 @@ class TestServiceSecrets:
         secrets.get_workspace_id.assert_not_called()
 
 
+_SKILL_YAML = "components: {}\nskills:\n  agent:\n    - {id: s, hash: h, repository: acme/skills}\n"
+
+
+@pytest.mark.asyncio
+class TestSkillRepositories:
+    async def test_deploy_pushes_resolved_source_id(
+        self, service: MockedDeploymentService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(pipeline_transform, "build_config_yaml", lambda *a, **k: _SKILL_YAML)
+        repos = AsyncMock()
+        repos.list_repos.return_value = [("acme/skills", "GITHUB", "uuid-1")]
+        service._skill_repos = repos  # type: ignore[assignment]
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+
+        await service.deploy(FIXTURE, "svc", comment="c")
+
+        pushed_yaml = service._deployments.push_revision.await_args.args[2]
+        validated_yaml = service._deployments.validate_pipeline.await_args.kwargs["query_yaml"]
+        assert pushed_yaml == validated_yaml
+        assert "source_id: uuid-1" in pushed_yaml
+        assert "repository" not in pushed_yaml
+
+    async def test_no_repository_reference_makes_no_call(self, service: MockedDeploymentService) -> None:
+        repos = AsyncMock()
+        service._skill_repos = repos  # type: ignore[assignment]
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+
+        await service.deploy(FIXTURE, "svc", comment="c")
+
+        repos.list_repos.assert_not_called()
+
+    async def test_unconnected_repository_pushes_nothing(
+        self, service: MockedDeploymentService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(pipeline_transform, "build_config_yaml", lambda *a, **k: _SKILL_YAML)
+        repos = AsyncMock()
+        repos.list_repos.return_value = []
+        service._skill_repos = repos  # type: ignore[assignment]
+
+        with pytest.raises(pipeline_transform.PipelineTransformError):
+            await service.deploy(FIXTURE, "svc", comment="c")
+
+        service._deployments.push_revision.assert_not_called()
+
+
 @pytest.mark.asyncio
 class TestRun:
     def _mock_run_response(self, service: MockedDeploymentService, body: dict) -> AsyncMock:
