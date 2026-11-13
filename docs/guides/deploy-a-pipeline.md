@@ -386,7 +386,9 @@ skills:
 ```
 
 The repo must be connected in every organization you deploy to; otherwise the command fails before
-anything is pushed. `--dry-run` makes no API calls, so it prints `repository:` unresolved.
+anything is pushed. `--dry-run` makes no API calls, so it prints `repository:` unresolved. If the
+organization connected the same `owner/name` on both GitHub and GitLab, use the repo's URL
+(`https://gitlab.com/acme/skills`) so its host picks one; a bare `owner/name` then fails as ambiguous.
 
 ---
 
