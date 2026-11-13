@@ -1428,7 +1428,14 @@ class TestBuildFromYaml:
 
     @pytest.mark.parametrize(
         ("name", "expected"),
-        [("p.yaml", True), ("p.yml", True), ("p.py", False), ("p.io.yaml", False), ("p.io.yml", False)],
+        [
+            ("p.yaml", True),
+            ("p.yml", True),
+            ("p.py", False),
+            ("p.io.yaml", False),
+            ("p.io.yml", False),
+            ("p.settings.yaml", False),
+        ],
     )
     def test_is_yaml_target(self, name: str, expected: bool) -> None:
         assert is_yaml_target(Path(name)) is expected

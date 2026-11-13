@@ -330,8 +330,8 @@ io-config if that classification is wrong.
 
 ## The io-config file
 
-`<target>.io.yaml` (picked up automatically, or passed with `--pipeline-settings` or its older name `--io-config`)
-pins everything the CLI would
+`<target>.settings.yaml` or its older name `<target>.io.yaml` (picked up automatically; having both is an
+error), or a file passed with `--pipeline-settings` (older name `--io-config`), pins everything the CLI would
 otherwise infer or ask about. `deploy --share` offers to write it for you, fully commented — that
 generated file is the reference; this is the summary.
 

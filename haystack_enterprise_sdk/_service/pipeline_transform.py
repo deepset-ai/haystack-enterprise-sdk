@@ -463,7 +463,9 @@ def flatten_sockets(sockets_by_component: Dict[str, dict]) -> List[str]:
 def is_yaml_target(target: Path) -> bool:
     """Whether ``target`` is a pipeline YAML rather than a Python file. An io-config never counts."""
     name = Path(target).name
-    return name.endswith((".yaml", ".yml")) and not name.endswith((".io.yaml", ".io.yml"))
+    return name.endswith((".yaml", ".yml")) and not name.endswith(
+        (".io.yaml", ".io.yml", ".settings.yaml", ".settings.yml")
+    )
 
 
 def bundle_from_yaml(target: Path, allow_index: bool = False) -> ExtractionBundle:

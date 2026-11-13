@@ -753,7 +753,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         None,
         "--pipeline-settings",
         "--io-config",
-        help="Pipeline settings file: I/O mapping plus other platform settings (default: <target>.io.yaml).",
+        help="Pipeline settings file: I/O mapping plus other platform settings (default: <target>.settings.yaml or <target>.io.yaml).",
     ),
     skip_io_validation: bool = False,
     skip_validation: bool = False,
@@ -1134,7 +1134,7 @@ def deploy_index(  # pylint: disable=too-many-arguments
         None,
         "--pipeline-settings",
         "--io-config",
-        help="Pipeline settings file: I/O mapping plus other platform settings (default: <target>.io.yaml).",
+        help="Pipeline settings file: I/O mapping plus other platform settings (default: <target>.settings.yaml or <target>.io.yaml).",
     ),
     skip_validation: bool = False,
     api_key: Optional[str] = None,
@@ -1232,7 +1232,7 @@ def validate(
         None,
         "--pipeline-settings",
         "--io-config",
-        help="Pipeline settings file: I/O mapping plus other platform settings (default: <target>.io.yaml).",
+        help="Pipeline settings file: I/O mapping plus other platform settings (default: <target>.settings.yaml or <target>.io.yaml).",
     ),
     skip_io_validation: bool = False,
     api_key: Optional[str] = None,
@@ -1310,7 +1310,7 @@ def run(  # pylint: disable=too-many-arguments,too-many-locals
         None,
         "--pipeline-settings",
         "--io-config",
-        help="Pipeline settings file: I/O mapping plus other platform settings (default: <target>.io.yaml).",
+        help="Pipeline settings file: I/O mapping plus other platform settings (default: <target>.settings.yaml or <target>.io.yaml).",
     ),
     skip_io_validation: bool = False,
     output: Optional[Path] = None,
@@ -2057,16 +2057,22 @@ def _collect_env_vars(env: List[str], env_file: Optional[Path]) -> Dict[str, str
 
 
 def _resolve_io_config_path(target: Path, io_config: Optional[Path]) -> Optional[Path]:
-    """Pick the io-config file to use: an explicit ``--io-config`` wins, else ``<target>.io.yaml``.
+    """Pick the io-config file to use: an explicit ``--io-config`` wins, else ``<target>.settings.yaml``
+    or its older name ``<target>.io.yaml``.
 
     Announces the auto-detected file so a saved mapping never changes behavior silently.
     """
     if io_config is not None:
         return io_config
-    candidate = Path(target).with_suffix(".io.yaml")
-    if candidate.is_file():
-        typer.echo(f"Using I/O mapping from {candidate} (pass --io-config to override, or delete the file to re-map).")
-        return candidate
+    found = [path for path in map(Path(target).with_suffix, (".settings.yaml", ".io.yaml")) if path.is_file()]
+    if len(found) > 1:
+        typer.echo(f"Found both {found[0]} and {found[1]}; keep only one.")
+        raise typer.Exit(code=1)
+    if found:
+        typer.echo(
+            f"Using I/O mapping from {found[0]} (pass --pipeline-settings to override, or delete the file to re-map)."
+        )
+        return found[0]
     return None
 
 

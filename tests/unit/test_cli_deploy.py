@@ -1502,11 +1502,14 @@ class TestDeployReviewFlow:
         assert "# The user's question/text sent by the Playground and chat UI (str)" in content
 
     @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @pytest.mark.parametrize("name", ["pipeline.io.yaml", "pipeline.settings.yaml"])
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
-    def test_saved_io_config_auto_detected_and_skips_review(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
+    def test_saved_io_config_auto_detected_and_skips_review(
+        self, client_cls: Mock, _tty: Mock, tmp_path: Path, name: str
+    ) -> None:
         target = tmp_path / "pipeline.py"
         target.write_text("# stub\n", encoding="utf-8")
-        (tmp_path / "pipeline.io.yaml").write_text(
+        (tmp_path / name).write_text(
             "inputs:\n  query:\n    - retriever.query\noutputs:\n  answers: reader.answers\n", encoding="utf-8"
         )
         result, io = self._invoke_with_resolver(client_cls, ["deploy", str(target), "svc", *self.SHARE_ARGS], "")
@@ -1514,6 +1517,17 @@ class TestDeployReviewFlow:
         assert "Using I/O mapping from" in result.stdout
         assert "I/O mapping (how the platform talks to your pipeline)" not in result.stdout  # no review
         assert io == ({"query": ["retriever.query"]}, {"answers": "reader.answers"})
+
+    @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
+    @patch("haystack_enterprise_sdk.cli.DeploymentClient")
+    def test_both_settings_files_is_an_error(self, client_cls: Mock, _tty: Mock, tmp_path: Path) -> None:
+        target = tmp_path / "pipeline.py"
+        target.write_text("# stub\n", encoding="utf-8")
+        for name in ("pipeline.io.yaml", "pipeline.settings.yaml"):
+            (tmp_path / name).write_text("outputs:\n  answers: reader.answers\n", encoding="utf-8")
+        result = runner.invoke(cli_app, ["deploy", str(target), "svc", "--dry-run"])
+        assert result.exit_code == 1
+        assert "keep only one" in result.stdout
 
     @patch("haystack_enterprise_sdk.cli._stdin_is_tty", return_value=True)
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
