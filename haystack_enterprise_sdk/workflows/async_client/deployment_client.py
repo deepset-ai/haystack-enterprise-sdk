@@ -121,6 +121,7 @@ class AsyncDeploymentClient:
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         on_status: Optional[Callable[[DeploymentStatus], None]] = None,
         build: str = "yaml",
+        pipeline_name: Optional[str] = None,
     ) -> DeployResult:
         """Transform ``target`` and push it as a new revision of ``service_name``.
 
@@ -146,6 +147,7 @@ class AsyncDeploymentClient:
                 poll_interval_s=poll_interval_s,
                 on_status=on_status,
                 build=build,
+                pipeline_name=pipeline_name,
             )
 
     async def validate(

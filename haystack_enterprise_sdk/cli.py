@@ -70,6 +70,7 @@ from haystack_enterprise_sdk._api.oauth import (
     revoke,
 )
 from haystack_enterprise_sdk._api.pipeline_run import DEFAULT_RUN_RETRIES, PipelineRunError
+from haystack_enterprise_sdk._api.pipeline_versions import FailedToPublishPipelineVersionError
 from haystack_enterprise_sdk._api.secrets import FailedToSetServiceSecretError
 from haystack_enterprise_sdk._api.shared_prototypes import FailedToCreateSharedPrototypeError
 from haystack_enterprise_sdk._api.upload_sessions import WriteMode
@@ -768,6 +769,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         "--build",
         help="How to build the deployable: yaml, code (experimental), or auto: code for a directory, else yaml.",
     ),
+    pipeline: Optional[str] = typer.Option(
+        None, "--pipeline", help="Also save the YAML as a new version of this platform pipeline and deploy from it."
+    ),
 ) -> None:
     """Deploy a pipeline as a new revision of a service, creating the service if it does not exist.
 
@@ -842,6 +846,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
     :param api_key: deepset API key to use for authentication.
     :param api_url: API URL to use for authentication.
     :param workspace_name: Workspace to deploy into. Uses the workspace from the .ENV file by default.
+    :param pipeline: Also save the YAML as a new version of this platform pipeline (created when missing) and
+        deploy the revision from that version, so the service links back to it. Unsaved changes in the
+        pipeline's draft are kept as their own version first, and the pipeline ends with a fresh draft of
+        what was deployed. Needs write access to pipelines. Not supported with --build code.
 
     Example (reuses the service, or creates it serverless when missing, and activates the revision):
     `haystack-enterprise deploy pipeline.py my-service`
@@ -871,6 +879,10 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         build = "code" if target.is_dir() else "yaml"
     if build == "code":
         typer.echo("Code builds are experimental: the bundle format and the /run API may change.", err=True)
+
+    if pipeline is not None and build == "code":
+        typer.echo("--pipeline is not supported with a code build: a pipeline version holds YAML, not code.")
+        raise typer.Exit(1)
 
     io_config_path = _resolve_io_config_path(target, io_config)
     io_cfg = _load_io_config(io_config_path) if io_config_path is not None else IoConfig()
@@ -1008,6 +1020,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                     secrets=env_vars,
                     on_status=_on_status,
                     build=build,
+                    pipeline_name=pipeline,
                 )
         else:
             result = client.deploy(
@@ -1025,6 +1038,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
                 validate=not skip_validation,
                 secrets=env_vars,
                 build=build,
+                pipeline_name=pipeline,
             )
     except KeyboardInterrupt:
         typer.echo(
@@ -1041,6 +1055,7 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
         PipelineValidationError,
         FailedToSetServiceSecretError,
         CodeBundleRequestError,
+        FailedToPublishPipelineVersionError,
     ) as err:
         typer.echo(str(err))
         raise typer.Exit(1)  # noqa: B904
@@ -1056,6 +1071,9 @@ def deploy(  # pylint: disable=too-many-arguments,too-many-locals
             f"in workspace '{workspace_name}'.",
             typer.colors.GREEN,
         )
+
+    if result.pipeline_version_id is not None:
+        typer.echo(f"Saved as version {result.pipeline_version_number} of pipeline '{pipeline}'.")
 
     if not activate:
         typer.echo(

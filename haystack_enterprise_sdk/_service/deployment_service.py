@@ -33,6 +33,7 @@ from haystack_enterprise_sdk._api.pipeline_run import (
     OnRetry,
     build_run_inputs,
 )
+from haystack_enterprise_sdk._api.pipeline_versions import PipelineVersionsAPI
 from haystack_enterprise_sdk._api.secrets import ServiceSecretsAPI
 from haystack_enterprise_sdk._api.shared_prototypes import (
     SharedPrototype,
@@ -211,6 +212,16 @@ class CreateOptions:
             )
 
 
+def _version_fields(version: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The :class:`DeployResult` fields for the pipeline version a deploy published, if any."""
+    if version is None:
+        return {}
+    return {
+        "pipeline_version_id": UUID(version["version_id"]),
+        "pipeline_version_number": version.get("version_number"),
+    }
+
+
 @dataclass
 class DeployResult:
     """Outcome of a deploy call."""
@@ -221,6 +232,9 @@ class DeployResult:
     timed_out: bool
     #: The code bundle a code build pushed (its ``kind`` and ``input_schema`` shape the endpoint to call).
     code_bundle: Optional[code_bundle.CodeBundle] = None
+    #: The pipeline version the revision was deployed from, when ``pipeline_name`` was given.
+    pipeline_version_id: Optional[UUID] = None
+    pipeline_version_number: Optional[int] = None
 
     @property
     def is_deployed(self) -> bool:
@@ -278,6 +292,7 @@ class DeploymentService:
         self._deployments = DeploymentsAPI(api)
         self._secrets = ServiceSecretsAPI(api)
         self._skill_repos = SkillReposAPI(api)
+        self._pipeline_versions = PipelineVersionsAPI(api)
         self._workspace_name = workspace_name or DEFAULT_WORKSPACE_NAME
 
     @classmethod
@@ -307,6 +322,7 @@ class DeploymentService:
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
         on_status: Optional[Callable[[DeploymentStatus], None]] = None,
         build: str = "yaml",
+        pipeline_name: Optional[str] = None,
     ) -> DeployResult:
         """Transform ``target`` and push it as a new revision of ``service_name``.
 
@@ -336,6 +352,10 @@ class DeploymentService:
         :param build: ``"yaml"`` converts the pipeline to platform YAML. ``"code"`` ships the project as a
             code bundle (see :mod:`code_bundle`) and pushes a settings-only YAML pointing at it; the
             platform YAML validation does not apply and is skipped.
+        :param pipeline_name: Also save the YAML as a new version of this platform pipeline (created when
+            missing) and deploy the revision from that version, so the service links back to it. Changes in
+            the pipeline's current draft are kept as their own version first, and the pipeline ends with a
+            fresh draft of the deployed YAML. Not supported with ``build="code"``.
         :raises ServiceNotFoundError: If the service is missing and ``create`` is False.
         :raises PipelineValidationError: If ``validate`` is set and the YAML has blocking issues.
         :raises DeploymentFailedError: If ``activate`` is set and the rollout fails.
@@ -345,6 +365,9 @@ class DeploymentService:
         """
         if build not in ("yaml", "code"):
             raise ValueError(f"build must be 'yaml' or 'code', got '{build}'.")
+        if pipeline_name is not None and build == "code":
+            # The platform rejects a revision that has both a code bundle and a pipeline version.
+            raise ValueError("pipeline_name is not supported with build='code'.")
         packed: Optional[code_bundle.CodeBundle] = None
         if build == "code":
             packed = code_bundle.build_code_bundle(
@@ -390,20 +413,30 @@ class DeploymentService:
         if secrets:
             await self._upsert_secrets(deployment.deployment_id, secrets)
 
+        comment = comment or default_revision_comment(target)[0]
+        version: Optional[Dict[str, Any]] = None
+        if pipeline_name is not None:
+            version = await self._publish_pipeline_version(pipeline_name, config_yaml, comment)
         source_metadata = collect_source_metadata(target)
         revision = await self._deployments.push_revision(
             self._workspace_name,
             deployment.deployment_id,
             config_yaml,
-            comment or default_revision_comment(target)[0],
+            comment,
             source_metadata=source_metadata,
+            source_version_id=UUID(version["version_id"]) if version is not None else None,
             **({"code_bundle": packed.request_field()} if packed is not None else {}),
         )
         logger.info("Pushed deployment revision.", service=service_name, revision_id=str(revision.revision_id))
 
         if not activate:
             return DeployResult(
-                deployment=deployment, revision=revision, activated=False, timed_out=False, code_bundle=packed
+                deployment=deployment,
+                revision=revision,
+                activated=False,
+                timed_out=False,
+                code_bundle=packed,
+                **_version_fields(version),
             )
 
         deployment = await self._deployments.activate_revision(
@@ -416,7 +449,12 @@ class DeploymentService:
             # would only burn the timeout on a status that never settles.
             logger.info("Activated serverless revision; no rollout to wait for.", service=service_name)
             return DeployResult(
-                deployment=deployment, revision=revision, activated=True, timed_out=False, code_bundle=packed
+                deployment=deployment,
+                revision=revision,
+                activated=True,
+                timed_out=False,
+                code_bundle=packed,
+                **_version_fields(version),
             )
 
         deployment, timed_out = await self._poll_until_settled(
@@ -427,8 +465,48 @@ class DeploymentService:
             raise DeploymentFailedError(deployment, self._ui_hint(service_name))
 
         return DeployResult(
-            deployment=deployment, revision=revision, activated=True, timed_out=timed_out, code_bundle=packed
+            deployment=deployment,
+            revision=revision,
+            activated=True,
+            timed_out=timed_out,
+            code_bundle=packed,
+            **_version_fields(version),
         )
+
+    async def _publish_pipeline_version(self, pipeline_name: str, config_yaml: str, comment: str) -> Dict[str, Any]:
+        """Save ``config_yaml`` as a new finalized version of ``pipeline_name`` without losing draft edits.
+
+        A draft that differs from the latest version holds someone's unsaved work: creating a new draft makes
+        the platform finalize it as its own version first. An unchanged draft is published with the new YAML
+        instead, so no duplicate version is left behind. Publishing makes the platform open a new draft.
+
+        :return: The finalized version.
+        :raises FailedToPublishPipelineVersionError: If the pipeline or its version could not be written.
+        """
+        head = await self._pipeline_versions.get_head(self._workspace_name, pipeline_name)
+        if head is None:
+            await self._pipeline_versions.create_pipeline(self._workspace_name, pipeline_name)
+            head = (None, None)
+        draft, latest = head
+        if (
+            draft is not None
+            and (draft.get("config_yaml") or "").strip() == ((latest or {}).get("config_yaml") or "").strip()
+        ):
+            version = await self._pipeline_versions.publish(
+                self._workspace_name,
+                pipeline_name,
+                draft["version_id"],
+                {"config_yaml": config_yaml, "description": comment},
+            )
+        else:
+            new_draft = await self._pipeline_versions.create_draft(
+                self._workspace_name, pipeline_name, config_yaml, comment
+            )
+            version = await self._pipeline_versions.publish(
+                self._workspace_name, pipeline_name, new_draft["version_id"], {}
+            )
+        logger.info("Published pipeline version.", pipeline=pipeline_name, version_number=version.get("version_number"))
+        return version
 
     async def _resolve_skill_repositories(self, config_yaml: str) -> str:
         """Resolve skill references that name a ``repository`` to this org's ``source_id`` for it.

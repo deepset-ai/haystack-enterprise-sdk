@@ -291,6 +291,20 @@ haystack-enterprise deploy pipeline.py my-service --env-file .env.prod --env LOG
   next request, without a redeploy.
 - `--dry-run` lists the names it would set and sends nothing.
 
+### Optional: save it as a pipeline version
+
+`--pipeline NAME` also saves the YAML as a new version of the platform pipeline `NAME`, and deploys the
+revision from that version, so the service links back to the pipeline in the platform.
+
+```shell
+haystack-enterprise deploy pipeline.py my-service --pipeline my-pipeline
+```
+
+- The pipeline is created when it does not exist.
+- A draft with unsaved changes is never overwritten: it is kept as its own version first.
+- Afterwards the pipeline has a fresh draft holding what you deployed, ready to edit in the builder.
+- You need write access to pipelines. A code build (`--build code`) cannot be saved as a pipeline version.
+
 ### Optional: share a prototype link
 
 A **shareable prototype link** opens a chat UI for your pipeline. It is never created unless you ask:

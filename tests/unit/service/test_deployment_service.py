@@ -108,7 +108,12 @@ class TestResolveAndPush:
         assert result.activated is False
         assert result.timed_out is False
         service._deployments.push_revision.assert_awaited_once_with(
-            "ws", deployment.deployment_id, "components: {}\n", "Bump embedder", source_metadata=ANY
+            "ws",
+            deployment.deployment_id,
+            "components: {}\n",
+            "Bump embedder",
+            source_metadata=ANY,
+            source_version_id=None,
         )
         service._deployments.activate_revision.assert_not_called()
 
@@ -906,6 +911,7 @@ class TestCodeBuild:
             _PACKED.config_yaml,
             "c",
             source_metadata=ANY,
+            source_version_id=None,
             code_bundle={
                 "sha256": "abc",
                 "entrypoint": "app.py:app",
@@ -935,3 +941,86 @@ class TestCodeBuild:
         service._deployments.create_deployment.assert_not_called()
         service._deployments.upload_code_bundle.assert_not_called()
         service._deployments.push_revision.assert_not_called()
+
+
+def _version(version_id: str, config_yaml: str, *, is_draft: bool, number: Optional[int] = None) -> Dict[str, object]:
+    return {"version_id": version_id, "config_yaml": config_yaml, "is_draft": is_draft, "version_number": number}
+
+
+@pytest.mark.asyncio
+class TestPipelineVersion:
+    PUBLISHED_ID = "11111111-1111-1111-1111-111111111111"
+
+    @pytest.fixture
+    def versions(self, service: MockedDeploymentService) -> AsyncMock:
+        versions = AsyncMock()
+        versions.publish.return_value = _version(self.PUBLISHED_ID, "components: {}\n", is_draft=False, number=3)
+        versions.create_draft.return_value = _version("new-draft", "components: {}\n", is_draft=True)
+        service._pipeline_versions = versions  # type: ignore[assignment]
+        deployment = _deployment()
+        service._deployments.find_by_name.return_value = deployment
+        service._deployments.push_revision.return_value = _revision(deployment.deployment_id)
+        return versions
+
+    async def test_revision_links_to_published_version(
+        self, service: MockedDeploymentService, versions: AsyncMock
+    ) -> None:
+        versions.get_head.return_value = (None, _version("v2", "old: 1\n", is_draft=False, number=2))
+
+        result = await service.deploy(FIXTURE, "svc", comment="c", pipeline_name="pipe")
+
+        assert service._deployments.push_revision.await_args.kwargs["source_version_id"] == UUID(self.PUBLISHED_ID)
+        assert result.pipeline_version_id == UUID(self.PUBLISHED_ID)
+        assert result.pipeline_version_number == 3
+
+    async def test_draft_with_changes_is_kept_as_its_own_version(
+        self, service: MockedDeploymentService, versions: AsyncMock
+    ) -> None:
+        versions.get_head.return_value = (
+            _version("draft", "edited: 1\n", is_draft=True),
+            _version("v2", "old: 1\n", is_draft=False, number=2),
+        )
+
+        await service.deploy(FIXTURE, "svc", comment="c", pipeline_name="pipe")
+
+        # A new draft makes the platform finalize the edited one; the edited draft itself is never patched.
+        versions.create_draft.assert_awaited_once_with("ws", "pipe", "components: {}\n", "c")
+        versions.publish.assert_awaited_once_with("ws", "pipe", "new-draft", {})
+
+    async def test_unchanged_draft_is_published_with_the_new_yaml(
+        self, service: MockedDeploymentService, versions: AsyncMock
+    ) -> None:
+        versions.get_head.return_value = (
+            _version("draft", "old: 1\n", is_draft=True),
+            _version("v2", "old: 1\n", is_draft=False, number=2),
+        )
+
+        await service.deploy(FIXTURE, "svc", comment="c", pipeline_name="pipe")
+
+        versions.create_draft.assert_not_called()
+        versions.publish.assert_awaited_once_with(
+            "ws", "pipe", "draft", {"config_yaml": "components: {}\n", "description": "c"}
+        )
+
+    async def test_missing_pipeline_is_created(self, service: MockedDeploymentService, versions: AsyncMock) -> None:
+        versions.get_head.return_value = None
+
+        await service.deploy(FIXTURE, "svc", comment="c", pipeline_name="pipe")
+
+        versions.create_pipeline.assert_awaited_once_with("ws", "pipe")
+        versions.create_draft.assert_awaited_once()
+
+    async def test_without_pipeline_name_nothing_is_published(
+        self, service: MockedDeploymentService, versions: AsyncMock
+    ) -> None:
+        result = await service.deploy(FIXTURE, "svc", comment="c")
+
+        versions.get_head.assert_not_called()
+        assert service._deployments.push_revision.await_args.kwargs["source_version_id"] is None
+        assert result.pipeline_version_id is None
+
+    async def test_code_build_is_rejected(self, service: MockedDeploymentService, versions: AsyncMock) -> None:
+        with pytest.raises(ValueError, match="pipeline_name"):
+            await service.deploy(FIXTURE, "svc", comment="c", pipeline_name="pipe", build="code")
+
+        versions.get_head.assert_not_called()
