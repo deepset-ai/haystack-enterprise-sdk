@@ -145,7 +145,7 @@ haystack-enterprise get-upload-session <session-id>
 ## Pipelines
 
 All three pipeline commands take the path to a local Python file as their first argument, and share
-`--entrypoint` (which pipeline in the file), `--python` (which interpreter loads it), `--io-config` and
+`--entrypoint` (which pipeline in the file), `--python` (which interpreter loads it), `--platform-config` (alias `--io-config`) and
 `--skip-io-validation`.
 
 The first argument can also be a platform pipeline YAML (`.yaml` / `.yml`). It is sent as-is, with no

@@ -447,8 +447,9 @@ class TestDeployCommand:
         assert "save_path" not in resolver.keywords
         client_cls.return_value.create_shared_prototype.assert_not_called()
 
+    @pytest.mark.parametrize("flag", ["--io-config", "--platform-config"])
     @patch("haystack_enterprise_sdk.cli.DeploymentClient")
-    def test_pinned_io_config_asks_nothing(self, client_cls: Mock, tmp_path: Path) -> None:
+    def test_pinned_io_config_asks_nothing(self, client_cls: Mock, tmp_path: Path, flag: str) -> None:
         # An io-config already answers both questions, so even a plain deploy has nothing to ask.
         from haystack_enterprise_sdk.cli import _resolve_io_interactive
 
@@ -456,7 +457,7 @@ class TestDeployCommand:
         io_config = tmp_path / "io.yaml"
         io_config.write_text("inputs:\n  query:\n    - r.query\noutputs:\n  answers: g.replies\n", encoding="utf-8")
         client_cls.return_value.deploy.return_value = _result(activated=False)
-        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", "--io-config", str(io_config)])
+        result = runner.invoke(cli_app, ["deploy", FIXTURE, "svc", flag, str(io_config)])
         assert result.exit_code == 0
         resolver = client_cls.return_value.deploy.call_args.kwargs["io_resolver"]
         resolver = getattr(resolver, "__wrapped__", resolver)

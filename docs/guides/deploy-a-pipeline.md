@@ -330,7 +330,8 @@ io-config if that classification is wrong.
 
 ## The io-config file
 
-`<target>.io.yaml` (picked up automatically, or passed with `--io-config`) pins everything the CLI would
+`<target>.io.yaml` (picked up automatically, or passed with `--platform-config` or its older name `--io-config`)
+pins everything the CLI would
 otherwise infer or ask about. `deploy --share` offers to write it for you, fully commented — that
 generated file is the reference; this is the summary.
 
