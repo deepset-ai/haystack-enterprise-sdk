@@ -13,6 +13,7 @@ from haystack_enterprise_sdk._api.deployments import (
 )
 from haystack_enterprise_sdk._api.files import FailedToUploadFileException
 from haystack_enterprise_sdk._api.pipeline_run import PipelineRunError
+from haystack_enterprise_sdk._api.pipeline_versions import FailedToPublishPipelineVersionError
 from haystack_enterprise_sdk._api.shared_prototypes import (
     FailedToCreateSharedPrototypeError,
     SharedPrototype,
@@ -62,6 +63,7 @@ __all__ = [
     "BaseConfig",
     "ErrorDetail",
     "FailedToUploadFileException",
+    "FailedToPublishPipelineVersionError",
     "PipelineClient",
     "PipelineConfig",
     "PipelineInputs",

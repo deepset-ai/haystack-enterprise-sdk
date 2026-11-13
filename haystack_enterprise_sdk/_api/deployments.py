@@ -292,8 +292,8 @@ class DeploymentsAPI:
     _ENDPOINT = "deployments"
     # Workspace-scoped validation endpoint (the base URL already includes /workspaces/{workspace}).
     _VALIDATION_ENDPOINT = "pipeline_validations"
-    # Revisions pushed by this SDK send self-contained inline YAML with no platform pipeline version
-    # behind them, so their source is EXTERNAL_PIPELINE rather than the default PLATFORM_PIPELINE.
+    # Revisions pushed by this SDK send self-contained inline YAML, by default with no platform pipeline
+    # version behind them, so their source is EXTERNAL_PIPELINE rather than the default PLATFORM_PIPELINE.
     _SOURCE_TYPE = DeploymentSourceType.EXTERNAL_PIPELINE.value
     _CODE_BUNDLES_ENDPOINT = "code_bundles"
 
@@ -431,6 +431,7 @@ class DeploymentsAPI:
         comment: str,
         source_metadata: Optional[Dict[str, Any]] = None,
         code_bundle: Optional[Dict[str, Any]] = None,
+        source_version_id: Optional[UUID] = None,
     ) -> DeploymentRevision:
         """Push a new revision from raw ``config_yaml``. The revision starts as ``PENDING``.
 
@@ -443,10 +444,15 @@ class DeploymentsAPI:
         :param code_bundle: For a code build, ``{sha256, entrypoint, kind, input_schema?, graph?}`` of an
             uploaded code bundle. Only check servers with :meth:`get_code_bundle` first: an old server
             ignores the field and would store a revision without code.
+        :param source_version_id: The platform pipeline version ``config_yaml`` was saved as. The revision then
+            links back to it as a ``PLATFORM_PIPELINE`` revision. Not combinable with ``code_bundle``.
         :raises FailedToPushRevisionError: If the revision could not be created.
         :return: The created revision.
         """
         payload: Dict[str, Any] = {"comment": comment, "config_yaml": config_yaml, "source_type": self._SOURCE_TYPE}
+        if source_version_id is not None:
+            payload["source_type"] = DeploymentSourceType.PLATFORM_PIPELINE.value
+            payload["source_version_id"] = str(source_version_id)
         if source_metadata:
             payload["source_metadata"] = source_metadata
         if code_bundle is not None:

@@ -237,6 +237,18 @@ class TestRevisions:
         )
         assert mocked_haystack_enterprise_api.post.call_args.kwargs["json"]["source_metadata"] == source_metadata
 
+    async def test_push_revision_links_pipeline_version(
+        self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
+    ) -> None:
+        deployment_id, version_id = uuid4(), uuid4()
+        mocked_haystack_enterprise_api.post.return_value = _resp(codes.CREATED, json=_revision_body(str(deployment_id)))
+        await deployments_api.push_revision(
+            "ws", deployment_id, config_yaml="components: {}", comment="c", source_version_id=version_id
+        )
+        payload = mocked_haystack_enterprise_api.post.call_args.kwargs["json"]
+        assert payload["source_type"] == "PLATFORM_PIPELINE"
+        assert payload["source_version_id"] == str(version_id)
+
     async def test_push_revision_tolerates_missing_status(
         self, deployments_api: DeploymentsAPI, mocked_haystack_enterprise_api: Mock
     ) -> None:
