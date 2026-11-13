@@ -5,7 +5,7 @@ that records its YAML as a version of a platform pipeline. A pipeline has at mos
 builder edits) plus numbered, finalized versions.
 """
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from httpx import codes
 
@@ -29,33 +29,23 @@ class PipelineVersionsAPI:
         """
         self._api = haystack_enterprise_api
 
-    async def get_head(
-        self, workspace_name: str, pipeline_name: str
-    ) -> Optional[Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]]:
-        """Read the pipeline's current draft and its latest finalized version.
+    async def pipeline_exists(self, workspace_name: str, pipeline_name: str) -> bool:
+        """Check whether the pipeline exists.
 
         :param workspace_name: Name of the workspace.
         :param pipeline_name: Name of the pipeline.
-        :return: ``(draft, latest_final)``, either of them None when absent, or None when the pipeline does not exist.
+        :return: True if it exists.
         """
-        # Sorted by version_number descending, nulls first: the draft (no number) leads, then the latest final.
-        response = await self._api.get(
-            workspace_name=workspace_name,
-            endpoint=f"pipelines/{pipeline_name}/versions",
-            params={"limit": 2, "page_number": 1},
-        )
+        response = await self._api.get(workspace_name=workspace_name, endpoint=f"pipelines/{pipeline_name}")
         if response.status_code == codes.NOT_FOUND:
-            return None
+            return False
         raise_for_unexpected_status(
             response,
             (codes.OK,),
             FailedToPublishPipelineVersionError,
-            f"Failed to list the versions of pipeline '{pipeline_name}'.",
+            f"Failed to look up pipeline '{pipeline_name}'.",
         )
-        versions = response.json().get("data", [])
-        draft = next((v for v in versions if v.get("is_draft")), None)
-        latest_final = next((v for v in versions if not v.get("is_draft")), None)
-        return draft, latest_final
+        return True
 
     async def create_pipeline(self, workspace_name: str, pipeline_name: str) -> None:
         """Create an empty pipeline: no YAML, so it starts without any version.
@@ -98,21 +88,18 @@ class PipelineVersionsAPI:
         body: Dict[str, Any] = response.json()
         return body
 
-    async def publish(
-        self, workspace_name: str, pipeline_name: str, version_id: str, fields: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Patch ``fields`` onto a draft and finalize it. The platform then opens a new draft with the same content.
+    async def publish(self, workspace_name: str, pipeline_name: str, version_id: str) -> Dict[str, Any]:
+        """Finalize a draft. The platform then opens a new draft with the same content.
 
         :param workspace_name: Name of the workspace.
         :param pipeline_name: Name of the pipeline.
         :param version_id: Id of the draft.
-        :param fields: Other fields to set in the same request, for example ``config_yaml``.
         :return: The finalized version.
         """
         response = await self._api.patch(
             workspace_name=workspace_name,
             endpoint=f"pipelines/{pipeline_name}/versions/{version_id}",
-            json={**fields, "is_draft": False},
+            json={"is_draft": False},
         )
         raise_for_unexpected_status(
             response,

@@ -301,7 +301,8 @@ haystack-enterprise deploy pipeline.py my-service --pipeline my-pipeline
 ```
 
 - The pipeline is created when it does not exist.
-- A draft with unsaved changes is never overwritten: it is kept as its own version first.
+- The pipeline's current draft is never overwritten: it is kept as its own version first, even when it
+  has no changes.
 - Afterwards the pipeline has a fresh draft holding what you deployed, ready to edit in the builder.
 - You need write access to pipelines. A code build (`--build code`) cannot be saved as a pipeline version.
 

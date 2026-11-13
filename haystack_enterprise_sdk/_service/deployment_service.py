@@ -474,37 +474,19 @@ class DeploymentService:
         )
 
     async def _publish_pipeline_version(self, pipeline_name: str, config_yaml: str, comment: str) -> Dict[str, Any]:
-        """Save ``config_yaml`` as a new finalized version of ``pipeline_name`` without losing draft edits.
+        """Save ``config_yaml`` as a new finalized version of ``pipeline_name``, created by the caller.
 
-        A draft that differs from the latest version holds someone's unsaved work: creating a new draft makes
-        the platform finalize it as its own version first. An unchanged draft is published with the new YAML
-        instead, so no duplicate version is left behind. Publishing makes the platform open a new draft.
+        Always creates a new draft rather than reusing the current one, which may belong to someone else: the
+        platform first finalizes the current draft as its own version, so its edits are kept. Publishing the new
+        draft makes the platform open a fresh one with the same content.
 
         :return: The finalized version.
         :raises FailedToPublishPipelineVersionError: If the pipeline or its version could not be written.
         """
-        head = await self._pipeline_versions.get_head(self._workspace_name, pipeline_name)
-        if head is None:
+        if not await self._pipeline_versions.pipeline_exists(self._workspace_name, pipeline_name):
             await self._pipeline_versions.create_pipeline(self._workspace_name, pipeline_name)
-            head = (None, None)
-        draft, latest = head
-        if (
-            draft is not None
-            and (draft.get("config_yaml") or "").strip() == ((latest or {}).get("config_yaml") or "").strip()
-        ):
-            version = await self._pipeline_versions.publish(
-                self._workspace_name,
-                pipeline_name,
-                draft["version_id"],
-                {"config_yaml": config_yaml, "description": comment},
-            )
-        else:
-            new_draft = await self._pipeline_versions.create_draft(
-                self._workspace_name, pipeline_name, config_yaml, comment
-            )
-            version = await self._pipeline_versions.publish(
-                self._workspace_name, pipeline_name, new_draft["version_id"], {}
-            )
+        draft = await self._pipeline_versions.create_draft(self._workspace_name, pipeline_name, config_yaml, comment)
+        version = await self._pipeline_versions.publish(self._workspace_name, pipeline_name, draft["version_id"])
         logger.info("Published pipeline version.", pipeline=pipeline_name, version_number=version.get("version_number"))
         return version
 
