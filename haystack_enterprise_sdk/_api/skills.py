@@ -4,7 +4,7 @@ Thin async client over ``GET /api/v2/skills/repos``: the organization's own skil
 managed). Each repo's ``id`` is what a pipeline's skill reference carries as ``source_id``.
 """
 
-from typing import Dict
+from typing import List, NamedTuple
 
 from httpx import codes
 
@@ -18,6 +18,14 @@ class FailedToListSkillReposError(Exception):
     """Raised when the organization's skill repos could not be listed."""
 
 
+class SkillRepo(NamedTuple):
+    """One of the organization's skill repos."""
+
+    repository: str  # ``owner/name`` as the platform stores it
+    provider: str  # host serving the repo: ``GITHUB`` or ``GITLAB``
+    id: str  # connection id, a skill reference's ``source_id``
+
+
 class SkillReposAPI:
     """Skill repos API for Haystack Enterprise Platform."""
 
@@ -28,13 +36,13 @@ class SkillReposAPI:
         """
         self._api = haystack_enterprise_api
 
-    async def list_repo_ids(self) -> Dict[str, str]:
+    async def list_repos(self) -> List[SkillRepo]:
         """List the organization's skill repos.
 
-        :return: Repository (``owner/name`` as the platform stores it) to its connection id.
+        :return: Each repo with its host and connection id; one ``owner/name`` may appear once per host.
         """
         response = await self._api.request("GET", "api/v2/skills/repos")
         raise_for_unexpected_status(
             response, (codes.OK,), FailedToListSkillReposError, "Failed to list the organization's skill repos."
         )
-        return {repo["repository"]: repo["id"] for repo in response.json()}
+        return [SkillRepo(repo["repository"], repo["provider"], repo["id"]) for repo in response.json()]

@@ -435,15 +435,15 @@ class DeploymentService:
 
         Calls the platform only when the YAML has such a reference.
 
-        :raises PipelineTransformError: If the repos cannot be listed, or a named repo is not connected.
+        :raises PipelineTransformError: If the repos cannot be listed, or a named repo is not connected or is ambiguous.
         """
         if not pipeline_transform.skill_repositories(config_yaml):
             return config_yaml
         try:
-            repo_ids = await self._skill_repos.list_repo_ids()
+            repos = await self._skill_repos.list_repos()
         except FailedToListSkillReposError as error:
             raise pipeline_transform.PipelineTransformError(str(error)) from error
-        return pipeline_transform.resolve_skill_repositories(config_yaml, repo_ids)
+        return pipeline_transform.resolve_skill_repositories(config_yaml, repos)
 
     async def _upsert_secrets(self, deployment_id: UUID, secrets: Dict[str, str]) -> None:
         """Create or update the service's secrets. Secrets not in ``secrets`` are left untouched."""

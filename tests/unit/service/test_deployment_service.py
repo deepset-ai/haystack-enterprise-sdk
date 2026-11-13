@@ -342,7 +342,7 @@ class TestSkillRepositories:
     ) -> None:
         monkeypatch.setattr(pipeline_transform, "build_config_yaml", lambda *a, **k: _SKILL_YAML)
         repos = AsyncMock()
-        repos.list_repo_ids.return_value = {"acme/skills": "uuid-1"}
+        repos.list_repos.return_value = [("acme/skills", "GITHUB", "uuid-1")]
         service._skill_repos = repos  # type: ignore[assignment]
         deployment = _deployment()
         service._deployments.find_by_name.return_value = deployment
@@ -365,14 +365,14 @@ class TestSkillRepositories:
 
         await service.deploy(FIXTURE, "svc", comment="c")
 
-        repos.list_repo_ids.assert_not_called()
+        repos.list_repos.assert_not_called()
 
     async def test_unconnected_repository_pushes_nothing(
         self, service: MockedDeploymentService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(pipeline_transform, "build_config_yaml", lambda *a, **k: _SKILL_YAML)
         repos = AsyncMock()
-        repos.list_repo_ids.return_value = {}
+        repos.list_repos.return_value = []
         service._skill_repos = repos  # type: ignore[assignment]
 
         with pytest.raises(pipeline_transform.PipelineTransformError):

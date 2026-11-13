@@ -2082,7 +2082,7 @@ class TestResolveSkillRepositories:
     def test_matches_repo_url_forms_case_insensitively(self, repository: str) -> None:
         yaml_in = self._YAML.replace("https://github.com/Acme/Skills.git", repository)
         resolved = YAML(typ="safe").load(
-            pipeline_transform.resolve_skill_repositories(yaml_in, {"acme/Skills": "uuid-1"})
+            pipeline_transform.resolve_skill_repositories(yaml_in, [("acme/Skills", "GITHUB", "uuid-1")])
         )
         assert resolved["skills"]["agent"] == [
             {"id": "custom-code", "hash": "abc123", "source": "ORG", "source_id": "uuid-1"},
@@ -2091,13 +2091,33 @@ class TestResolveSkillRepositories:
 
     def test_without_repository_reference_returns_yaml_unchanged(self) -> None:
         yaml_in = "components: {}\nskills:\n  agent:\n    - {id: a, hash: b, source: ORG, source_id: x}\n"
-        assert pipeline_transform.resolve_skill_repositories(yaml_in, {}) is yaml_in
+        assert pipeline_transform.resolve_skill_repositories(yaml_in, []) is yaml_in
 
     def test_unconnected_repository_fails(self) -> None:
         with pytest.raises(PipelineTransformError, match="has not connected.*other/repo"):
-            pipeline_transform.resolve_skill_repositories(self._YAML, {"other/repo": "uuid-2"})
+            pipeline_transform.resolve_skill_repositories(self._YAML, [("other/repo", "GITHUB", "uuid-2")])
+
+    _BOTH_HOSTS = [("acme/skills", "GITHUB", "gh-id"), ("acme/skills", "GITLAB", "gl-id")]
+
+    @pytest.mark.parametrize(
+        ("repository", "source_id"),
+        [("https://github.com/acme/skills", "gh-id"), ("git@gitlab.com:acme/skills.git", "gl-id")],
+    )
+    def test_url_host_picks_provider(self, repository: str, source_id: str) -> None:
+        yaml_in = self._YAML.replace("https://github.com/Acme/Skills.git", repository)
+        resolved = YAML(typ="safe").load(pipeline_transform.resolve_skill_repositories(yaml_in, self._BOTH_HOSTS))
+        assert resolved["skills"]["agent"][0]["source_id"] == source_id
+
+    def test_bare_name_on_both_hosts_fails(self) -> None:
+        yaml_in = self._YAML.replace("https://github.com/Acme/Skills.git", "acme/skills")
+        with pytest.raises(PipelineTransformError, match="more than one host"):
+            pipeline_transform.resolve_skill_repositories(yaml_in, self._BOTH_HOSTS)
+
+    def test_url_host_not_connected_fails(self) -> None:
+        with pytest.raises(PipelineTransformError, match="has not connected"):
+            pipeline_transform.resolve_skill_repositories(self._YAML, [("acme/skills", "GITLAB", "gl-id")])
 
     def test_repository_and_source_id_together_fail(self) -> None:
         yaml_in = self._YAML.replace("      hash: abc123\n", "      hash: abc123\n      source_id: x\n", 1)
         with pytest.raises(PipelineTransformError, match="both 'repository' and 'source_id'"):
-            pipeline_transform.resolve_skill_repositories(yaml_in, {"acme/skills": "uuid-1"})
+            pipeline_transform.resolve_skill_repositories(yaml_in, [("acme/skills", "GITHUB", "uuid-1")])
