@@ -35,18 +35,15 @@ jobs:
       - name: Check uv.lock is in sync with pyproject.toml
         run: uv lock --check
 
-      - name: Check the release tag matches the version in pyproject.toml
+      - name: Stamp the version from the release tag
         if: github.event_name == 'release'
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
+          # The tag is the source of truth; pyproject.toml's version is not bumped on main.
           tag_version="${TAG#v}"
-          project_version="$(uv version --short --frozen)"
-          if [ "$tag_version" != "$project_version" ]; then
-            echo "::error::Release tag '$TAG' resolves to version '$tag_version', but pyproject.toml declares '$project_version'. Bump [project] version on main, run 'uv lock', merge, then re-create the release from a tag on the bump commit."
-            exit 1
-          fi
-          echo "VERSION=$project_version" >> "$GITHUB_ENV"
+          uv version --frozen "$tag_version"
+          echo "VERSION=$tag_version" >> "$GITHUB_ENV"
 
       - name: Stamp a throwaway dev version
         if: github.event_name == 'workflow_dispatch'
