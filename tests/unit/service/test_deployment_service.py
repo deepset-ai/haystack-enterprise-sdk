@@ -989,7 +989,7 @@ class TestPipelineVersion:
 
         await service.deploy(FIXTURE, "svc", comment="c", pipeline_name="pipe")
 
-        versions.create_pipeline.assert_awaited_once_with("ws", "pipe")
+        versions.create_pipeline.assert_awaited_once_with("ws", "pipe", "components: {}\n")
         versions.create_draft.assert_awaited_once()
 
     async def test_failed_publish_creates_no_service(
