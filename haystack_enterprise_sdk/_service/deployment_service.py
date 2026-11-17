@@ -486,7 +486,7 @@ class DeploymentService:
         :raises FailedToPublishPipelineVersionError: If the pipeline or its version could not be written.
         """
         if not await self._pipeline_versions.pipeline_exists(self._workspace_name, pipeline_name):
-            await self._pipeline_versions.create_pipeline(self._workspace_name, pipeline_name)
+            await self._pipeline_versions.create_pipeline(self._workspace_name, pipeline_name, config_yaml)
         draft = await self._pipeline_versions.create_draft(self._workspace_name, pipeline_name, config_yaml, comment)
         version = await self._pipeline_versions.publish(self._workspace_name, pipeline_name, draft["version_id"])
         logger.info("Published pipeline version.", pipeline=pipeline_name, version_number=version.get("version_number"))

@@ -47,14 +47,17 @@ class PipelineVersionsAPI:
         )
         return True
 
-    async def create_pipeline(self, workspace_name: str, pipeline_name: str) -> None:
-        """Create an empty pipeline: no YAML, so it starts without any version.
+    async def create_pipeline(self, workspace_name: str, pipeline_name: str, config_yaml: str) -> None:
+        """Create a pipeline with ``config_yaml`` as its content. The platform rejects a pipeline without YAML.
 
         :param workspace_name: Name of the workspace.
         :param pipeline_name: Name of the pipeline.
+        :param config_yaml: YAML the pipeline starts with.
         """
         response = await self._api.post(
-            workspace_name=workspace_name, endpoint="pipelines", json={"name": pipeline_name}
+            workspace_name=workspace_name,
+            endpoint="pipelines",
+            json={"name": pipeline_name, "query_yaml": config_yaml},
         )
         raise_for_unexpected_status(
             response,
