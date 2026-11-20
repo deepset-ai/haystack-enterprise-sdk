@@ -14,13 +14,28 @@ jobs:
   trigger-docs:
     if: github.event.pull_request.merged == true && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    env:
+      # Secrets can't be tested in a step condition, so test them here.
+      HAS_APP: ${{ secrets.DEEPSET_CLOUD_BOT_APP_ID != '' && secrets.DEEPSET_CLOUD_BOT_APP_PRIVATE_KEY != '' }}
     steps:
+      # The docs PRs are opened and pushed as deepset-cloud-bot instead of the owner
+      # of DOCS_TOKEN. Without the app secrets, DOCS_TOKEN is used as before.
+      - name: Create the app token
+        id: app
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.DEEPSET_CLOUD_BOT_APP_ID }}
+          private-key: ${{ secrets.DEEPSET_CLOUD_BOT_APP_PRIVATE_KEY }}
+          owner: deepset-ai
+          repositories: dc-docs
+
       - name: Check out dc-docs
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: deepset-ai/dc-docs
           path: dc-docs
-          token: ${{ secrets.DOCS_TOKEN }}
+          token: ${{ steps.app.outputs.token || secrets.DOCS_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -39,6 +54,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.DOCS_TOKEN }}
+          PR_TOKEN: ${{ steps.app.outputs.token }}
           SOURCE_REPO: ${{ github.repository }}
           SOURCE_PR_NUMBER: ${{ github.event.pull_request.number }}
           SOURCE_PR_TITLE: ${{ github.event.pull_request.title }}
