@@ -33,6 +33,8 @@ from haystack_enterprise_sdk._service.pipeline_extract import (
     INDEX_REJECTED_MESSAGE,
     STANDARD_INPUT_KEYS,
     STANDARD_OUTPUT_KEYS,
+    WRAPPER_CLASS,
+    WRAPPER_FILE,
     PipelineTransformError,
     classify_module,
     extract_from_file,
@@ -77,6 +79,8 @@ __all__ = [
     "socket_options",
     "STANDARD_INPUT_KEYS",
     "STANDARD_OUTPUT_KEYS",
+    "WRAPPER_CLASS",
+    "WRAPPER_FILE",
     "resolve_io",
     "unmapped_mandatory_inputs",
     "unmapped_mandatory_warning",
@@ -538,7 +542,7 @@ class CodeEntrypoint:
     """What the extractor's code mode found at the entrypoint of a code build."""
 
     attr: str
-    kind: str  # pipeline | agent | super_component | function
+    kind: str  # pipeline | agent | super_component | function | pipeline_wrapper
     input_schema: Optional[dict] = None
     graph: Optional[dict] = None
 

@@ -1735,7 +1735,13 @@ def extract_from_file(path: Path, entrypoint: Optional[str] = None, allow_index:
 SUPER_COMPONENT_NAME = "app"
 
 #: Entrypoint kinds of a code build. ``function`` is any plain callable, run as ``fn(**payload)``.
-CODE_KINDS = ("pipeline", "agent", "super_component", "function")
+CODE_KINDS = ("pipeline", "agent", "super_component", "function", "pipeline_wrapper")
+
+#: The file and class name hayhooks looks for in a pipeline folder.
+WRAPPER_FILE, WRAPPER_CLASS = "pipeline_wrapper.py", "PipelineWrapper"
+
+# hayhooks wrapper methods the platform does not serve yet.
+_UNSUPPORTED_WRAPPER_METHODS = ("run_response", "run_response_async", "run_file_upload")
 
 _JSON_SCHEMA_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean", dict: "object", list: "array"}
 
@@ -1767,6 +1773,9 @@ def extract_code_entrypoint(
         of :func:`extract_from_pipeline` (minus ``pipeline``).
     """
     from haystack import Pipeline
+
+    if kind == "pipeline_wrapper" or (kind is None and Path(path).name == WRAPPER_FILE):
+        return _extract_pipeline_wrapper(Path(path), entrypoint or WRAPPER_CLASS)
 
     pipeline_types = _pipeline_types()
     agent_types = _agent_types()
@@ -1809,6 +1818,106 @@ def extract_code_entrypoint(
         "dependencies": _haystack_dependency(),
         "suggested_pipeline_output_type": "chat" if kind == "agent" else None,
     }
+
+
+def _import_wrapper_module(path: Path) -> Any:
+    """Import a hayhooks wrapper file as a submodule of its folder, as hayhooks does, so relative imports work."""
+    path = path.resolve()
+    if not path.is_file():
+        raise PipelineTransformError(f"Pipeline file not found: {path}")
+    _load_project_dotenv(path.parent)
+    package = f"_hayhooks_{path.parent.name}"
+    init = path.parent / "__init__.py"
+    spec = (
+        importlib.util.spec_from_file_location(package, init, submodule_search_locations=[str(path.parent)])
+        if init.is_file()
+        else importlib.util.spec_from_loader(package, loader=None, is_package=True)
+    )
+    if spec is None:
+        raise PipelineTransformError(f"Could not load a Python package from {path.parent}")
+    module = importlib.util.module_from_spec(spec)
+    module.__path__ = [str(path.parent)]
+    sys.modules[package] = module
+    try:
+        if spec.loader is not None:
+            spec.loader.exec_module(module)
+        return importlib.import_module(f"{package}.{path.stem}")
+    except Exception as err:  # noqa: BLE001 - any import-time failure is the user's code
+        raise PipelineTransformError(f"Failed to import {path}: {err!r}") from err
+
+
+def _extract_pipeline_wrapper(path: Path, attr: str) -> dict:
+    """Describe a hayhooks ``PipelineWrapper``: the methods it implements are the service's API.
+
+    ``run_api``'s signature and docstring become the ``/run`` schema, built by hayhooks itself so it matches
+    what ``hayhooks run`` exposes; ``run_chat_completion`` makes the chat surfaces available. ``setup()``
+    is not run: it may need secrets and load models, and the platform runs it on the worker.
+    """
+    try:
+        from hayhooks import BasePipelineWrapper
+    except ImportError as err:
+        raise PipelineTransformError(
+            f"'{path}' is a hayhooks PipelineWrapper, but hayhooks isn't installed in this environment ({err})."
+        ) from err
+    cls = getattr(_import_wrapper_module(path), attr, None)
+    if not (inspect.isclass(cls) and issubclass(cls, BasePipelineWrapper)):
+        raise PipelineTransformError(f"'{attr}' in {path.name} is not a hayhooks BasePipelineWrapper subclass.")
+
+    def implemented(*names: str) -> Optional[str]:
+        return next((n for n in names if getattr(cls, n, None) is not getattr(BasePipelineWrapper, n, None)), None)
+
+    unsupported = [name for name in _UNSUPPORTED_WRAPPER_METHODS if implemented(name)]
+    if unsupported:
+        raise PipelineTransformError(
+            f"{attr} implements {', '.join(unsupported)}, which the platform doesn't serve yet. "
+            "Supported: run_api(_async) and run_chat_completion(_async)."
+        )
+    run_api, chat = (
+        implemented("run_api_async", "run_api"),
+        implemented("run_chat_completion_async", "run_chat_completion"),
+    )
+    if run_api is None and chat is None:
+        raise PipelineTransformError(f"{attr} implements neither run_api nor run_chat_completion.")
+
+    inputs: dict = {}
+    outputs: dict = {}
+    schema = None
+    if run_api is not None:
+        method = getattr(cls(), run_api)
+        if "files" in inspect.signature(method).parameters:
+            raise PipelineTransformError(
+                f"{attr}.{run_api} takes `files` (a file upload), which the platform doesn't serve yet."
+            )
+        schema = _wrapper_run_schema(method, path.parent.name)
+        inputs["payload"] = [f"{SUPER_COMPONENT_NAME}.payload"]
+        outputs["result"] = f"{SUPER_COMPONENT_NAME}.result"
+    if chat is not None:
+        inputs["messages"] = [f"{SUPER_COMPONENT_NAME}.messages"]
+        outputs["messages"] = f"{SUPER_COMPONENT_NAME}.messages"
+    return {
+        "kind": "pipeline_wrapper",
+        "entrypoint_attr": attr,
+        "input_schema": schema,
+        "inferred_inputs": inputs,
+        "inferred_outputs": outputs,
+        "dependencies": _haystack_dependency(),
+        "suggested_pipeline_output_type": "chat" if chat else None,
+    }
+
+
+def _wrapper_run_schema(method: Any, name: str) -> dict:
+    """The ``/run`` body schema exactly as hayhooks builds it (field descriptions from the docstring's ``Args:``)."""
+    try:
+        from docstring_parser import parse
+        from hayhooks.server.pipelines.models import create_request_model_from_callable
+
+        schema: dict = create_request_model_from_callable(
+            method, f"{name}RunRequest", parse(method.__doc__ or "")
+        ).model_json_schema()
+        return schema
+    except Exception as err:  # noqa: BLE001 - another hayhooks version: fall back to the plain signature schema
+        logger.warning("Could not build the run_api schema the hayhooks way (%s); using its signature.", err)
+        return _function_schema(method)
 
 
 def _code_entrypoint(module: Any, entrypoint: Optional[str], haystack_types: tuple, kind: Optional[str]) -> tuple:

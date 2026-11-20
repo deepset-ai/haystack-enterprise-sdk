@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import structlog
+from ruamel.yaml import YAML
 
 from haystack_enterprise_sdk._service import deployment_service, pipeline_transform
 from haystack_enterprise_sdk._service.pipeline_transform import PipelineTransformError
@@ -63,6 +64,20 @@ class CodeBundle:
     kind: str
     input_schema: Optional[dict] = None
     graph: Optional[dict] = None
+
+    @property
+    def has_run(self) -> bool:
+        """Whether the build serves ``/run``: a function, or a PipelineWrapper implementing ``run_api``."""
+        return self.kind == "function" or (self.kind == "pipeline_wrapper" and "payload" in self._inputs())
+
+    @property
+    def has_chat(self) -> bool:
+        """Whether the build serves chat: any Haystack entrypoint, or a PipelineWrapper with ``run_chat_completion``."""
+        return self.kind != "function" and (self.kind != "pipeline_wrapper" or "messages" in self._inputs())
+
+    def _inputs(self) -> dict:
+        inputs = (YAML(typ="safe").load(self.config_yaml) or {}).get("inputs")
+        return inputs if isinstance(inputs, dict) else {}
 
     def request_field(self) -> Dict[str, Any]:
         """The ``code_bundle`` field of the push-revision request, without the fields that are unset."""
@@ -107,7 +122,12 @@ def build_code_bundle(
     """
     target = Path(target).resolve()
     base = target if target.is_dir() else target.parent
-    root = find_project_root(base)
+    wrapper = base / pipeline_transform.WRAPPER_FILE
+    if not entrypoint and wrapper.is_file() and (target.is_dir() or target == wrapper):
+        # A hayhooks pipeline folder: ship exactly the folder, as `hayhooks pipeline deploy-files` would.
+        root, target, entrypoint = base, wrapper, pipeline_transform.WRAPPER_CLASS
+    else:
+        root = find_project_root(base)
     if entrypoint and ":" in entrypoint:
         file_part, _, attr = entrypoint.rpartition(":")
         entry_file, entry_attr = (base / file_part).resolve(), attr or None
@@ -131,7 +151,13 @@ def build_code_bundle(
     dependencies = project_dependencies(root)
     if dependencies is not None:
         extraction = dataclasses.replace(extraction, dependencies=dependencies)
-    if code.kind == "function":
+    if code.kind == "pipeline_wrapper":
+        # The wrapper's methods fix the I/O; hayhooks itself is provided by the platform's worker.
+        resolved_inputs, resolved_outputs = extraction.inferred_inputs, extraction.inferred_outputs
+        extraction = dataclasses.replace(
+            extraction, dependencies=[dep for dep in extraction.dependencies or [] if not _is_package(dep, "hayhooks")]
+        )
+    elif code.kind == "function":
         # The runtime's contract for a function: one ``payload`` dict in, one ``result`` out, no output type.
         resolved_inputs, resolved_outputs = extraction.inferred_inputs, extraction.inferred_outputs
         settings = dataclasses.replace(settings or pipeline_transform.PipelineSettings(), pipeline_output_type=None)
@@ -285,6 +311,11 @@ def _load_toml(path: Path) -> dict:
         return data
     except (OSError, tomllib.TOMLDecodeError) as err:
         raise CodeBundleError(f"Could not read '{path}': {err}") from err
+
+
+def _is_package(requirement: str, name: str) -> bool:
+    match = _REQUIREMENT_NAME.match(requirement)
+    return match is not None and _normalize(match.group(1)) == name
 
 
 def _normalize(name: str) -> str:
